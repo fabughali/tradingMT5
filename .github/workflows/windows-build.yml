@@ -8,10 +8,19 @@ name: Windows build
 # Flutter tooling ON Windows (the capability check that decides whether to
 # write those files is gated on the host platform, so it can't be
 # generated on the Linux dev machine this app is otherwise built on).
+#
+# Also publishes a versioned GitHub Release on every run (2026-10-07, per
+# the user: "any fix you do now you should make sure that exe windows file
+# has it") - tagged from pubspec.yaml's own version, so the download is a
+# permanent, clearly-versioned link instead of a 30-day Actions artifact
+# that doesn't say which fixes it includes.
 on:
   push:
     branches: [main]
   workflow_dispatch: {}
+
+permissions:
+  contents: write
 
 jobs:
   build-windows:
@@ -32,6 +41,14 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Read version from pubspec.yaml
+        id: version
+        shell: bash
+        run: |
+          version=$(grep '^version:' pubspec.yaml | sed 's/version: *//' | tr -d '\r')
+          echo "full=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v${version%+*}" >> "$GITHUB_OUTPUT"
+
       - name: Build GUI (release)
         run: flutter build windows --release
 
@@ -39,10 +56,20 @@ jobs:
         run: dart compile exe bin\engine.dart -o build\windows\x64\runner\Release\tradingmt5_engine.exe
 
       - name: Package release folder
-        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath TradingMT5-Windows.zip
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath TradingMT5-Windows-${{ steps.version.outputs.full }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: TradingMT5-Windows
-          path: TradingMT5-Windows.zip
+          name: TradingMT5-Windows-${{ steps.version.outputs.full }}
+          path: TradingMT5-Windows-${{ steps.version.outputs.full }}.zip
           retention-days: 30
+
+      - name: Publish versioned GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: ${{ steps.version.outputs.tag }}
+          files: TradingMT5-Windows-${{ steps.version.outputs.full }}.zip
+          # Same tag pushed again (another fix at the same pubspec version)
+          # updates the existing release's asset instead of failing.
+          make_latest: true
