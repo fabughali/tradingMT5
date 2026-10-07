@@ -3,17 +3,28 @@
 /// or WebTerminal automation. Auth key lives in `.env` (MT5_MCP_API_KEY),
 /// never here.
 class Mt5Config {
-  const Mt5Config({this.mcpHost = '127.0.0.1', this.mcpPort = 22346});
+  const Mt5Config({required this.mcpHost, required this.mcpPort});
 
   final String mcpHost;
   final int mcpPort;
 
+  /// No fallback host/port (2026-10-07, per the user: this app is now a
+  /// public repo - every user has their own MT5 MCP setup, not this one's,
+  /// so nothing here should silently assume a value for them). See
+  /// `config.example.json` for what to actually put in `mt5.mcp_host`/
+  /// `mt5.mcp_port` - typically `127.0.0.1` and whatever port MT5's own
+  /// Tools > Options > MCP page shows, which can differ per install.
   factory Mt5Config.fromJson(Map<String, dynamic>? json) {
-    if (json == null) return const Mt5Config();
-    return Mt5Config(
-      mcpHost: json['mcp_host'] as String? ?? '127.0.0.1',
-      mcpPort: (json['mcp_port'] as num?)?.toInt() ?? 22346,
-    );
+    final host = json?['mcp_host'] as String?;
+    final port = (json?['mcp_port'] as num?)?.toInt();
+    if (host == null || port == null) {
+      throw const FormatException(
+        'config.json is missing "mt5.mcp_host"/"mt5.mcp_port" - see '
+        'config.example.json for what to fill in (your own MT5 MCP '
+        'host/port, from Tools > Options > MCP in the terminal).',
+      );
+    }
+    return Mt5Config(mcpHost: host, mcpPort: port);
   }
 
   Map<String, dynamic> toJson() => {'mcp_host': mcpHost, 'mcp_port': mcpPort};
@@ -23,17 +34,25 @@ class Mt5Config {
 /// signal-reading connection tradingPionex uses, ported unchanged since
 /// signal reading is entirely broker-agnostic.
 class CdpConfig {
-  const CdpConfig({this.host = '127.0.0.1', this.port = 9222});
+  const CdpConfig({required this.host, required this.port});
 
   final String host;
   final int port;
 
+  /// No fallback host/port - same reasoning as [Mt5Config.fromJson]'s own
+  /// doc comment. See `config.example.json` for `cdp.host`/`cdp.port`
+  /// (typically `127.0.0.1` and `9222`, TradingView Desktop's remote
+  /// debugging port - but confirm against your own launch flags).
   factory CdpConfig.fromJson(Map<String, dynamic>? json) {
-    if (json == null) return const CdpConfig();
-    return CdpConfig(
-      host: json['host'] as String? ?? '127.0.0.1',
-      port: (json['port'] as num?)?.toInt() ?? 9222,
-    );
+    final host = json?['host'] as String?;
+    final port = (json?['port'] as num?)?.toInt();
+    if (host == null || port == null) {
+      throw const FormatException(
+        'config.json is missing "cdp.host"/"cdp.port" - see '
+        'config.example.json for what to fill in.',
+      );
+    }
+    return CdpConfig(host: host, port: port);
   }
 
   Map<String, dynamic> toJson() => {'host': host, 'port': port};
@@ -125,8 +144,8 @@ class AppConfig {
   const AppConfig({
     this.pollIntervalSec = 5,
     this.remoteSession = true,
-    this.mt5 = const Mt5Config(),
-    this.cdp = const CdpConfig(),
+    required this.mt5,
+    required this.cdp,
     this.technique = const TechniqueConfig(),
     this.risk = const RiskConfig(),
     this.symbols = const [],
@@ -174,7 +193,15 @@ class AppConfig {
     'heartbeat': {'alert_every_min': heartbeatAlertEveryMin},
   };
 
+  /// Seeds a FRESH config.json on first run only ([loadOrInitConfig]) - a
+  /// plain, editable starter file in the user's own local data directory,
+  /// never committed/public. `127.0.0.1` + these specific ports are just
+  /// the common case for a local MT5/TradingView setup, not a real
+  /// user's specific values - edit mt5/cdp here (or in the written file
+  /// directly) to match your own, same as `config.example.json`.
   static const defaultConfig = AppConfig(
+    mt5: Mt5Config(mcpHost: '127.0.0.1', mcpPort: 22346),
+    cdp: CdpConfig(host: '127.0.0.1', port: 9222),
     symbols: [
       SymbolMapping(tradingViewSymbol: 'BTCUSDT', mt5Symbol: 'BTCUSD.lv'),
     ],

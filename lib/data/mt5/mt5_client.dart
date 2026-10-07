@@ -28,8 +28,8 @@ import 'package:http/http.dart' as http;
 class Mt5Client {
   Mt5Client({
     required this.apiKey,
-    this.host = '127.0.0.1',
-    this.port = 22346,
+    required this.host,
+    required this.port,
     void Function(String)? onLog,
   }) : _onLog = onLog;
 
