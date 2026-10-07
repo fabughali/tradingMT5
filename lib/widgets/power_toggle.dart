@@ -38,10 +38,51 @@ class _PowerToggleState extends ConsumerState<PowerToggle>
     duration: const Duration(milliseconds: 700),
   )..repeat(reverse: true);
 
+  /// Which "not installed" state the dialog was last shown for, so it pops
+  /// up once per occurrence rather than on every status poll while the
+  /// problem persists (2026-10-07, per the user: "app need to be smart...
+  /// show a dialog that user need to install"). Reset to null once health
+  /// leaves either not-installed state, so a LATER occurrence (e.g. it got
+  /// uninstalled again) can show it again.
+  PowerHealthState? _dialogShownFor;
+
   @override
   void dispose() {
     _blink.dispose();
     super.dispose();
+  }
+
+  void _maybeShowInstallDialog(PowerHealthState health) {
+    final isNotInstalled =
+        health == PowerHealthState.mt5NotInstalled || health == PowerHealthState.tradingViewNotInstalled;
+    if (!isNotInstalled) {
+      _dialogShownFor = null;
+      return;
+    }
+    if (_dialogShownFor == health) return;
+    _dialogShownFor = health;
+    final isMt5 = health == PowerHealthState.mt5NotInstalled;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          icon: const Icon(Icons.download_outlined),
+          title: Text(isMt5 ? 'MetaTrader 5 is not installed' : 'TradingView Desktop is not installed'),
+          content: Text(
+            isMt5
+                ? 'The app looked for MetaTrader 5 at its usual install location and '
+                      "didn't find it. Install MetaTrader 5, then turn Power on again."
+                : 'The app looked for TradingView Desktop at its usual install '
+                      "location and didn't find it. Install TradingView Desktop, then "
+                      'turn Power on again.',
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('Got it')),
+          ],
+        ),
+      );
+    });
   }
 
   @override
@@ -61,6 +102,7 @@ class _PowerToggleState extends ConsumerState<PowerToggle>
       health = status?.health ?? PowerHealthState.checking;
       message = status?.message ?? 'Checking connection…';
     }
+    _maybeShowInstallDialog(health);
 
     final color = switch (health) {
       PowerHealthState.off => Colors.red,
@@ -69,6 +111,8 @@ class _PowerToggleState extends ConsumerState<PowerToggle>
       PowerHealthState.internetProblem => Colors.yellow.shade700,
       PowerHealthState.mt5Problem => Colors.blue,
       PowerHealthState.tradingViewProblem => Colors.orange,
+      PowerHealthState.mt5NotInstalled => Colors.red.shade900,
+      PowerHealthState.tradingViewNotInstalled => Colors.red.shade900,
     };
     final blinking = health == PowerHealthState.checking;
 

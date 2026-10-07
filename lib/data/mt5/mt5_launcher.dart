@@ -63,6 +63,25 @@ class Mt5LaunchConfig {
   );
 }
 
+/// Checked BEFORE ever attempting a launch (2026-10-07, per the user: "app
+/// need to be smart... need to detect if both are installed in linux. wine
+/// (mt5) and trading view too") - a missing install should fail fast with a
+/// clear, actionable message ([PowerHealthState.mt5NotInstalled]) instead
+/// of a confusing process-spawn error, or silently retrying a launch that
+/// can never succeed. On Linux this ALSO requires `wine` itself to be on
+/// PATH - the terminal exe existing inside a WINEPREFIX means nothing if
+/// there's no Wine installed to run it.
+Future<bool> isMt5Installed(Mt5LaunchConfig config) async {
+  if (!File(config.terminalPath).existsSync()) return false;
+  if (Platform.isWindows) return true;
+  try {
+    final result = await Process.run('wine', ['--version']);
+    return result.exitCode == 0;
+  } catch (_) {
+    return false;
+  }
+}
+
 /// Cheap "is the MCP server listening" probe — same idea as
 /// `tradingview/launch.dart`'s `isCdpUp`, just a raw TCP connect since MT5's
 /// MCP endpoint returns 401 without auth (still meaningfully "up") rather

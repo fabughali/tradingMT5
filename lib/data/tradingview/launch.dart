@@ -96,6 +96,13 @@ class LaunchConfig {
   }
 }
 
+/// Checked BEFORE ever attempting a launch - see [isMt5Installed]'s own doc
+/// comment for the exact same reasoning, mirrored here
+/// ([PowerHealthState.tradingViewNotInstalled]). Unlike MT5, TradingView
+/// Desktop is native on Linux too (no Wine) - just the one file-existence
+/// check on either platform.
+bool isTradingViewInstalled(LaunchConfig config) => File(config.binaryPath).existsSync();
+
 Future<bool> isCdpUp(String host, int port) async {
   final client = HttpClient();
   try {

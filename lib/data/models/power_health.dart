@@ -22,12 +22,25 @@ enum PowerHealthState {
   internetProblem,
 
   /// MT5's MCP server isn't reachable (and didn't come up after an
-  /// auto-launch attempt).
+  /// auto-launch attempt, despite genuinely being installed).
   mt5Problem,
 
   /// TradingView's CDP port isn't reachable, or the chart is up but
   /// worm_9_26/spy_9_26 aren't both attached and re-enforcing failed.
-  tradingViewProblem;
+  tradingViewProblem,
+
+  /// MT5 genuinely isn't installed at the expected path (2026-10-07, per
+  /// the user: "app need to be smart... if mt5 is not setup... app need to
+  /// show a dialog that user need to install") - distinct from
+  /// [mt5Problem] (installed but not cooperating) because the fix is
+  /// completely different: install the app, not troubleshoot a stuck
+  /// process. Checked BEFORE ever attempting to launch, so a missing
+  /// install fails fast with a clear message instead of a confusing
+  /// process-spawn error.
+  mt5NotInstalled,
+
+  /// Same distinction as [mt5NotInstalled], for TradingView Desktop.
+  tradingViewNotInstalled;
 
   static PowerHealthState fromWire(String? value) => switch (value) {
     'checking' => PowerHealthState.checking,
@@ -35,6 +48,8 @@ enum PowerHealthState {
     'internet_problem' => PowerHealthState.internetProblem,
     'mt5_problem' => PowerHealthState.mt5Problem,
     'tradingview_problem' => PowerHealthState.tradingViewProblem,
+    'mt5_not_installed' => PowerHealthState.mt5NotInstalled,
+    'tradingview_not_installed' => PowerHealthState.tradingViewNotInstalled,
     _ => PowerHealthState.off,
   };
 
@@ -45,5 +60,7 @@ enum PowerHealthState {
     PowerHealthState.internetProblem => 'internet_problem',
     PowerHealthState.mt5Problem => 'mt5_problem',
     PowerHealthState.tradingViewProblem => 'tradingview_problem',
+    PowerHealthState.mt5NotInstalled => 'mt5_not_installed',
+    PowerHealthState.tradingViewNotInstalled => 'tradingview_not_installed',
   };
 }

@@ -39,6 +39,21 @@ import '../tradingview/enforce.dart';
 import '../tradingview/launch.dart';
 import '../tradingview/signals_reader.dart';
 
+/// Thrown by [EngineService._ensureCdpUpImpl] when TradingView genuinely
+/// isn't installed at the configured path (2026-10-07, per the user: "app
+/// need to be smart... need to show a dialog") - distinct from every other
+/// exception that path can throw so the health-check's catch block (see
+/// [EngineService._runHealthCheck]) can tell "not installed" apart from a
+/// genuine connection/launch problem and surface the right
+/// [PowerHealthState] for each.
+class TradingViewNotInstalledException implements Exception {
+  const TradingViewNotInstalledException(this.binaryPath);
+  final String binaryPath;
+
+  @override
+  String toString() => 'TradingView is not installed at $binaryPath';
+}
+
 /// Plain result record for [EngineService._computeTargetLevels] — see its
 /// own doc comment for why this is shared between placing a fresh order
 /// and checking whether an already-resting one has gone stale.
@@ -495,13 +510,27 @@ class EngineService {
       connected: false,
     );
     if (!await isMt5Up(config.mt5.mcpHost, config.mt5.mcpPort)) {
+      final mt5LaunchConfig = _mt5LaunchConfig();
+      if (!await isMt5Installed(mt5LaunchConfig)) {
+        logger.log(
+          'Power check: MetaTrader 5 is not installed at '
+          '${mt5LaunchConfig.terminalPath}${Platform.isWindows ? '' : ' (or Wine itself is missing)'}.',
+          level: 'ERROR',
+        );
+        _writeStatus(
+          health: PowerHealthState.mt5NotInstalled,
+          message: 'MetaTrader 5 is not installed. Install it, then turn Power on again.',
+          connected: false,
+        );
+        return _finishHealthCheck(PowerHealthState.mt5NotInstalled);
+      }
       logger.log('Power check: MT5 not running — launching it.');
       _writeStatus(
         health: PowerHealthState.checking,
         message: 'Launching MT5',
         connected: false,
       );
-      final launched = await ensureMt5Running(config.mt5.mcpHost, config.mt5.mcpPort, _mt5LaunchConfig());
+      final launched = await ensureMt5Running(config.mt5.mcpHost, config.mt5.mcpPort, mt5LaunchConfig);
       if (!launched) {
         logger.log('MT5 did not come up after launch attempt.', level: 'ERROR');
         _writeStatus(
@@ -552,6 +581,15 @@ class EngineService {
       // for more than this long.
       await _ensureCdpUp().timeout(_tradingViewCheckDeadline);
     } catch (e) {
+      if (e is TradingViewNotInstalledException) {
+        logger.log('Power check: $e', level: 'ERROR');
+        _writeStatus(
+          health: PowerHealthState.tradingViewNotInstalled,
+          message: 'TradingView is not installed. Install it, then turn Power on again.',
+          connected: true,
+        );
+        return _finishHealthCheck(PowerHealthState.tradingViewNotInstalled);
+      }
       logger.log('Power check: TradingView not ready: $e', level: 'ERROR');
       _writeStatus(
         health: PowerHealthState.tradingViewProblem,
@@ -1009,6 +1047,10 @@ class EngineService {
     final home =
         Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '.';
     if (!await isCdpUp(host, port)) {
+      final tvLaunchConfig = _tradingViewLaunchConfig(home);
+      if (!isTradingViewInstalled(tvLaunchConfig)) {
+        throw TradingViewNotInstalledException(tvLaunchConfig.binaryPath);
+      }
       _writeStatus(
         health: PowerHealthState.checking,
         message: 'Launching TradingView',
@@ -1017,7 +1059,7 @@ class EngineService {
       final launched = await launchTradingView(
         host,
         port,
-        _tradingViewLaunchConfig(home),
+        tvLaunchConfig,
         remoteSession: config.remoteSession,
       );
       if (!launched) {
