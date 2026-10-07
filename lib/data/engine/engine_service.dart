@@ -25,6 +25,7 @@ import '../models/bot_history_entry.dart';
 import '../models/decision_technique.dart';
 import '../models/engine_status.dart';
 import '../models/power_health.dart';
+import '../models/range_result.dart';
 import '../models/signal.dart';
 import '../models/trade_direction.dart';
 import '../mt5/mt5_client.dart';
@@ -1264,56 +1265,8 @@ class EngineService {
     await _ensureCdpUp();
     final cdp = _cdp!;
 
-    await setChartView(cdp, tvSymbol, category.rangeResolution);
-    final lines = await readLines(cdp, customScripts[0].scriptIdPart);
-    var range = detectZigzagRange(
-      lines,
-      swingCount: config.technique.rangeSwingCount,
-    );
-    // Extra retries when [immediate] - see [_checkOneSymbolSupertrend]'s own
-    // doc comment on the identical retry it added (2026-10-07) for the
-    // Power-on sweep: a one-shot-per-pair skip here would otherwise silently
-    // fall this pair back to the slow, normal cadence instead of getting
-    // the immediate treatment every other pair in the sweep got.
-    for (var i = 0; i < 2 && range == null && immediate; i++) {
-      await Future<void>.delayed(const Duration(seconds: 5));
-      final retryLines = await readLines(cdp, customScripts[0].scriptIdPart);
-      range = detectZigzagRange(retryLines, swingCount: config.technique.rangeSwingCount);
-    }
-    if (range == null) {
-      logger.log('$tvSymbol ($category): no range yet, skipping cycle.');
-      return;
-    }
-
-    // TRIPLE-read confirmation for the RANGE (strengthened 2026-09-27, per
-    // the user: "dont open/close trade unless you are 1 million sure" - two
-    // reads 6s apart was not strong enough; a single read had returned a
-    // range of 0.99-1.70 for BTC (~$84,500 at the time), which would have
-    // produced a stop-loss with essentially no real protection. Now
-    // requires the range to agree across THREE independent reads spaced 10s
-    // apart (20s total) before ever being trusted — same TradingView
-    // chart-settling race as the signal read below, just hitting the
-    // zigzag/range script.
-    for (var i = 0; i < 2; i++) {
-      await Future<void>.delayed(const Duration(seconds: 10));
-      final linesRecheck = await readLines(cdp, customScripts[0].scriptIdPart);
-      final rangeRecheck = detectZigzagRange(
-        linesRecheck,
-        swingCount: config.technique.rangeSwingCount,
-      );
-      if (rangeRecheck == null ||
-          rangeRecheck.top != range.top ||
-          rangeRecheck.bottom != range.bottom) {
-        logger.log(
-          '$tvSymbol ($category): RANGE FLICKER (read ${i + 2}/3) - first '
-          'read ${range.bottom}-${range.top}, this read '
-          '${rangeRecheck?.bottom}-${rangeRecheck?.top} disagree — '
-          'skipping this cycle.',
-          level: 'WARNING',
-        );
-        return;
-      }
-    }
+    final range = await _readConfirmedRange(cdp, category, tvSymbol, immediate: immediate);
+    if (range == null) return;
 
     await setChartView(cdp, tvSymbol, category.signalResolution);
     var check = await readSwingOscillatorSignals(
@@ -1689,60 +1642,8 @@ class EngineService {
 
     // No position running - open in the latest tag's own direction. Same
     // "only clear on genuine success" rule as the close+flip branch above.
-    final pendingOrder = await _findPendingAppOrder(mt5Symbol, category);
-    if (pendingOrder != null) {
-      // Stale-order check (2026-10-06, per the user: "for waiting pairs.
-      // if anything updated. then app need to update this pair rather it
-      // is filled or not filled ... if it is required to close current
-      // filled pair and refill again, app need to do it" - "waiting"
-      // explicitly includes a not-yet-filled resting order, not just a
-      // running position). Before this, ANY resting order just sat there
-      // untouched forever once placed, even after the live signal/range
-      // moved on. Compare what a FRESH open would use RIGHT NOW against
-      // what's actually resting; only cancel+replace if either the
-      // direction or the SL/TP has genuinely changed.
-      final restingDirection = (pendingOrder['type'] as String? ?? '').contains('buy')
-          ? TradeDirection.long
-          : TradeDirection.short;
-      final restingSl = (pendingOrder['stop_loss'] as num?)?.toDouble();
-      final restingTp = (pendingOrder['take_profit'] as num?)?.toDouble();
-      final target = await _computeTargetLevels(mt5Symbol, newDirection, range.top, range.bottom);
-      final changed = target != null &&
-          (restingDirection != newDirection || restingSl != target.sl || restingTp != target.tp);
-      if (!changed) {
-        logger.log(
-          '$tvSymbol ($category): a pending order for this symbol/category '
-          'is already resting in MT5 and still matches the current signal - '
-          'not placing a duplicate.',
-        );
-        return;
-      }
-      final orderTicket = _parseTicket(pendingOrder['order_id']);
-      if (orderTicket == null) {
-        logger.log(
-          '$tvSymbol ($category): resting order has gone stale (signal/range '
-          'moved on) but its own ticket could not be parsed from '
-          '$pendingOrder - leaving it alone rather than risk touching the '
-          'wrong order.',
-          level: 'ERROR',
-        );
-        return;
-      }
-      logger.log(
-        '$tvSymbol ($category): resting pending order (order_id=$orderTicket) '
-        'has gone stale - direction/SL/TP no longer match the current '
-        'signal - cancelling it and re-placing with the current one.',
-      );
-      final deleteResult = await mt5.deleteOrder(symbol: mt5Symbol, orderTicket: orderTicket);
-      final deleteRetcode = (deleteResult['retcode'] as num?)?.toInt();
-      if (deleteRetcode != null && deleteRetcode != 10009) {
-        logger.log(
-          '$tvSymbol ($category): failed to cancel stale resting order '
-          '(retcode=$deleteRetcode) - leaving it in place, will retry next cycle.',
-          level: 'ERROR',
-        );
-        return;
-      }
+    if (await _reconcileStaleRestingOrderIfAny(category, tvSymbol, mt5Symbol, newDirection, range.top, range.bottom)) {
+      return;
     }
 
     // "Wait for a confirmed opposite signal" gate, first-ever entry only
@@ -1880,42 +1781,10 @@ class EngineService {
     // SAME 60/40 zigzag model, reading worm_9_26's own range data (kept
     // attached alongside Supertrend Plus purely for this - see
     // [enforceSupertrendPlus]'s own doc comment). Identical triple-read
-    // confirmation to [_checkOneSymbol]'s own range read.
-    await setChartView(cdp, tvSymbol, category.rangeResolution);
-    final lines = await readLines(cdp, customScripts[0].scriptIdPart);
-    var range = detectZigzagRange(lines, swingCount: config.technique.rangeSwingCount);
-    // Extra retries when [immediate] (2026-10-07, per the user - found live:
-    // the Power-on sweep hit "no range yet" on a pair right after a fresh
-    // restart, moved on to the next symbol per its normal one-shot-per-pair
-    // design, and never came back to it THIS sweep - that pair silently
-    // fell back to the slow, normal cadence instead of getting the
-    // immediate treatment every other pair got, which looked exactly like
-    // the reverse check having missed it). A normal (non-immediate) cycle
-    // doesn't need this - the next 3-min cycle already retries it safely.
-    for (var i = 0; i < 2 && range == null && immediate; i++) {
-      await Future<void>.delayed(const Duration(seconds: 5));
-      final retryLines = await readLines(cdp, customScripts[0].scriptIdPart);
-      range = detectZigzagRange(retryLines, swingCount: config.technique.rangeSwingCount);
-    }
-    if (range == null) {
-      logger.log('$tvSymbol ($category): no range yet, skipping cycle.');
-      return;
-    }
-    for (var i = 0; i < 2; i++) {
-      await Future<void>.delayed(const Duration(seconds: 10));
-      final linesRecheck = await readLines(cdp, customScripts[0].scriptIdPart);
-      final rangeRecheck = detectZigzagRange(linesRecheck, swingCount: config.technique.rangeSwingCount);
-      if (rangeRecheck == null || rangeRecheck.top != range.top || rangeRecheck.bottom != range.bottom) {
-        logger.log(
-          '$tvSymbol ($category): RANGE FLICKER (read ${i + 2}/3) - first '
-          'read ${range.bottom}-${range.top}, this read '
-          '${rangeRecheck?.bottom}-${rangeRecheck?.top} disagree — '
-          'skipping this cycle.',
-          level: 'WARNING',
-        );
-        return;
-      }
-    }
+    // confirmation to [_checkOneSymbol]'s own range read - literally the
+    // same shared [_readConfirmedRange] helper.
+    final range = await _readConfirmedRange(cdp, category, tvSymbol, immediate: immediate);
+    if (range == null) return;
 
     // Supertrend Plus's own Buy/Sell entry signal.
     await setChartView(cdp, tvSymbol, category.signalResolution);
@@ -2060,50 +1929,8 @@ class EngineService {
     // if it is currently buy, then app need to start buy" - no
     // [firstOpen]/[newPairWait] gate for this technique, see this method's
     // own doc comment.
-    final pendingOrder = await _findPendingAppOrder(mt5Symbol, category);
-    if (pendingOrder != null) {
-      final restingDirection = (pendingOrder['type'] as String? ?? '').contains('buy')
-          ? TradeDirection.long
-          : TradeDirection.short;
-      final restingSl = (pendingOrder['stop_loss'] as num?)?.toDouble();
-      final restingTp = (pendingOrder['take_profit'] as num?)?.toDouble();
-      final target = await _computeTargetLevels(mt5Symbol, newDirection, range.top, range.bottom);
-      final changed = target != null &&
-          (restingDirection != newDirection || restingSl != target.sl || restingTp != target.tp);
-      if (!changed) {
-        logger.log(
-          '$tvSymbol ($category): a pending order for this symbol/category '
-          'is already resting in MT5 and still matches the current signal - '
-          'not placing a duplicate.',
-        );
-        return;
-      }
-      final orderTicket = _parseTicket(pendingOrder['order_id']);
-      if (orderTicket == null) {
-        logger.log(
-          '$tvSymbol ($category): resting order has gone stale (signal/range '
-          'moved on) but its own ticket could not be parsed from '
-          '$pendingOrder - leaving it alone rather than risk touching the '
-          'wrong order.',
-          level: 'ERROR',
-        );
-        return;
-      }
-      logger.log(
-        '$tvSymbol ($category): resting pending order (order_id=$orderTicket) '
-        'has gone stale - direction/SL/TP no longer match the current '
-        'signal - cancelling it and re-placing with the current one.',
-      );
-      final deleteResult = await mt5.deleteOrder(symbol: mt5Symbol, orderTicket: orderTicket);
-      final deleteRetcode = (deleteResult['retcode'] as num?)?.toInt();
-      if (deleteRetcode != null && deleteRetcode != 10009) {
-        logger.log(
-          '$tvSymbol ($category): failed to cancel stale resting order '
-          '(retcode=$deleteRetcode) - leaving it in place, will retry next cycle.',
-          level: 'ERROR',
-        );
-        return;
-      }
+    if (await _reconcileStaleRestingOrderIfAny(category, tvSymbol, mt5Symbol, newDirection, range.top, range.bottom)) {
+      return;
     }
 
     final gate = risk.gate('open', mt5Symbol, category);
@@ -2161,6 +1988,137 @@ class EngineService {
       if (map['comment'] == tag && map['state'] == 'placed') return map;
     }
     return null;
+  }
+
+  /// Shared by [_checkOneSymbol] and [_checkOneSymbolSupertrend]'s own
+  /// "no position running" branches (2026-10-07, extracted - both had
+  /// carried byte-identical copies of this exact block since 2026-10-06,
+  /// per the user: "for waiting pairs. if anything updated. then app need
+  /// to update this pair rather it is filled or not filled ... if it is
+  /// required to close current filled pair and refill again, app need to
+  /// do it" - "waiting" explicitly includes a not-yet-filled resting
+  /// order, not just a running position. Compares what a FRESH open would
+  /// use RIGHT NOW against what's actually resting; only cancels+replaces
+  /// if either the direction or the SL/TP has genuinely changed. Pure
+  /// extraction, not a behavior change - every log message, branch, and
+  /// return condition is unchanged from what both call sites already did
+  /// inline.
+  ///
+  /// Returns true if the caller should STOP here (either because the
+  /// resting order already matches and nothing more is needed, or because
+  /// cancelling a stale one failed and the retry will happen next cycle).
+  /// Returns false if there was no resting order, or a stale one was
+  /// successfully cancelled - either way, the caller should proceed to
+  /// place a fresh one.
+  Future<bool> _reconcileStaleRestingOrderIfAny(
+    AutoCategory category,
+    String tvSymbol,
+    String mt5Symbol,
+    TradeDirection newDirection,
+    double rangeTop,
+    double rangeBottom,
+  ) async {
+    final pendingOrder = await _findPendingAppOrder(mt5Symbol, category);
+    if (pendingOrder == null) return false;
+    final restingDirection = (pendingOrder['type'] as String? ?? '').contains('buy')
+        ? TradeDirection.long
+        : TradeDirection.short;
+    final restingSl = (pendingOrder['stop_loss'] as num?)?.toDouble();
+    final restingTp = (pendingOrder['take_profit'] as num?)?.toDouble();
+    final target = await _computeTargetLevels(mt5Symbol, newDirection, rangeTop, rangeBottom);
+    final changed = target != null &&
+        (restingDirection != newDirection || restingSl != target.sl || restingTp != target.tp);
+    if (!changed) {
+      logger.log(
+        '$tvSymbol ($category): a pending order for this symbol/category '
+        'is already resting in MT5 and still matches the current signal - '
+        'not placing a duplicate.',
+      );
+      return true;
+    }
+    final orderTicket = _parseTicket(pendingOrder['order_id']);
+    if (orderTicket == null) {
+      logger.log(
+        '$tvSymbol ($category): resting order has gone stale (signal/range '
+        'moved on) but its own ticket could not be parsed from '
+        '$pendingOrder - leaving it alone rather than risk touching the '
+        'wrong order.',
+        level: 'ERROR',
+      );
+      return true;
+    }
+    logger.log(
+      '$tvSymbol ($category): resting pending order (order_id=$orderTicket) '
+      'has gone stale - direction/SL/TP no longer match the current '
+      'signal - cancelling it and re-placing with the current one.',
+    );
+    final deleteResult = await mt5.deleteOrder(symbol: mt5Symbol, orderTicket: orderTicket);
+    final deleteRetcode = (deleteResult['retcode'] as num?)?.toInt();
+    if (deleteRetcode != null && deleteRetcode != 10009) {
+      logger.log(
+        '$tvSymbol ($category): failed to cancel stale resting order '
+        '(retcode=$deleteRetcode) - leaving it in place, will retry next cycle.',
+        level: 'ERROR',
+      );
+      return true;
+    }
+    return false;
+  }
+
+  /// Shared by both check methods' own range reads (2026-10-07, extracted -
+  /// both carried byte-identical copies of this exact triple-read-with-
+  /// immediate-retry sequence). Pure extraction - every delay, log message,
+  /// and comparison is unchanged from what each call site already did
+  /// inline. Returns null (after logging why) on "no range yet" or a
+  /// flicker between reads; the caller's own job is just `if (range ==
+  /// null) return;`.
+  Future<RangeResult?> _readConfirmedRange(
+    CdpClient cdp,
+    AutoCategory category,
+    String tvSymbol, {
+    required bool immediate,
+  }) async {
+    await setChartView(cdp, tvSymbol, category.rangeResolution);
+    final lines = await readLines(cdp, customScripts[0].scriptIdPart);
+    var range = detectZigzagRange(lines, swingCount: config.technique.rangeSwingCount);
+    // Extra retries when [immediate] - see the Power-on sweep's own doc
+    // comment on [_reverseCheckOnTechniqueSwitchIfNeeded] for why: a
+    // one-shot-per-pair skip here would otherwise silently fall this pair
+    // back to the slow, normal cadence instead of getting the immediate
+    // treatment every other pair in the sweep got.
+    for (var i = 0; i < 2 && range == null && immediate; i++) {
+      await Future<void>.delayed(const Duration(seconds: 5));
+      final retryLines = await readLines(cdp, customScripts[0].scriptIdPart);
+      range = detectZigzagRange(retryLines, swingCount: config.technique.rangeSwingCount);
+    }
+    if (range == null) {
+      logger.log('$tvSymbol ($category): no range yet, skipping cycle.');
+      return null;
+    }
+    // TRIPLE-read confirmation (strengthened 2026-09-27, per the user:
+    // "dont open/close trade unless you are 1 million sure" - two reads 6s
+    // apart was not strong enough; a single read had returned a range of
+    // 0.99-1.70 for BTC (~$84,500 at the time), which would have produced a
+    // stop-loss with essentially no real protection. Now requires the
+    // range to agree across THREE independent reads spaced 10s apart (20s
+    // total) before ever being trusted — same TradingView chart-settling
+    // race as the signal read, just hitting the zigzag/range script.
+    for (var i = 0; i < 2; i++) {
+      await Future<void>.delayed(const Duration(seconds: 10));
+      final linesRecheck = await readLines(cdp, customScripts[0].scriptIdPart);
+      final rangeRecheck = detectZigzagRange(linesRecheck, swingCount: config.technique.rangeSwingCount);
+      if (rangeRecheck == null || rangeRecheck.top != range.top || rangeRecheck.bottom != range.bottom) {
+        logger.log(
+          '$tvSymbol ($category): RANGE FLICKER (read ${i + 2}/3) - first '
+          'read ${range.bottom}-${range.top}, this read '
+          '${rangeRecheck?.bottom}-${rangeRecheck?.top} disagree — '
+          'skipping this cycle.',
+          level: 'WARNING',
+        );
+        return null;
+      }
+    }
+    return range;
   }
 
   /// Finds an OPEN MT5 position on [mt5Symbol] that this app itself opened.
