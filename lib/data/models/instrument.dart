@@ -1,0 +1,127 @@
+enum AssetClass { forex, crypto, stock }
+
+/// One instrument the user wants to trade, before confirming it against
+/// MT5's live symbol catalog. [key] is the natural identifier per class:
+/// forex "EUR/USD", crypto base "BTC", stock ticker "NVDA".
+class Instrument {
+  const Instrument({
+    required this.assetClass,
+    required this.key,
+    required this.displayName,
+  });
+
+  final AssetClass assetClass;
+  final String key;
+  final String displayName;
+}
+
+/// The user's requested watchlist (2026-09-17) — seed data for the symbol
+/// availability checker. Not every entry is guaranteed to exist on every
+/// broker; see `symbol_resolver.dart` + `SymbolCatalogScreen`.
+const requestedInstruments = <Instrument>[
+  // Forex (30)
+  Instrument(assetClass: AssetClass.forex, key: 'EUR/USD', displayName: 'Euro / US Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/JPY', displayName: 'US Dollar / Japanese Yen'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/CNY', displayName: 'US Dollar / Chinese Yuan'),
+  Instrument(assetClass: AssetClass.forex, key: 'GBP/USD', displayName: 'British Pound / US Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/CAD', displayName: 'US Dollar / Canadian Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'AUD/USD', displayName: 'Australian Dollar / US Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/CHF', displayName: 'US Dollar / Swiss Franc'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/HKD', displayName: 'US Dollar / Hong Kong Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/SGD', displayName: 'US Dollar / Singapore Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/INR', displayName: 'US Dollar / Indian Rupee'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/KRW', displayName: 'US Dollar / South Korean Won'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/SEK', displayName: 'US Dollar / Swedish Krona'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/MXN', displayName: 'US Dollar / Mexican Peso'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/NZD', displayName: 'US Dollar / New Zealand Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'USD/NOK', displayName: 'US Dollar / Norwegian Krone'),
+  Instrument(assetClass: AssetClass.forex, key: 'EUR/GBP', displayName: 'Euro / British Pound'),
+  Instrument(assetClass: AssetClass.forex, key: 'EUR/JPY', displayName: 'Euro / Japanese Yen'),
+  Instrument(assetClass: AssetClass.forex, key: 'EUR/CHF', displayName: 'Euro / Swiss Franc'),
+  Instrument(assetClass: AssetClass.forex, key: 'GBP/JPY', displayName: 'British Pound / Japanese Yen'),
+  Instrument(assetClass: AssetClass.forex, key: 'AUD/JPY', displayName: 'Australian Dollar / Japanese Yen'),
+  Instrument(assetClass: AssetClass.forex, key: 'EUR/AUD', displayName: 'Euro / Australian Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'EUR/CAD', displayName: 'Euro / Canadian Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'GBP/AUD', displayName: 'British Pound / Australian Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'GBP/CAD', displayName: 'British Pound / Canadian Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'AUD/CAD', displayName: 'Australian Dollar / Canadian Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'CAD/JPY', displayName: 'Canadian Dollar / Japanese Yen'),
+  Instrument(assetClass: AssetClass.forex, key: 'CHF/JPY', displayName: 'Swiss Franc / Japanese Yen'),
+  Instrument(assetClass: AssetClass.forex, key: 'NZD/JPY', displayName: 'New Zealand Dollar / Japanese Yen'),
+  Instrument(assetClass: AssetClass.forex, key: 'EUR/NZD', displayName: 'Euro / New Zealand Dollar'),
+  Instrument(assetClass: AssetClass.forex, key: 'GBP/CHF', displayName: 'British Pound / Swiss Franc'),
+
+  // Stocks (30)
+  Instrument(assetClass: AssetClass.stock, key: 'NVDA', displayName: 'NVIDIA'),
+  Instrument(assetClass: AssetClass.stock, key: 'TSLA', displayName: 'Tesla'),
+  Instrument(assetClass: AssetClass.stock, key: 'AAPL', displayName: 'Apple'),
+  Instrument(assetClass: AssetClass.stock, key: 'AMZN', displayName: 'Amazon'),
+  Instrument(assetClass: AssetClass.stock, key: 'AMD', displayName: 'AMD'),
+  Instrument(assetClass: AssetClass.stock, key: 'MSFT', displayName: 'Microsoft'),
+  Instrument(assetClass: AssetClass.stock, key: 'GOOGL', displayName: 'Alphabet'),
+  Instrument(assetClass: AssetClass.stock, key: 'META', displayName: 'Meta'),
+  Instrument(assetClass: AssetClass.stock, key: 'AVGO', displayName: 'Broadcom'),
+  Instrument(assetClass: AssetClass.stock, key: 'INTC', displayName: 'Intel'),
+  Instrument(assetClass: AssetClass.stock, key: 'PLTR', displayName: 'Palantir'),
+  Instrument(assetClass: AssetClass.stock, key: 'MU', displayName: 'Micron'),
+  Instrument(assetClass: AssetClass.stock, key: 'ORCL', displayName: 'Oracle'),
+  Instrument(assetClass: AssetClass.stock, key: 'NFLX', displayName: 'Netflix'),
+  Instrument(assetClass: AssetClass.stock, key: 'AMAT', displayName: 'Applied Materials'),
+  Instrument(assetClass: AssetClass.stock, key: 'QCOM', displayName: 'Qualcomm'),
+  Instrument(assetClass: AssetClass.stock, key: 'MSTR', displayName: 'Strategy'),
+  Instrument(assetClass: AssetClass.stock, key: 'BAC', displayName: 'Bank of America'),
+  Instrument(assetClass: AssetClass.stock, key: 'JPM', displayName: 'JPMorgan'),
+  Instrument(assetClass: AssetClass.stock, key: 'F', displayName: 'Ford'),
+  Instrument(assetClass: AssetClass.stock, key: 'NIO', displayName: 'NIO'),
+  Instrument(assetClass: AssetClass.stock, key: 'SOFI', displayName: 'SoFi'),
+  Instrument(assetClass: AssetClass.stock, key: 'COIN', displayName: 'Coinbase'),
+  Instrument(assetClass: AssetClass.stock, key: 'MARA', displayName: 'MARA Holdings'),
+  Instrument(assetClass: AssetClass.stock, key: 'SMCI', displayName: 'Super Micro Computer'),
+  Instrument(assetClass: AssetClass.stock, key: 'PLUG', displayName: 'Plug Power'),
+  Instrument(assetClass: AssetClass.stock, key: 'PFE', displayName: 'Pfizer'),
+  Instrument(assetClass: AssetClass.stock, key: 'C', displayName: 'Citigroup'),
+  Instrument(assetClass: AssetClass.stock, key: 'WMT', displayName: 'Walmart'),
+  Instrument(assetClass: AssetClass.stock, key: 'XOM', displayName: 'Exxon Mobil'),
+
+  // Crypto (40)
+  Instrument(assetClass: AssetClass.crypto, key: 'BTC', displayName: 'Bitcoin'),
+  Instrument(assetClass: AssetClass.crypto, key: 'ETH', displayName: 'Ethereum'),
+  Instrument(assetClass: AssetClass.crypto, key: 'BNB', displayName: 'BNB'),
+  Instrument(assetClass: AssetClass.crypto, key: 'XRP', displayName: 'XRP'),
+  Instrument(assetClass: AssetClass.crypto, key: 'SOL', displayName: 'Solana'),
+  Instrument(assetClass: AssetClass.crypto, key: 'TRX', displayName: 'TRON'),
+  Instrument(assetClass: AssetClass.crypto, key: 'HYPE', displayName: 'Hyperliquid'),
+  Instrument(assetClass: AssetClass.crypto, key: 'ZEC', displayName: 'Zcash'),
+  Instrument(assetClass: AssetClass.crypto, key: 'DOGE', displayName: 'Dogecoin'),
+  Instrument(assetClass: AssetClass.crypto, key: 'ADA', displayName: 'Cardano'),
+  Instrument(assetClass: AssetClass.crypto, key: 'LINK', displayName: 'Chainlink'),
+  Instrument(assetClass: AssetClass.crypto, key: 'BCH', displayName: 'Bitcoin Cash'),
+  Instrument(assetClass: AssetClass.crypto, key: 'XLM', displayName: 'Stellar'),
+  Instrument(assetClass: AssetClass.crypto, key: 'SUI', displayName: 'Sui'),
+  Instrument(assetClass: AssetClass.crypto, key: 'LTC', displayName: 'Litecoin'),
+  Instrument(assetClass: AssetClass.crypto, key: 'AVAX', displayName: 'Avalanche'),
+  Instrument(assetClass: AssetClass.crypto, key: 'HBAR', displayName: 'Hedera'),
+  Instrument(assetClass: AssetClass.crypto, key: 'TON', displayName: 'Toncoin'),
+  Instrument(assetClass: AssetClass.crypto, key: 'SHIB', displayName: 'Shiba Inu'),
+  Instrument(assetClass: AssetClass.crypto, key: 'DOT', displayName: 'Polkadot'),
+  Instrument(assetClass: AssetClass.crypto, key: 'UNI', displayName: 'Uniswap'),
+  Instrument(assetClass: AssetClass.crypto, key: 'WSTETH', displayName: 'Wrapped staked ETH'),
+  Instrument(assetClass: AssetClass.crypto, key: 'DAI', displayName: 'Dai'),
+  Instrument(assetClass: AssetClass.crypto, key: 'NEAR', displayName: 'NEAR Protocol'),
+  Instrument(assetClass: AssetClass.crypto, key: 'AAVE', displayName: 'Aave'),
+  Instrument(assetClass: AssetClass.crypto, key: 'ICP', displayName: 'Internet Computer'),
+  Instrument(assetClass: AssetClass.crypto, key: 'ATOM', displayName: 'Cosmos'),
+  Instrument(assetClass: AssetClass.crypto, key: 'FIL', displayName: 'Filecoin'),
+  Instrument(assetClass: AssetClass.crypto, key: 'APT', displayName: 'Aptos'),
+  Instrument(assetClass: AssetClass.crypto, key: 'ETC', displayName: 'Ethereum Classic'),
+  Instrument(assetClass: AssetClass.crypto, key: 'VET', displayName: 'VeChain'),
+  Instrument(assetClass: AssetClass.crypto, key: 'CRO', displayName: 'Cronos'),
+  Instrument(assetClass: AssetClass.crypto, key: 'ARB', displayName: 'Arbitrum'),
+  Instrument(assetClass: AssetClass.crypto, key: 'OP', displayName: 'Optimism'),
+  Instrument(assetClass: AssetClass.crypto, key: 'ALGO', displayName: 'Algorand'),
+  Instrument(assetClass: AssetClass.crypto, key: 'RENDER', displayName: 'Render'),
+  Instrument(assetClass: AssetClass.crypto, key: 'INJ', displayName: 'Injective'),
+  Instrument(assetClass: AssetClass.crypto, key: 'TAO', displayName: 'Bittensor'),
+  Instrument(assetClass: AssetClass.crypto, key: 'KAS', displayName: 'Kaspa'),
+  Instrument(assetClass: AssetClass.crypto, key: 'GRT', displayName: 'The Graph'),
+];

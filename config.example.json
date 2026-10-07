@@ -1,0 +1,18 @@
+{
+  "poll_interval_sec": 5,
+  "remote_session": true,
+  "mt5": { "mcp_host": "127.0.0.1", "mcp_port": 22346 },
+  "cdp": { "host": "127.0.0.1", "port": 9222 },
+  "technique": { "range_swing_count": 20 },
+  "risk": {
+    "daily_loss_limit_pct": 5,
+    "max_positions": 3,
+    "max_per_symbol": 1,
+    "max_trade_size_pct": 2,
+    "cooldown_sec": 900
+  },
+  "symbols": [
+    { "tradingview_symbol": "BTCUSDT", "mt5_symbol": "BTCUSD.lv" }
+  ],
+  "heartbeat": { "alert_every_min": 15 }
+}

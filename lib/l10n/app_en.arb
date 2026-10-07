@@ -1,0 +1,7 @@
+{
+  "@@locale": "en",
+  "appTitle": "TradingMT5",
+  "@appTitle": {
+    "description": "The application's title"
+  }
+}
