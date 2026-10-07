@@ -29,11 +29,33 @@ import 'package:trading_mt5/data/models/app_config.dart';
 /// this: a process reusing the PID almost certainly isn't named
 /// `tradingmt5_engine`, so this can only match the real thing.
 bool _isProcessAlive(int candidatePid) {
+  if (Platform.isWindows) return _isProcessAliveWindows(candidatePid);
   try {
     final cmdlineFile = File('/proc/$candidatePid/cmdline');
     if (!cmdlineFile.existsSync()) return false;
     final cmdline = cmdlineFile.readAsStringSync();
     return cmdline.contains('tradingmt5_engine');
+  } catch (_) {
+    return false;
+  }
+}
+
+/// Windows port (2026-10-07, UNTESTED against a real Windows machine) of
+/// the same PID-reuse guard above - no /proc on Windows, so ask `tasklist`
+/// for that specific PID and check the image name it reports matches ours,
+/// same "don't trust a bare PID match" reasoning as the Linux version's own
+/// doc comment.
+bool _isProcessAliveWindows(int candidatePid) {
+  try {
+    final result = Process.runSync('tasklist', [
+      '/FI',
+      'PID eq $candidatePid',
+      '/FO',
+      'CSV',
+      '/NH',
+    ]);
+    final out = result.stdout.toString();
+    return out.toLowerCase().contains('tradingmt5_engine.exe');
   } catch (_) {
     return false;
   }
@@ -102,7 +124,13 @@ void main() async {
   }
 
   ProcessSignal.sigint.watch().listen((_) => onStopSignal('SIGINT'));
-  ProcessSignal.sigterm.watch().listen((_) => onStopSignal('SIGTERM'));
+  // sigterm isn't supported on Windows (2026-10-07, Windows port) - watching
+  // it there throws. [EngineControlRepository]'s Windows stop path (direct
+  // taskkill, no systemctl there) relies on the SAME force-exit watchdog
+  // above as its real backstop instead.
+  if (!Platform.isWindows) {
+    ProcessSignal.sigterm.watch().listen((_) => onStopSignal('SIGTERM'));
+  }
 
   await engine.run();
 

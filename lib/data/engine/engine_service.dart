@@ -501,13 +501,7 @@ class EngineService {
         message: 'Launching MT5',
         connected: false,
       );
-      final home =
-          Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '.';
-      final launched = await ensureMt5Running(
-        config.mt5.mcpHost,
-        config.mt5.mcpPort,
-        Mt5LaunchConfig.defaultForHome(home),
-      );
+      final launched = await ensureMt5Running(config.mt5.mcpHost, config.mt5.mcpPort, _mt5LaunchConfig());
       if (!launched) {
         logger.log('MT5 did not come up after launch attempt.', level: 'ERROR');
         _writeStatus(
@@ -898,11 +892,33 @@ class EngineService {
       level: 'CRITICAL',
     );
     try {
-      final binaryPath = LaunchConfig.defaultForHome(home).binaryPath;
-      await Process.run('pkill', ['-9', '-f', binaryPath]);
+      final binaryPath = _tradingViewLaunchConfig(home).binaryPath;
+      if (Platform.isWindows) {
+        final imageName = binaryPath.split(RegExp(r'[\\/]')).last;
+        await Process.run('taskkill', ['/F', '/IM', imageName]);
+      } else {
+        await Process.run('pkill', ['-9', '-f', binaryPath]);
+      }
     } catch (e) {
       logger.log('TRADINGVIEW WATCHDOG: force-kill failed: $e');
     }
+  }
+
+  /// Platform-appropriate MT5 launch config - Windows (UNTESTED against a
+  /// real Windows machine) needs no home/display/Wine plumbing at all; see
+  /// [Mt5LaunchConfig.defaultForWindows]'s own doc comment.
+  Mt5LaunchConfig _mt5LaunchConfig() {
+    if (Platform.isWindows) return Mt5LaunchConfig.defaultForWindows();
+    final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '.';
+    return Mt5LaunchConfig.defaultForHome(home);
+  }
+
+  /// Platform-appropriate TradingView launch config - see
+  /// [LaunchConfig.defaultForWindows]'s own doc comment (UNTESTED against a
+  /// real Windows machine).
+  LaunchConfig _tradingViewLaunchConfig(String home) {
+    if (Platform.isWindows) return LaunchConfig.defaultForWindows();
+    return LaunchConfig.defaultForHome(home);
   }
 
   /// Ensures TradingView is up, the chart API is ready, and both required
@@ -1001,7 +1017,7 @@ class EngineService {
       final launched = await launchTradingView(
         host,
         port,
-        LaunchConfig.defaultForHome(home),
+        _tradingViewLaunchConfig(home),
         remoteSession: config.remoteSession,
       );
       if (!launched) {

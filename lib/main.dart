@@ -75,7 +75,12 @@ void main() {
       return AppExitResponse.exit;
     },
   );
-  for (final signal in [ProcessSignal.sigint, ProcessSignal.sigterm]) {
+  // sigterm isn't supported on Windows (2026-10-07, Windows port) - only
+  // sigint (Ctrl+C/Ctrl+Break) is; watching it there throws.
+  final signals = Platform.isWindows
+      ? [ProcessSignal.sigint]
+      : [ProcessSignal.sigint, ProcessSignal.sigterm];
+  for (final signal in signals) {
     signal.watch().listen((_) async {
       await _controlRepo.pause();
       exit(0);
@@ -86,6 +91,10 @@ void main() {
 Future<void> _ensureMt5OnStartup() async {
   final storage = CoreStorage.instance;
   final config = loadOrInitConfig(storage);
+  if (Platform.isWindows) {
+    await ensureMt5Running(config.mt5.mcpHost, config.mt5.mcpPort, Mt5LaunchConfig.defaultForWindows());
+    return;
+  }
   final home = Platform.environment['HOME'] ?? '';
   final defaults = Mt5LaunchConfig.defaultForHome(home);
   await ensureMt5Running(

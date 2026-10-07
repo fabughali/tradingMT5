@@ -83,6 +83,17 @@ class LaunchConfig {
     binaryPath: '$home/Applications/tradingview/opt/TradingView/tradingview',
     desktopFile: '$home/.local/share/applications/tradingview.desktop',
   );
+
+  /// Windows port (2026-10-07, UNTESTED against a real Windows machine -
+  /// verify this default install path once an actual build runs there).
+  /// Electron apps built with electron-builder (which TradingView Desktop
+  /// is) default to a per-user install under `%LOCALAPPDATA%\Programs`,
+  /// no admin rights required - [launchTradingView]'s own Windows branch
+  /// only uses this as a fallback the user can override.
+  static LaunchConfig defaultForWindows() {
+    final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
+    return LaunchConfig(binaryPath: '$localAppData\\Programs\\tradingview\\TradingView.exe');
+  }
 }
 
 Future<bool> isCdpUp(String host, int port) async {
@@ -116,6 +127,10 @@ Future<bool> launchTradingView(
   // user actually wants to see the chart.
   bool remoteSession = true,
 }) async {
+  if (Platform.isWindows) {
+    return _launchTradingViewWindows(host, port, config, timeout: timeout);
+  }
+
   try {
     await Process.run('pkill', ['-9', '-f', config.binaryPath]);
   } catch (_) {}
@@ -201,6 +216,48 @@ Future<bool> launchTradingView(
   return false;
 }
 
+/// Windows port of [launchTradingView] (2026-10-07, UNTESTED against a
+/// real Windows machine). Much simpler than the Linux path: no
+/// Xvfb/virtualDisplay isolation needed at all - the crash this whole
+/// mechanism exists to work around (TradingView killing Mutter/GNOME Shell)
+/// is specific to that Linux compositor; nothing like it has ever been
+/// reported here, so TradingView just launches visibly, same as any other
+/// Windows app. No DISPLAY/XAUTHORITY/DBUS/XDG_RUNTIME_DIR concepts exist
+/// on Windows, and `--ozone-platform=x11` is a Linux-only Chromium flag -
+/// omitted entirely. Windows resolves the taskbar icon from the exe's own
+/// identity, so none of the GIO_LAUNCHED_DESKTOP_FILE dance applies either.
+Future<bool> _launchTradingViewWindows(
+  String host,
+  int port,
+  LaunchConfig config, {
+  required Duration timeout,
+}) async {
+  await _taskkillByBinaryPath(config.binaryPath);
+  await Future<void>.delayed(const Duration(seconds: 2));
+
+  await Process.start(
+    config.binaryPath,
+    ['--remote-debugging-port=$port'],
+    mode: ProcessStartMode.detached,
+  );
+
+  final deadline = DateTime.now().add(timeout);
+  while (DateTime.now().isBefore(deadline)) {
+    if (await isCdpUp(host, port)) return true;
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+  }
+  return false;
+}
+
+/// `taskkill /IM` wants just the executable's filename, not a full path -
+/// unlike Linux's `pkill -f`, which matches anywhere in the command line.
+Future<void> _taskkillByBinaryPath(String binaryPath) async {
+  final imageName = binaryPath.split(RegExp(r'[\\/]')).last;
+  try {
+    await Process.run('taskkill', ['/F', '/IM', imageName]);
+  } catch (_) {}
+}
+
 /// Kills TradingView Desktop if it's running, and waits until CDP stops
 /// responding (or gives up after [timeout]) so the caller knows the process
 /// is actually gone before reporting success.
@@ -210,9 +267,13 @@ Future<bool> stopTradingView(
   LaunchConfig config, {
   Duration timeout = const Duration(seconds: 15),
 }) async {
-  try {
-    await Process.run('pkill', ['-9', '-f', config.binaryPath]);
-  } catch (_) {}
+  if (Platform.isWindows) {
+    await _taskkillByBinaryPath(config.binaryPath);
+  } else {
+    try {
+      await Process.run('pkill', ['-9', '-f', config.binaryPath]);
+    } catch (_) {}
+  }
 
   final deadline = DateTime.now().add(timeout);
   while (DateTime.now().isBefore(deadline)) {

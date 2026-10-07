@@ -1,5 +1,7 @@
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 import '../../core/core_storage.dart';
 import '../identity/auto_managed_store.dart';
 import '../identity/last_tag_store.dart';
@@ -236,6 +238,9 @@ class EngineControlRepository {
   }
 
   Future<void> _setEngineServiceActive(bool active) async {
+    if (Platform.isWindows) {
+      return active ? _startEngineWindows() : _stopEngineWindows();
+    }
     final action = active ? 'start' : 'stop';
     try {
       final result = await Process.run('systemctl', [
@@ -252,6 +257,43 @@ class EngineControlRepository {
       }
     } catch (e) {
       _logger.log('Failed to $action the engine service: $e', level: 'ERROR');
+    }
+  }
+
+  /// Windows has no systemd (2026-10-07, Windows port, UNTESTED against a
+  /// real Windows machine) - there's no service to ask to start/stop, so
+  /// Power directly spawns/kills the engine PROCESS itself instead. The
+  /// engine exe is expected to sit right next to the GUI's own exe (the
+  /// installer/CI build ships both in the same folder) - [_enginePath]
+  /// resolves that relative to [Platform.resolvedExecutable] rather than
+  /// hardcoding an absolute install path.
+  String get _enginePath {
+    final dir = p.dirname(Platform.resolvedExecutable);
+    return p.join(dir, 'tradingmt5_engine.exe');
+  }
+
+  Future<void> _startEngineWindows() async {
+    try {
+      await Process.start(_enginePath, const [], mode: ProcessStartMode.detached);
+    } catch (e) {
+      _logger.log('Failed to start the engine process: $e', level: 'ERROR');
+    }
+  }
+
+  /// Graceful-then-forceful stop, same philosophy as bin/engine.dart's own
+  /// `forceExitAfter` watchdog (sigterm isn't available on Windows at all,
+  /// so there's no graceful signal to send here - this just gives the
+  /// engine's OWN heartbeat-staleness/PAUSE-file self-stop a short window
+  /// before falling back to a hard kill).
+  Future<void> _stopEngineWindows() async {
+    final pidRaw = _storage.readString(_storage.pidFile);
+    final pid = int.tryParse((pidRaw ?? '').trim());
+    if (pid == null) return;
+    await Future<void>.delayed(const Duration(seconds: 2));
+    try {
+      await Process.run('taskkill', ['/F', '/PID', '$pid']);
+    } catch (e) {
+      _logger.log('Failed to stop the engine process (pid=$pid): $e', level: 'ERROR');
     }
   }
 
