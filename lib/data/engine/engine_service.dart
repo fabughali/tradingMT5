@@ -1025,7 +1025,26 @@ class EngineService {
       }
     }
 
-    final client = _cdp ?? await connectToChart(host, port);
+    final CdpClient client;
+    try {
+      client = _cdp ?? await connectToChart(host, port);
+    } catch (e) {
+      // Found live 2026-10-07 ("trading view is loading forever"): a
+      // TradingView process that still accepts a bare TCP connect to the
+      // CDP port but never completes a single real protocol round-trip
+      // (e.g. "CDP request timed out ... for Runtime.enable") throws
+      // straight out of [connectToChart], which used to skip the watchdog
+      // below entirely - [_consecutiveStuckAttempts] never incremented for
+      // THIS failure mode, so a hung-but-port-open TradingView retried
+      // forever against the exact same frozen process instead of ever
+      // getting force-killed and relaunched fresh. Same "alive but stuck"
+      // signature [_forceRelaunchTradingViewIfStuck] already exists to
+      // catch for the `!ready` case below - just needed to also catch it
+      // here, one step earlier.
+      _cdp = null;
+      await _forceRelaunchTradingViewIfStuck(home);
+      rethrow;
+    }
     final ready = await waitForChartApiReady(client);
     if (!ready) {
       client.close();
@@ -1148,6 +1167,13 @@ class EngineService {
     final tvSymbol = mapping.tradingViewSymbol;
     final mt5Symbol = mapping.mt5Symbol;
     final barKey = '${category.wireValue}|$tvSymbol';
+
+    // Drop any leftover Supertrend Plus pending entry for this pair - same
+    // reasoning as [_checkOneSymbolSupertrend]'s own matching clear of
+    // [pendingSignals], mirrored here so switching technique in either
+    // direction never leaves the OTHER technique's own stale pending
+    // candidate sitting around. Cheap no-op once already clear.
+    supertrendPending.clear(barKey);
 
     // Cheap early gate (2026-09-28, per the user: "link only need to be
     // checked every 3 min") - decide whether this symbol is even due for a
@@ -1768,6 +1794,18 @@ class EngineService {
     final tvSymbol = mapping.tradingViewSymbol;
     final mt5Symbol = mapping.mt5Symbol;
     final barKey = '${category.wireValue}|$tvSymbol';
+
+    // Drop any leftover Signal Flip pending entry for this pair (2026-10-07,
+    // per the user: "why there is LL/HH in auto table while the technique
+    // selected is supertrend????" - found live: a pair that had a candidate
+    // HH/LL/BUY/SELL sitting in [pendingSignals] from BEFORE switching to
+    // Supertrend Plus kept showing it in the Dashboard's Close A column
+    // forever after, since this method only ever reads/writes/clears
+    // [supertrendPending] - [pendingSignals] is never Supertrend Plus's to
+    // leave alone, it belongs entirely to Signal Flip, so nothing here was
+    // ever going to clear a stale entry on its own). Cheap no-op once
+    // already clear.
+    pendingSignals.clear(barKey);
 
     final existing = await _findAppPosition(mt5Symbol, category, tvSymbol);
 
