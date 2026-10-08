@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/account_snapshot.dart';
 import '../../data/models/app_config.dart';
+import '../../data/models/decision_technique.dart';
 import '../../data/models/power_health.dart';
 import '../../data/models/watched_symbol.dart';
 import '../../data/providers/app_providers.dart';
@@ -26,6 +27,7 @@ class DashboardScreen extends ConsumerWidget {
     final config = ref.watch(configProvider);
     final autoManagedBases = ref.watch(autoManagedTvBasesProvider).asData?.value ?? const <String>{};
     final historyPnlSince = ref.watch(historyPnlSinceProvider);
+    final decisionTechnique = ref.watch(decisionTechniqueProvider);
 
     return Scaffold(
       appBar: AppBar(title: const Text('Dashboard')),
@@ -90,6 +92,7 @@ class DashboardScreen extends ConsumerWidget {
           autoTrades.when(
             data: (rows) => AutoTradesCard(
               rows: rows,
+              hideUpdateCloseColumns: decisionTechnique.id == DecisionTechnique.supertrendPlus.id,
               onToggleAuto: (tvSymbol, on) {
                 ref.read(controlRepositoryProvider).setAutoManaged(tvSymbol, on);
                 ref.invalidate(autoTradesProvider);

@@ -1752,15 +1752,32 @@ class EngineService {
 
     final existing = await _findAppPosition(mt5Symbol, category, tvSymbol);
 
+    // Survive-one-candle gate REMOVED for a currently-running trade
+    // (2026-10-08, per the user: "for currently running trades, i dont want
+    // app to wait for close a and close b to confirm signal flipping. i
+    // want app once opposite signal appears, then app need to take the
+    // action. this only applies on supertrend technique") - a running
+    // position now flips the instant its opposite signal is TRIPLE-READ
+    // confirmed (still "1 million sure" - the triple-read a few lines below
+    // is never skipped), with no extra-candle wait on top of that any more.
+    // Still applies in full to a pair with NO running position (a fresh
+    // first-ever open, or a not-yet-filled resting order) - the user's own
+    // wording ("currently running trades ... signal flipping") only
+    // describes an already-open position reversing, not a brand-new entry,
+    // so that case is deliberately left exactly as it was before this
+    // change. [supertrendPending] stays the mechanism for that remaining
+    // case; it's simply never consulted at all once [existing] is non-null.
+    final skipExtraCandleWait = existing != null;
+
     // Own survive-one-candle gate, using the SEPARATE [supertrendPending]
     // store (2026-10-06, per the user: "you have to make same signal check
     // as close a close b .. so you are sure about signal flipping") - never
     // [pendingSignals], so the Dashboard's "Close A"/"Update" columns stay
     // blank for Supertrend-driven pairs with zero changes to that GUI code
     // (see [CoreStorage.supertrendPendingFile]'s own doc comment). Bypassed
-    // entirely when [immediate].
+    // entirely when [immediate] or [skipExtraCandleWait].
     final pending = supertrendPending.get(barKey);
-    if (!immediate && pending != null) {
+    if (!immediate && !skipExtraCandleWait && pending != null) {
       final checkAt = pending.barTime + category.candlePeriod.inSeconds * 2;
       final nowEpoch = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
       if (nowEpoch < checkAt) return;
@@ -1836,9 +1853,12 @@ class EngineService {
 
     // "Survive one full extra candle" wait gate, part 2 - same shape as
     // [_checkOneSymbol]'s, just against [supertrendPending] instead.
-    // Bypassed entirely when [immediate].
+    // Bypassed entirely when [immediate] or [skipExtraCandleWait] (a
+    // currently-running trade - see this method's own doc comment above on
+    // [skipExtraCandleWait] for why).
     final latestWire = signalTagToWire(latest.tag);
-    if (!immediate && (pending == null || pending.tag != latestWire || pending.barTime != latest.time)) {
+    if (!immediate && !skipExtraCandleWait &&
+        (pending == null || pending.tag != latestWire || pending.barTime != latest.time)) {
       supertrendPending.set(barKey, latestWire, latest.time);
       logger.log(
         '$tvSymbol ($category): supertrend $latestWire@${latest.time} triple-confirmed - '
@@ -1850,6 +1870,11 @@ class EngineService {
       logger.log(
         '$tvSymbol ($category): technique switch reverse check - '
         'supertrend $latestWire@${latest.time} triple-confirmed, acting immediately.',
+      );
+    } else if (skipExtraCandleWait) {
+      logger.log(
+        '$tvSymbol ($category): supertrend $latestWire@${latest.time} triple-confirmed - '
+        'running trade, acting immediately (no extra-candle wait for a signal flip).',
       );
     }
     // Confirmed unchanged through a full extra candle - act on it now.

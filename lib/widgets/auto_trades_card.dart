@@ -23,9 +23,27 @@ class AutoTradesCard extends StatefulWidget {
     required this.pnlSinceTimestamp,
     required this.onResetPnlSince,
     required this.liveAccountPnl,
+    this.hideUpdateCloseColumns = false,
   });
 
   final List<AutoTradeRow> rows;
+
+  /// Hides the Update/Close A/Close B columns entirely (2026-10-08, per the
+  /// user: "hide close a, close b columns... once supertrend technique
+  /// choosen", then "and update too") when the active [DecisionTechnique] is
+  /// Supertrend Plus - all three columns are Signal Flip-only concepts
+  /// (cross-tag confirmation, and the "survive one extra candle" preview)
+  /// that were already always blank for a Supertrend-driven pair even
+  /// before this flag existed (see [AutoTradeRow.closeATag]'s own doc
+  /// comment: "they are always blank" by design, never written). Close A/B
+  /// are now doubly meaningless for a currently-running Supertrend trade
+  /// specifically, since that wait no longer applies to one at all (see
+  /// EngineService._checkOneSymbolSupertrend's own doc comment on
+  /// `skipExtraCandleWait`) - rather than show three columns that can never
+  /// hold anything for this technique, hide them outright. Caller passes
+  /// this based on [decisionTechniqueProvider]; this widget has no
+  /// technique awareness of its own.
+  final bool hideUpdateCloseColumns;
 
   /// tvSymbol, new Auto state.
   final void Function(String, bool) onToggleAuto;
@@ -368,26 +386,28 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                   // screen width" - reclaims a little width on every one of
                   // the table's ~18 columns, which adds up.
                   columnSpacing: 14,
-                  columns: const [
-                    DataColumn(label: Text('Symbol')),
-                    DataColumn(label: Text('Trade ID')),
-                    DataColumn(label: Text('Status')),
-                    DataColumn(label: Text('Side')),
-                    DataColumn(label: Text('Price')),
-                    DataColumn(label: Text('SL')),
-                    DataColumn(label: Text('TP')),
-                    DataColumn(label: Text('P&L')),
-                    DataColumn(label: Center(child: Text('Volume'))),
-                    DataColumn(label: Text('Open')),
-                    DataColumn(label: Text('Update')),
-                    DataColumn(label: Text('Close A')),
-                    DataColumn(label: Text('Close B')),
-                    DataColumn(label: Text('Duration')),
-                    DataColumn(label: Text('Interval')),
-                    DataColumn(label: Text('Check')),
-                    DataColumn(label: Text('Auto')),
-                    DataColumn(label: Text('Last')),
-                    DataColumn(label: Text('')),
+                  columns: [
+                    const DataColumn(label: Text('Symbol')),
+                    const DataColumn(label: Text('Trade ID')),
+                    const DataColumn(label: Text('Status')),
+                    const DataColumn(label: Text('Side')),
+                    const DataColumn(label: Text('Price')),
+                    const DataColumn(label: Text('SL')),
+                    const DataColumn(label: Text('TP')),
+                    const DataColumn(label: Text('P&L')),
+                    const DataColumn(label: Center(child: Text('Volume'))),
+                    const DataColumn(label: Text('Open')),
+                    if (!widget.hideUpdateCloseColumns) ...[
+                      const DataColumn(label: Text('Update')),
+                      const DataColumn(label: Text('Close A')),
+                      const DataColumn(label: Text('Close B')),
+                    ],
+                    const DataColumn(label: Text('Duration')),
+                    const DataColumn(label: Text('Interval')),
+                    const DataColumn(label: Text('Check')),
+                    const DataColumn(label: Text('Auto')),
+                    const DataColumn(label: Text('Last')),
+                    const DataColumn(label: Text('')),
                   ],
                   rows: [
                     for (final row in rows)
@@ -594,48 +614,50 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                                     ],
                                   ),
                           ),
-                          DataCell(
-                            Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(_fmtTag(row.updateTag), style: const TextStyle(fontWeight: FontWeight.w600)),
-                                if (row.updateAt != null)
-                                  Text(
-                                    _fmtTvTime(row.updateAt),
-                                    style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-                                  ),
-                              ],
+                          if (!widget.hideUpdateCloseColumns) ...[
+                            DataCell(
+                              Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(_fmtTag(row.updateTag), style: const TextStyle(fontWeight: FontWeight.w600)),
+                                  if (row.updateAt != null)
+                                    Text(
+                                      _fmtTvTime(row.updateAt),
+                                      style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                                    ),
+                                ],
+                              ),
                             ),
-                          ),
-                          DataCell(
-                            Column(
-                              mainAxisSize: MainAxisSize.min,
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  _fmtTag(row.closeATag),
-                                  style: TextStyle(
-                                    fontWeight: FontWeight.w600,
-                                    color: row.closeATag != null ? Colors.orange : null,
-                                  ),
-                                ),
-                                if (row.closeAAt != null)
+                            DataCell(
+                              Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
                                   Text(
-                                    _fmtTvTime(row.closeAAt),
-                                    style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                                    _fmtTag(row.closeATag),
+                                    style: TextStyle(
+                                      fontWeight: FontWeight.w600,
+                                      color: row.closeATag != null ? Colors.orange : null,
+                                    ),
                                   ),
-                              ],
+                                  if (row.closeAAt != null)
+                                    Text(
+                                      _fmtTvTime(row.closeAAt),
+                                      style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                                    ),
+                                ],
+                              ),
                             ),
-                          ),
-                          DataCell(
-                            row.closeBEta == null
-                                ? const Text('—')
-                                : Text(
-                                    'watching · ${_fmtTvTimeExact(row.closeBEta!)}',
-                                    style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-                                  ),
-                          ),
+                            DataCell(
+                              row.closeBEta == null
+                                  ? const Text('—')
+                                  : Text(
+                                      'watching · ${_fmtTvTimeExact(row.closeBEta!)}',
+                                      style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                                    ),
+                            ),
+                          ],
                           DataCell(Text(_fmtDuration(row.openedAt))),
                           DataCell(Text(AutoCategory.oneHour.label)),
                           DataCell(
