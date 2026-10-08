@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/core_constants.dart';
@@ -719,12 +720,26 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
 class AboutCard extends StatelessWidget {
   const AboutCard({super.key});
 
-  /// Keep in sync with pubspec.yaml's `version:` field (2026-10-03, per the
-  /// user: "app need to have a version") — no `package_info_plus`
-  /// dependency added just for one static string, since this app isn't
-  /// published anywhere that string would be read from a package manifest
-  /// at runtime.
-  static const String appVersion = '1.0.0+1';
+  /// Reads the real version straight out of pubspec.yaml itself, bundled
+  /// as a plain asset (2026-10-08, per the user: "why app version still
+  /// fixed?? ... is exe file matching with linux?" - found live: the
+  /// PREVIOUS version of this card showed a hand-typed string constant
+  /// that was supposed to be "kept in sync with pubspec.yaml" manually on
+  /// every bump - it was updated exactly once, at `1.0.0+1`, and silently
+  /// drifted for every release after that (1.1.0 through 1.2.2) since
+  /// nothing ever enforced the sync. `package_info_plus` would normally be
+  /// the standard fix, but this project's working directory sits on a
+  /// FAT32-formatted drive, which doesn't support symlinks at all -
+  /// Flutter's native-plugin build step needs one for ANY plugin with real
+  /// platform code and fails outright here. Reading pubspec.yaml's own
+  /// `version:` line back out of the asset bundle needs no native plugin
+  /// and no symlink, and is still a single source of truth - there is no
+  /// second copy left to drift from here on.
+  Future<String> _readVersion() async {
+    final text = await rootBundle.loadString('pubspec.yaml');
+    final match = RegExp(r'^version:\s*(\S+)', multiLine: true).firstMatch(text);
+    return match?.group(1) ?? 'unknown';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -732,9 +747,15 @@ class AboutCard extends StatelessWidget {
     return _SettingsCard(
       icon: Icons.info_outline,
       title: 'About',
-      child: Text(
-        '${CoreConstants.appName} · version $appVersion',
-        style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+      child: FutureBuilder<String>(
+        future: _readVersion(),
+        builder: (context, snapshot) {
+          final versionText = snapshot.data == null ? 'version …' : 'version ${snapshot.data}';
+          return Text(
+            '${CoreConstants.appName} · $versionText',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: scheme.onSurfaceVariant),
+          );
+        },
       ),
     );
   }
