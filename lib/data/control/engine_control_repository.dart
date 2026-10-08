@@ -5,7 +5,9 @@ import 'package:path/path.dart' as p;
 import '../../core/core_storage.dart';
 import '../identity/auto_managed_store.dart';
 import '../identity/last_tag_store.dart';
+import '../identity/pending_signal_store.dart';
 import '../identity/retired_store.dart';
+import '../identity/supertrend_pending_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
 import '../logging/app_logger.dart';
@@ -32,6 +34,8 @@ class EngineControlRepository {
       _terminateRequests = TerminateRequestStore(_storage),
       _tradeVolumes = TradeVolumeStore(_storage),
       _retired = RetiredStore(_storage),
+      _pendingSignals = PendingSignalStore(_storage),
+      _supertrendPending = SupertrendPendingStore(_storage),
       _logger = AppLogger(_storage);
 
   final CoreStorage _storage;
@@ -40,6 +44,8 @@ class EngineControlRepository {
   final TerminateRequestStore _terminateRequests;
   final TradeVolumeStore _tradeVolumes;
   final RetiredStore _retired;
+  final PendingSignalStore _pendingSignals;
+  final SupertrendPendingStore _supertrendPending;
 
   /// 2026-10-03, per the user: "if log did not tell you what i did in app
   /// then update/upgrade log to include everything happening auto or by
@@ -77,6 +83,24 @@ class EngineControlRepository {
       _autoManaged.addBase(tvSymbol);
       final wasRetired = _retired.isRetiredBase(tvSymbol);
       _retired.removeRetiredBases([tvSymbol]);
+      // Drop any leftover pending-signal candidate from a PREVIOUS stint
+      // under auto-management, for every category (2026-10-08, per the
+      // user: "why once user add pair to auto (while technique is
+      // supertrend) there is HH/LL in table >>> check adausd, shibusd" -
+      // found live: a pair being un-retired/re-added kept showing its old
+      // Signal Flip HH/LL candidate in the Dashboard's Close A column
+      // until the engine's OWN next cycle happened to check it (itself
+      // already fixed to clear the OTHER technique's leftover entry, but
+      // only reactively, on that pair's own next check - which could be
+      // minutes away depending on how many other pairs are ahead of it).
+      // Clearing immediately here, the instant the pair is re-added,
+      // means the table is correct right away instead of after an
+      // unpredictable wait.
+      for (final category in allAutoCategories) {
+        final barKey = '${category.wireValue}|$tvSymbol';
+        _pendingSignals.clear(barKey);
+        _supertrendPending.clear(barKey);
+      }
       _logUserAction(
         'Auto turned ON for $tvSymbol (Dashboard)'
         '${wasRetired ? ' - also un-retired (was stuck retired)' : ''}.',
