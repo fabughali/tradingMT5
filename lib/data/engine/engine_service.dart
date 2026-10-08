@@ -11,11 +11,13 @@ import '../identity/last_checked_store.dart';
 import '../identity/last_tag_store.dart';
 import '../identity/new_pair_wait_store.dart';
 import '../identity/open_position_store.dart';
+import '../identity/paused_pair_store.dart';
 import '../identity/pending_signal_store.dart';
 import '../identity/retired_store.dart';
 import '../identity/supertrend_pending_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
+import '../identity/unpause_check_request_store.dart';
 import '../identity/waiting_reason_store.dart';
 import '../identity/widen_applied_store.dart';
 import '../logging/app_logger.dart';
@@ -116,6 +118,8 @@ class EngineService {
     firstOpen = FirstOpenStore(storage);
     newPairWait = NewPairWaitStore(storage);
     supertrendPending = SupertrendPendingStore(storage);
+    paused = PausedPairStore(storage);
+    unpauseRequests = UnpauseCheckRequestStore(storage);
     // Backfill [firstOpen] from every past trade this app has ever closed,
     // so the new "wait for a confirmed opposite signal before a pair's
     // first-ever entry" gate (2026-10-06, per the user) only applies to
@@ -195,6 +199,8 @@ class EngineService {
   late final FirstOpenStore firstOpen;
   late final NewPairWaitStore newPairWait;
   late final SupertrendPendingStore supertrendPending;
+  late final PausedPairStore paused;
+  late final UnpauseCheckRequestStore unpauseRequests;
 
   /// Tickets the retroactive direction audit has already checked since the
   /// last time it was forced to re-run - in-memory only, see the audit's
@@ -835,6 +841,13 @@ class EngineService {
 
     await _reverseCheckOnTechniqueSwitchIfNeeded(technique);
 
+    // 2026-10-09, per the user - processed BEFORE the main per-symbol loop
+    // below so a just-unpaused pair's own later pass through that loop
+    // (same cycle) finds it already checked moments ago and skips via the
+    // normal retry-cooldown gate, instead of being checked twice in one
+    // cycle.
+    await _processAllPendingUnpauseChecks(technique);
+
     for (final category in allAutoCategories) {
       if (storage.fileExists(storage.autoCategoryPausedFileFor(category))) {
         continue;
@@ -842,6 +855,13 @@ class EngineService {
       final store = autoManagedByCategory[category]!;
       for (final tvSymbol in store.loadAutoManagedBases()) {
         if (retired.isRetiredBase(tvSymbol)) continue;
+        // 2026-10-09, per the user: "paused pair is still an auto pair but
+        // the current status is paused so engine will not take any action
+        // to this pair unless it is unpaused" - skipped exactly like a
+        // retired base, but WITHOUT leaving auto-managed-bases.json (see
+        // [PausedPairStore]'s own doc comment) - the row stays fully
+        // listed, whatever it was doing (running/waiting) untouched.
+        if (paused.isPaused(tvSymbol)) continue;
         // 2026-09-30, per the user: "once user press on power = terminate
         // ... it should be instant" - re-checked before EVERY symbol, not
         // just once at the top of the cycle, so a request doesn't have to
@@ -853,6 +873,10 @@ class EngineService {
         // on that given the risk of running two overlapping sessions
         // against a live account without more testing.
         await _processAllPendingTerminateRequests();
+        // Same "don't wait out the whole sweep" reasoning as the terminate
+        // drain immediately above, for an unpause-triggered instant check
+        // (2026-10-09).
+        await _processAllPendingUnpauseChecks(technique);
         if (!(await _maybeRunHealthCheck())) return;
         try {
           // Re-read symbols from config.json fresh every cycle (rather than
@@ -1172,6 +1196,11 @@ class EngineService {
       final store = autoManagedByCategory[category]!;
       for (final tvSymbol in store.loadAutoManagedBases()) {
         if (retired.isRetiredBase(tvSymbol)) continue;
+        // 2026-10-09, per the user - a paused pair gets NO automatic
+        // action of any kind, including this sweep; it'll get its own
+        // immediate check the moment it's un-paused (see
+        // [_processAllPendingUnpauseChecks]), not before.
+        if (paused.isPaused(tvSymbol)) continue;
         await _processAllPendingTerminateRequests();
         try {
           final currentSymbols = _loadSymbolsFresh();
@@ -2597,6 +2626,55 @@ class EngineService {
       } catch (e, st) {
         logger.log('Terminate request error for $base: $e\n$st', level: 'ERROR');
       }
+    }
+  }
+
+  /// Drains every currently-pending unpause-checkup request (2026-10-09, per
+  /// the user: "if running paused pair un-paused: then a reverse checkup
+  /// will occur on this pair instantly and then action according to this
+  /// checkup. if waiting paused pair un-paused: then an instant checkup
+  /// will be applied to match current filled calculations"). Called at the
+  /// top of every [_runCycle] AND again before every single symbol check
+  /// within it, same responsiveness reasoning as
+  /// [_processAllPendingTerminateRequests]. A single `immediate: true` call
+  /// into the pair's own normal check method covers BOTH cases the user
+  /// described - that method's existing running-vs-waiting branches already
+  /// do the right thing either way (a running trade gets compared against
+  /// the freshly re-read signal and flips if it disagrees - "a reverse
+  /// checkup, act accordingly"; a waiting pair gets evaluated immediately
+  /// against the current chart instead of waiting out the normal cooldown -
+  /// "an instant checkup against current calculations") - no separate code
+  /// path needed. [AutoCategory.oneHour] is hardcoded, same single-category
+  /// reality as [_processAllPendingTerminateRequests].
+  Future<void> _processAllPendingUnpauseChecks(DecisionTechnique technique) async {
+    for (final base in unpauseRequests.loadPending()) {
+      if (paused.isPaused(base)) {
+        // Re-paused again before this request was ever processed - the
+        // user's own later action wins; don't act on a stale request.
+        unpauseRequests.clear(base);
+        continue;
+      }
+      final matches = _loadSymbolsFresh().where((m) => m.tradingViewSymbol.toUpperCase() == base);
+      final mapping = matches.isEmpty ? null : matches.first;
+      if (mapping == null) {
+        logger.log(
+          '$base: pending unpause checkup but no SymbolMapping in config.json - '
+          'clearing the stale request.',
+          level: 'WARNING',
+        );
+        unpauseRequests.clear(base);
+        continue;
+      }
+      try {
+        if (technique.id == DecisionTechnique.supertrendPlus.id) {
+          await _checkOneSymbolSupertrend(AutoCategory.oneHour, mapping, immediate: true);
+        } else {
+          await _checkOneSymbol(AutoCategory.oneHour, mapping, immediate: true);
+        }
+      } catch (e, st) {
+        logger.log('Unpause checkup error for $base: $e\n$st', level: 'ERROR');
+      }
+      unpauseRequests.clear(base);
     }
   }
 

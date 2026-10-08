@@ -330,6 +330,15 @@ logs/
                                      actively auto-manages.
   last-tagged-pairs.json           — LastTagStore: bases flagged "finish the
                                      current trade, then stop auto-managing."
+  paused-pairs.json                — PausedPairStore (2026-10-09): bases
+                                     still fully auto-managed but the engine
+                                     takes no action on right now - stays
+                                     listed, unlike retired-pairs.json.
+  unpause-check-requests.json      — UnpauseCheckRequestStore (2026-10-09):
+                                     a one-shot queue, same shape as
+                                     terminate-requests.json - a base just
+                                     un-paused, awaiting its immediate
+                                     reverse-checkup/catch-up re-evaluation.
   retired-pairs.json               — RetiredStore: bases the engine will
                                      never auto-recreate (an explicit
                                      "unretire" — re-adding via Auto — is the
@@ -876,6 +885,67 @@ on that category's true first-ever run** (its auto-managed-bases file not
 existing yet) — fixed 2026-09-28 so removing a symbol from auto-management
 doesn't silently revert on the next routine restart.
 
+### 11.1 Per-pair Play/Pause (replaces the old per-row Auto toggle)
+
+(2026-10-09, per the user.) The Dashboard's per-row Auto Switch — which
+used to add/remove a base from `AutoManagedStore` entirely, unlisting the
+row the moment it was turned off — is now a **Play/Pause button**
+(`EngineControlRepository.setPaused` / `PausedPairStore`/
+`logs/paused-pairs.json`), chosen specifically so the control "shows
+exactly the action it is doing" rather than an ambiguous on/off switch.
+
+**Pausing never removes a base from `AutoManagedStore` and never touches
+whatever it's currently doing.** A paused pair is, in the user's own words,
+"still an auto pair, but the engine will not take any action on it unless
+it is unpaused" — a running trade stays running (no close, no flip, no
+reconciliation beyond the global `_reconcileClosedPositions` sweep, which
+still runs for every tracked ticket regardless of pause state, since that's
+accounting for broker-side reality, not a trading decision); a waiting pair
+stays waiting, exactly as-is. `EngineService._runCycle`'s main loop skips
+any paused base with a plain `continue`, the identical mechanism already
+used for a retired base — the **only** difference is that a paused base
+stays listed and stays in `auto-managed-bases.json`, where a retired one is
+filtered out of the table entirely (§16.11). The technique-switch/Power-on
+reverse-check sweep (§9.8) also skips a paused base — pausing is an
+absolute "no automatic action of any kind" rule, not just an exemption from
+the normal per-cycle check.
+
+**Un-pausing queues an immediate re-evaluation.** The instant the Play
+button is pressed, `EngineControlRepository.setPaused` both clears the
+paused flag and appends the base to a one-shot queue
+(`UnpauseCheckRequestStore`/`logs/unpause-check-requests.json`), drained by
+`EngineService._processAllPendingUnpauseChecks` — at the top of every
+`_runCycle` (before the main per-symbol loop, so a later pass over the same
+symbol in that same cycle is a cooldown-gated no-op rather than a
+duplicate action) and again inside the loop for the same "don't wait out
+the whole sweep" responsiveness `_processAllPendingTerminateRequests`
+already has. This runs the pair through its own normal check method
+(`_checkOneSymbol`/`_checkOneSymbolSupertrend`) with `immediate: true` —
+the exact same bypass-the-extra-candle-wait machinery the technique-switch
+sweep already uses (§9.8), still fully triple-read confirmed. Per the
+user's own two-case spec, this single mechanism covers both without any
+extra branching:
+- **A paused pair that was running, un-paused**: "a reverse checkup will
+  occur on this pair instantly and then action according to this
+  checkup" — the normal running-position branch re-reads the latest signal
+  and flips immediately if it disagrees with the running direction, or
+  backfills/ignores if it agrees.
+- **A paused pair that was waiting, un-paused**: "an instant checkup will
+  be applied to match current filled calculations" — the normal
+  no-position branch evaluates against the current chart right away
+  instead of waiting out the usual 3-minute retry cooldown.
+
+A base that gets re-paused before its queued request is ever processed is
+left alone (the request is discarded, not acted on) — the user's later
+action always wins.
+
+**Unlisting a base from the table remains exclusively tied to retirement**
+(Last tag + close), unchanged by this feature — per the user's own
+clarification: "any auto pair will be unlisted only if it is tagged Last
+and then either the signal flips and the app terminates it while Last is
+on, or the user presses the power button for this pair while Last is on."
+Pausing is orthogonal to Last/retirement entirely.
+
 ## 12. Trade sizing (volume) and the step-down retry ladder
 
 No investment or margin sizing exists anywhere in this app (an explicit,
@@ -1301,11 +1371,19 @@ One row per auto-managed symbol: symbol, trade id, status chip
 (Running/Waiting-pending/Waiting), side, price, SL, TP, live P&L, volume
 (with +/- stepper, showing a struck-through old value in yellow when a
 desired-but-not-yet-applied override exists), open time, start/update
-signal, Close A/Close B preview, Check mark (this candle cycle), per-row
-Auto/Last toggle checkboxes, and a terminate (power) icon. A header strip
-shows running/pending/waiting counts, net P&L, a "since <timestamp>" marker
-with a reset icon, and a cycling sort button (symbol A-Z → Z-A → P&L
-positive → P&L negative → duration, wrapping).
+signal, Close A/Close B preview, Check mark (this candle cycle), a per-row
+Play/Pause button, a Last toggle checkbox, and a terminate (power) icon. A
+header strip shows running/pending/waiting counts, net P&L, a
+"since <timestamp>" marker with a reset icon, and a cycling sort button
+(symbol A-Z → Z-A → P&L positive → P&L negative → duration, wrapping).
+
+**The Play/Pause button** (2026-10-09, per the user — replaces the former
+Auto on/off `Switch`) shows a Pause icon while the pair is actively managed
+(pressing it pauses in place, touching nothing about its current state) and
+a Play icon while paused (pressing it resumes AND queues an instant
+re-check). Chosen specifically because a toggle's on/off state didn't
+convey which action pressing it would actually take — see §11.1 for the
+full pause/resume semantics.
 
 **Update/Close A/Close B columns are hidden entirely while Supertrend Plus
 is the active technique** (`hideUpdateCloseColumns`, 2026-10-08, per the
@@ -1521,6 +1599,19 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-09** — The Dashboard's per-row Auto `Switch` replaced with a
+  Play/Pause button backed by a genuinely new state (`PausedPairStore`),
+  not a repurposed old one: pausing a pair no longer removes it from
+  `AutoManagedStore`/unlists it from the table — it stays fully listed,
+  stays genuinely auto-managed, and the engine simply takes no action on it
+  at all (no close, no open, no flip) until it's resumed, leaving a running
+  trade running and a waiting pair waiting exactly as they were. Resuming
+  queues a one-shot immediate re-evaluation (`UnpauseCheckRequestStore`)
+  that doubles as both "a reverse checkup, act accordingly" for a running
+  trade and "an instant checkup against current calculations" for a
+  waiting one, reusing the exact same `immediate: true` machinery the
+  technique-switch sweep already has. Unlisting a base remains exclusively
+  tied to retirement (Last tag + close), unchanged (§11.1).
 - **2026-10-08** — Supertrend Plus's "survive one full extra candle" wait
   removed for a currently-running trade's signal flip: once the opposite
   Buy/Sell tag triple-confirms, the position now closes and reopens on that

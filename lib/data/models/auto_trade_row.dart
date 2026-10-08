@@ -22,6 +22,7 @@ class AutoTradeRow {
     required this.mt5Symbol,
     required this.status,
     required this.isAutoManaged,
+    required this.isPaused,
     required this.isLastTagged,
     this.direction,
     this.price,
@@ -88,10 +89,23 @@ class AutoTradeRow {
   final String? updateTag;
   final int? updateAt;
 
-  /// Auto toggle state (2026-09-29 spec): on = this base is in
-  /// `auto-managed-bases.json` and gets checked/opened/closed automatically;
-  /// off = manual, the engine skips it entirely but the row still shows.
+  /// Whether this base is in `auto-managed-bases.json` (2026-09-29 spec).
+  /// Always true for a row that actually makes it into the table - the
+  /// provider only includes auto-managed, non-retired bases (2026-09-30:
+  /// "table only show auto managed pairs") - kept as its own field since
+  /// removing a base from auto-management entirely still exists as a
+  /// concept (it just has no Dashboard control of its own any more; see
+  /// [isPaused] for what the former Auto toggle now does instead).
   final bool isAutoManaged;
+
+  /// Play/Pause state (2026-10-09, per the user: "it is better to make it
+  /// a play/pause button rather than a toggle" — replaces the old Auto
+  /// toggle, which used to remove the base from auto-management entirely
+  /// and unlist the row). True = the engine takes NO action on this pair
+  /// at all right now, but it stays fully visible, in whatever state it
+  /// was already in (running stays running, waiting stays waiting) - "the
+  /// engine will not take any action to this pair unless it is unpaused."
+  final bool isPaused;
 
   /// Last toggle state (2026-09-29 spec): on = once the current trade
   /// closes (any path), the base retires from auto-management instead of

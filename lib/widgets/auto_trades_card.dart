@@ -15,7 +15,7 @@ class AutoTradesCard extends StatefulWidget {
   const AutoTradesCard({
     super.key,
     required this.rows,
-    required this.onToggleAuto,
+    required this.onTogglePause,
     required this.onToggleLast,
     required this.onTerminate,
     required this.onChangeVolume,
@@ -45,8 +45,10 @@ class AutoTradesCard extends StatefulWidget {
   /// technique awareness of its own.
   final bool hideUpdateCloseColumns;
 
-  /// tvSymbol, new Auto state.
-  final void Function(String, bool) onToggleAuto;
+  /// tvSymbol, new paused state (2026-10-09, per the user — replaces the
+  /// former Auto toggle's add/remove semantics with pause/resume; see
+  /// [AutoTradeRow.isPaused]'s own doc comment).
+  final void Function(String, bool) onTogglePause;
 
   /// tvSymbol, new Last state.
   final void Function(String, bool) onToggleLast;
@@ -677,10 +679,26 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                               },
                             ),
                           ),
+                          // Play/Pause button (2026-10-09, per the user:
+                          // "it is better to make it a play/pause button
+                          // rather than a toggle, so it can show exactly
+                          // the action it is doing" - replaces the former
+                          // Auto Switch, whose on/off state didn't convey
+                          // which action pressing it would take). Paused
+                          // (row.isPaused true) shows a Play icon - pressing
+                          // it resumes AND queues the instant re-check
+                          // (EngineControlRepository.setPaused); active
+                          // shows a Pause icon - pressing it pauses in
+                          // place, touching nothing about the pair's
+                          // current running/waiting state.
                           DataCell(
-                            Switch(
-                              value: row.isAutoManaged,
-                              onChanged: (on) => widget.onToggleAuto(row.tvSymbol, on),
+                            IconButton(
+                              icon: Icon(row.isPaused ? Icons.play_arrow : Icons.pause),
+                              color: row.isPaused ? Colors.green : scheme.onSurfaceVariant,
+                              tooltip: row.isPaused
+                                  ? 'Resume — engine will act on this pair again'
+                                  : 'Pause — engine will take no action on this pair',
+                              onPressed: () => widget.onTogglePause(row.tvSymbol, !row.isPaused),
                             ),
                           ),
                           DataCell(

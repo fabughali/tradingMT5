@@ -287,6 +287,13 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           .readJsonArrayStrict(storage.retiredPairsFile)
           .map((e) => e.toString().toUpperCase())
           .toSet();
+      // 2026-10-09, per the user: a paused pair stays fully listed (unlike
+      // retired), just flagged so the row's Play/Pause button shows the
+      // right state - see [AutoTradeRow.isPaused]'s own doc comment.
+      final pausedBases = storage
+          .readJsonArrayStrict(storage.pausedPairsFile)
+          .map((e) => e.toString().toUpperCase())
+          .toSet();
       final entrySignalsRaw =
           storage.readJsonObject(storage.entrySignalFile) ?? const {};
       final waitingReasonsRaw =
@@ -333,6 +340,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
         if (!isAutoManaged || retiredBases.contains(tvSymbol)) continue;
         final mt5Symbol = mapping.mt5Symbol;
         final isLastTagged = lastTaggedBases.contains(tvSymbol);
+        final isPaused = pausedBases.contains(tvSymbol);
         final position = positionByMt5Symbol[mt5Symbol.toUpperCase()];
         final order = orderByMt5Symbol[mt5Symbol.toUpperCase()];
         // Trade-size override (2026-10-03, per the user). `watched` carries
@@ -386,6 +394,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               mt5Symbol: mt5Symbol,
               status: AutoTradeStatus.running,
               isAutoManaged: isAutoManaged,
+              isPaused: isPaused,
               isLastTagged: isLastTagged,
               direction: position['action'] as String?,
               price: (position['price_open'] as num?)?.toDouble(),
@@ -420,6 +429,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               mt5Symbol: mt5Symbol,
               status: AutoTradeStatus.waitingPending,
               isAutoManaged: isAutoManaged,
+              isPaused: isPaused,
               isLastTagged: isLastTagged,
               desiredVolume: desiredVolume,
               currentVolume: currentVolume,
@@ -453,6 +463,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               mt5Symbol: mt5Symbol,
               status: AutoTradeStatus.waitingNoSignal,
               isAutoManaged: isAutoManaged,
+              isPaused: isPaused,
               isLastTagged: isLastTagged,
               waitingReason: reasonEntry?['reason'] as String?,
               desiredVolume: desiredVolume,

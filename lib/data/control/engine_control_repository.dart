@@ -5,11 +5,13 @@ import 'package:path/path.dart' as p;
 import '../../core/core_storage.dart';
 import '../identity/auto_managed_store.dart';
 import '../identity/last_tag_store.dart';
+import '../identity/paused_pair_store.dart';
 import '../identity/pending_signal_store.dart';
 import '../identity/retired_store.dart';
 import '../identity/supertrend_pending_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
+import '../identity/unpause_check_request_store.dart';
 import '../logging/app_logger.dart';
 import '../models/app_config.dart';
 import '../models/auto_category.dart';
@@ -36,6 +38,8 @@ class EngineControlRepository {
       _retired = RetiredStore(_storage),
       _pendingSignals = PendingSignalStore(_storage),
       _supertrendPending = SupertrendPendingStore(_storage),
+      _paused = PausedPairStore(_storage),
+      _unpauseRequests = UnpauseCheckRequestStore(_storage),
       _logger = AppLogger(_storage);
 
   final CoreStorage _storage;
@@ -46,6 +50,8 @@ class EngineControlRepository {
   final RetiredStore _retired;
   final PendingSignalStore _pendingSignals;
   final SupertrendPendingStore _supertrendPending;
+  final PausedPairStore _paused;
+  final UnpauseCheckRequestStore _unpauseRequests;
 
   /// 2026-10-03, per the user: "if log did not tell you what i did in app
   /// then update/upgrade log to include everything happening auto or by
@@ -64,10 +70,16 @@ class EngineControlRepository {
 
   void _logUserAction(String message) => _logger.log('[USER] $message');
 
-  /// Dashboard Auto toggle — on adds [tvSymbol] back to the auto-managed
-  /// list (the engine resumes checking/opening/closing it); off removes it
-  /// (the engine skips it entirely, but any currently-open position stays
-  /// open until the user closes it manually or via the power icon).
+  /// Adds [tvSymbol] to the auto-managed list for the first time (2026-10-03
+  /// "Start Auto Trade" flow) or re-adds a previously-retired one. Per-row
+  /// pausing of an ALREADY auto-managed pair goes through [setPaused]
+  /// instead (2026-10-09) - this method only ever turns Auto ON, never off;
+  /// there is no longer a way to remove a base from [AutoManagedStore]
+  /// short of it retiring via a Last-tagged close (see [setLastTagged]/
+  /// [requestTerminate]), by the user's own explicit design: "any auto pair
+  /// will be unlisted only if it is tagged last and then (either signal
+  /// flipped and app terminated it while it is tagged last ON, or user
+  /// pressed the power button for this pair while tagged last ON)."
   ///
   /// Turning ON also un-retires [tvSymbol] (2026-10-03, per the user: a
   /// pair picked via "Start Auto Trade" never got checked at all - found
@@ -78,37 +90,67 @@ class EngineControlRepository {
   /// retired base regardless of auto-managed status - re-enabling Auto for
   /// a pair is exactly the explicit "unretire" [RetiredStore]'s own doc
   /// comment describes, so this is the one place that decision belongs).
-  void setAutoManaged(String tvSymbol, bool on) {
-    if (on) {
-      _autoManaged.addBase(tvSymbol);
-      final wasRetired = _retired.isRetiredBase(tvSymbol);
-      _retired.removeRetiredBases([tvSymbol]);
-      // Drop any leftover pending-signal candidate from a PREVIOUS stint
-      // under auto-management, for every category (2026-10-08, per the
-      // user: "why once user add pair to auto (while technique is
-      // supertrend) there is HH/LL in table >>> check adausd, shibusd" -
-      // found live: a pair being un-retired/re-added kept showing its old
-      // Signal Flip HH/LL candidate in the Dashboard's Close A column
-      // until the engine's OWN next cycle happened to check it (itself
-      // already fixed to clear the OTHER technique's leftover entry, but
-      // only reactively, on that pair's own next check - which could be
-      // minutes away depending on how many other pairs are ahead of it).
-      // Clearing immediately here, the instant the pair is re-added,
-      // means the table is correct right away instead of after an
-      // unpredictable wait.
-      for (final category in allAutoCategories) {
-        final barKey = '${category.wireValue}|$tvSymbol';
-        _pendingSignals.clear(barKey);
-        _supertrendPending.clear(barKey);
-      }
-      _logUserAction(
-        'Auto turned ON for $tvSymbol (Dashboard)'
-        '${wasRetired ? ' - also un-retired (was stuck retired)' : ''}.',
-      );
-    } else {
-      _autoManaged.removeBase(tvSymbol);
-      _logUserAction('Auto turned OFF for $tvSymbol (Dashboard).');
+  void setAutoManaged(String tvSymbol) {
+    _autoManaged.addBase(tvSymbol);
+    final wasRetired = _retired.isRetiredBase(tvSymbol);
+    _retired.removeRetiredBases([tvSymbol]);
+    // A pair coming back from retirement should start in the normal
+    // active state, never paused (2026-10-09) - it has no running trade or
+    // resting order to preserve by staying paused, unlike the usual
+    // pause/resume case.
+    _paused.setPaused(tvSymbol, false);
+    // Drop any leftover pending-signal candidate from a PREVIOUS stint
+    // under auto-management, for every category (2026-10-08, per the
+    // user: "why once user add pair to auto (while technique is
+    // supertrend) there is HH/LL in table >>> check adausd, shibusd" -
+    // found live: a pair being un-retired/re-added kept showing its old
+    // Signal Flip HH/LL candidate in the Dashboard's Close A column
+    // until the engine's OWN next cycle happened to check it (itself
+    // already fixed to clear the OTHER technique's leftover entry, but
+    // only reactively, on that pair's own next check - which could be
+    // minutes away depending on how many other pairs are ahead of it).
+    // Clearing immediately here, the instant the pair is re-added,
+    // means the table is correct right away instead of after an
+    // unpredictable wait.
+    for (final category in allAutoCategories) {
+      final barKey = '${category.wireValue}|$tvSymbol';
+      _pendingSignals.clear(barKey);
+      _supertrendPending.clear(barKey);
     }
+    _logUserAction(
+      'Auto turned ON for $tvSymbol (Dashboard)'
+      '${wasRetired ? ' - also un-retired (was stuck retired)' : ''}.',
+    );
+  }
+
+  /// Dashboard per-row Play/Pause button (2026-10-09, per the user: "it is
+  /// better to make it a play/pause button rather than a toggle, so it can
+  /// show exactly the action it is doing" — replaces the old Auto toggle).
+  /// Pausing NEVER removes [tvSymbol] from [AutoManagedStore] and never
+  /// touches whatever it's currently doing - a running trade keeps running,
+  /// a waiting pair keeps waiting, exactly as the user specified: "paused
+  /// pair is still an auto pair but the current status is paused so engine
+  /// will not take any action to this pair unless it is unpaused."
+  /// [EngineService._runCycle] skips any paused base exactly like it
+  /// already skips a retired one.
+  ///
+  /// Un-pausing additionally queues an immediate re-evaluation
+  /// ([UnpauseCheckRequestStore]) - "if running paused pair un-paused: then
+  /// a reverse checkup will occur on this pair instantly and then action
+  /// according to this checkup. if waiting paused pair un-paused: then an
+  /// instant checkup will be applied to match current filled calculations."
+  /// Both cases are the exact same engine-side call
+  /// (`immediate: true`) - see [UnpauseCheckRequestStore]'s own doc comment
+  /// for why one mechanism covers both.
+  void setPaused(String tvSymbol, bool paused) {
+    _paused.setPaused(tvSymbol, paused);
+    if (!paused) {
+      _unpauseRequests.request(tvSymbol);
+    }
+    _logUserAction(
+      '${paused ? 'Paused' : 'Resumed'} $tvSymbol (Dashboard)'
+      '${paused ? '' : ' - queued an instant re-check'}.',
+    );
   }
 
   /// Dashboard Last toggle — on means the CURRENT trade is the last one for

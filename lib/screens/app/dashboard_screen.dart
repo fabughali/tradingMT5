@@ -93,8 +93,8 @@ class DashboardScreen extends ConsumerWidget {
             data: (rows) => AutoTradesCard(
               rows: rows,
               hideUpdateCloseColumns: decisionTechnique.id == DecisionTechnique.supertrendPlus.id,
-              onToggleAuto: (tvSymbol, on) {
-                ref.read(controlRepositoryProvider).setAutoManaged(tvSymbol, on);
+              onTogglePause: (tvSymbol, paused) {
+                ref.read(controlRepositoryProvider).setPaused(tvSymbol, paused);
                 ref.invalidate(autoTradesProvider);
               },
               onToggleLast: (tvSymbol, on) {
@@ -180,7 +180,7 @@ class DashboardScreen extends ConsumerWidget {
       repo.addSymbolMapping(
         SymbolMapping(tradingViewSymbol: tvSymbol, mt5Symbol: mt5Symbol),
       );
-      repo.setAutoManaged(tvSymbol, true);
+      repo.setAutoManaged(tvSymbol);
       // 2026-10-06, per the user: a pair re-added here after having been
       // retired (Last-tagged + closed) should start fresh at the broker
       // minimum volume, not silently resume whatever custom volume it had

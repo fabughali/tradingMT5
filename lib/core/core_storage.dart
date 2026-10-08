@@ -112,6 +112,23 @@ class CoreStorage {
   /// never un-retires a base that already got retired.
   String get lastTaggedPairsFile => p.join(logsDir, 'last-tagged-pairs.json');
 
+  /// Bases that are still genuinely auto-managed (still in
+  /// [autoManagedBasesFile]) but the engine must take NO action on right
+  /// now (2026-10-09, per the user: "paused pair is still an auto pair but
+  /// the current status is paused so engine will not take any action to
+  /// this paired pair unless it is unpaused"). Replaces the Dashboard's old
+  /// Auto-toggle-off behavior (which used to remove the base from
+  /// [autoManagedBasesFile] entirely, unlisting it) - a paused pair stays
+  /// fully visible in the table, in whatever state it already was in
+  /// (running or waiting), untouched.
+  String get pausedPairsFile => p.join(logsDir, 'paused-pairs.json');
+
+  /// One-shot queue: a base just un-paused via the Dashboard's Play button,
+  /// awaiting its immediate "reverse checkup" / "match current
+  /// calculations" re-evaluation (2026-10-09, per the user). See
+  /// [UnpauseCheckRequestStore]'s own doc comment for the full spec.
+  String get unpauseCheckRequestsFile => p.join(logsDir, 'unpause-check-requests.json');
+
   /// Last known-exact reason a base is sitting in "Waiting" with nothing
   /// open (2026-09-29, per the user: "waiting pairs should reflect exact
   /// reason ... not guess ... for example (not enough margin)"). Keyed by
