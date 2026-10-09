@@ -1595,6 +1595,28 @@ clearly-versioned download link, not a 30-day Actions artifact that doesn't
 say which fixes it includes. The installer is the primary, recommended
 download (WINDOWS.md); the zip is secondary.
 
+**Bundled VC++ Redistributable** (2026-10-09, fixed after the app's actual
+first real-machine install failed with "the code execution cannot proceed
+because MSVCP140.dll/VCRUNTIME140_1.dll was not found"): Flutter's Windows
+release build links against the Microsoft Visual C++ runtime but does not
+bundle its DLLs — present on the GitHub Actions build machine (so the build
+itself always succeeds and CI never catches this), but not guaranteed on an
+end user's real Windows install at all. The CI workflow now downloads
+Microsoft's official redistributable installer fresh every run
+(`https://aka.ms/vs/17/release/vc_redist.x64.exe`, never committed to the
+repo) into `windows_installer/` before compiling the `.iss` script, which
+stages it to `{tmp}` and runs it silently (`/install /quiet /norestart`) as
+the installer's first `[Run]` step — but only when a Pascal Script check
+(`VCRedistNeedsInstall`, reading the same registry key Microsoft's own
+installers use:
+`HKLM64\SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64\Installed`)
+finds it's not already present, so a machine that already has it (common —
+many apps ship it) isn't slowed down re-installing it. The redistributable
+installer carries its own UAC manifest and will show exactly one elevation
+prompt for that one step regardless of this installer's own
+`PrivilegesRequired=lowest` — the rest of the install (copying TradingMT5
+itself) stays fully per-user/unelevated either way.
+
 ### 19.4 Moving data Linux → Windows
 
 Entirely via the existing, unmodified Backup & Restore feature (§16.7, §22):
@@ -1623,6 +1645,16 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-09** — CRITICAL, Windows: the installer's actual first
+  real-machine run (its first-ever test off the CI/GitHub environment)
+  failed outright at launch with "the code execution cannot proceed
+  because MSVCP140.dll/VCRUNTIME140_1.dll was not found" - the Microsoft
+  Visual C++ runtime Flutter's Windows build links against but doesn't
+  bundle, present on the build machine (so CI never caught it) but not
+  guaranteed on a real end-user machine. Fixed by downloading Microsoft's
+  own `vc_redist.x64.exe` fresh every CI run and having the installer
+  silently run it first (skipped if already present, via a registry
+  check) before the app ever tries to launch (§19.3).
 - **2026-10-09** — Windows gets a real installer: `TradingMT5-Setup-
   <version>.exe` (Inno Setup, `windows_installer/tradingmt5.iss`, compiled
   by CI), published alongside the existing portable zip. Per-user install

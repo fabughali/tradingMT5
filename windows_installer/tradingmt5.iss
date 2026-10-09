@@ -65,6 +65,19 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; GroupDescription
 ; relative to THIS script's own directory (windows_installer\), not the
 ; compiler's invocation directory, per Inno Setup's default path rule.
 Source: "..\build\windows\x64\runner\Release\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; The Microsoft Visual C++ Redistributable (2026-10-09, per the user's real
+; first-install error: "the code execution cannot proceed because
+; MSVCP140.dll / VCRUNTIME140_1.dll was not found"). Flutter's Windows
+; release build links against this runtime but does NOT bundle its DLLs -
+; it's present on the GitHub Actions build machine (so the app runs fine
+; there and compiles clean) but not guaranteed on an end user's real
+; Windows machine at all, which is exactly what happened on the first real
+; install this app has ever had. Downloaded fresh by the CI workflow (the
+; stable Microsoft-hosted https://aka.ms/vs/17/release/vc_redist.x64.exe
+; redirect, never committed to the repo) right before ISCC runs, staged to
+; {tmp} (not {app} - it's a one-time system installer, not an app file)
+; and deleted the moment setup finishes.
+Source: "vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -72,4 +85,31 @@ Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
+; Silently installs the VC++ runtime BEFORE the app ever tries to launch -
+; skipped entirely via [Code]'s VCRedistNeedsInstall check on a machine
+; that already has it (most will, from some other app), so repeat/upgrade
+; installs stay fast. vc_redist.x64.exe carries its own UAC manifest and
+; will show exactly one elevation prompt for this one step, regardless of
+; this installer's own PrivilegesRequired=lowest - the rest of the install
+; (copying {#MyAppName} itself) stays fully per-user/unelevated either way.
+Filename: "{tmp}\vc_redist.x64.exe"; Parameters: "/install /quiet /norestart"; StatusMsg: "Installing the Microsoft Visual C++ Runtime (required, one-time)..."; Check: VCRedistNeedsInstall; Flags: waituntilterminated
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// True when the x64 VC++ 2015-2022 runtime (what every version since VS
+// 2015 shares, version 14.x) isn't already installed - checked via the
+// same registry key Microsoft's own installers use to detect it. Forces
+// the 64-bit registry view (HKLM64) since this is specifically the x64
+// runtime's own install marker, distinct from any 32-bit one that might
+// also be present.
+function VCRedistNeedsInstall: Boolean;
+var
+  Installed: Cardinal;
+begin
+  Result := True;
+  if RegQueryDWordValue(HKLM64, 'SOFTWARE\Microsoft\VisualStudio\14.0\VC\Runtimes\X64', 'Installed', Installed) then
+  begin
+    if Installed = 1 then
+      Result := False;
+  end;
+end;

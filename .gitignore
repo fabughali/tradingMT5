@@ -43,3 +43,8 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Windows installer build outputs - never committed, CI generates/downloads
+# these fresh every run (see .github/workflows/windows-build.yml).
+/installer_output/
+/windows_installer/vc_redist.x64.exe

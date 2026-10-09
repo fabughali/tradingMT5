@@ -75,6 +75,19 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup --no-progress -y
 
+      # 2026-10-09, per the user's real first-install error ("MSVCP140.dll
+      # was not found" / "VCRUNTIME140_1.dll was not found") - Flutter's
+      # Windows build links against the VC++ runtime but doesn't bundle its
+      # DLLs. Present on this build machine (so the build itself succeeds
+      # and nothing catches this in CI) but not guaranteed on a real end
+      # user's Windows install. Downloaded fresh every run from Microsoft's
+      # own stable aka.ms redirect (never committed to the repo - it's a
+      # multi-MB Microsoft-owned binary, not something this project ships
+      # a stale copy of) into windows_installer\, where tradingmt5.iss's
+      # own [Files] entry expects to find it.
+      - name: Download VC++ Redistributable
+        run: Invoke-WebRequest -Uri https://aka.ms/vs/17/release/vc_redist.x64.exe -OutFile windows_installer\vc_redist.x64.exe
+
       - name: Build Windows installer (Inno Setup)
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ steps.version.outputs.full }} windows_installer\tradingmt5.iss

@@ -2,9 +2,11 @@
 
 Added 2026-10-07. The app has only ever run on Linux until now — this is
 the first Windows port, built and packaged entirely through GitHub Actions
-CI (`.github/workflows/windows-build.yml`), never tested against a real
-Windows machine. Treat the defaults below as a starting point to verify,
-not a guarantee.
+CI (`.github/workflows/windows-build.yml`). Its first real-machine install
+(2026-10-09) failed outright on a missing Visual C++ runtime — now fixed
+(see below) — a reminder that "compiles clean on CI" and "runs on a real
+Windows machine" are genuinely different claims here. Treat the defaults
+below as a starting point to verify, not a guarantee.
 
 ## Getting the build
 
@@ -16,9 +18,12 @@ a **versioned GitHub Release**. To install:
 2. Download **`TradingMT5-Setup-<version>.exe`** — a real installer
    (2026-10-09), not a bare exe to run in place. Run it: it installs to a
    per-user folder (no admin/UAC prompt), adds Start Menu and (optional)
-   Desktop shortcuts, and registers a normal uninstaller in "Apps &
-   features" — no Flutter, no Visual Studio, nothing else to install, those
-   only ran on GitHub's build machine.
+   Desktop shortcuts, registers a normal uninstaller in "Apps & features",
+   and silently installs the Microsoft Visual C++ Runtime first if this
+   machine doesn't already have it (you may see one separate UAC prompt
+   just for that one step — that's Microsoft's own installer, not this
+   app, asking) — no Flutter, no Visual Studio, nothing else to install,
+   those only ran on GitHub's build machine.
 3. Launch TradingMT5 from the Start Menu or desktop shortcut the installer
    created.
 
