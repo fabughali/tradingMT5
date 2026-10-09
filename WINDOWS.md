@@ -8,14 +8,23 @@ not a guarantee.
 
 ## Getting the build
 
-Every push to `main` (and manual runs) builds automatically. To get the
-binary:
+Every push to `main` (and manual runs) builds automatically and publishes
+a **versioned GitHub Release**. To install:
 
-1. Go to the repo's **Actions** tab → the latest **Windows build** run.
-2. Download the `TradingMT5-Windows` artifact (a zip).
-3. Extract it anywhere — e.g. `C:\TradingMT5\`.
-4. Run `trading_mt5.exe`. No Flutter, no Visual Studio, nothing else to
-   install — those only ran on GitHub's build machine.
+1. Go to the repo's **Releases** page (or the **Actions** tab → the latest
+   **Windows build** run, which lists the same files).
+2. Download **`TradingMT5-Setup-<version>.exe`** — a real installer
+   (2026-10-09), not a bare exe to run in place. Run it: it installs to a
+   per-user folder (no admin/UAC prompt), adds Start Menu and (optional)
+   Desktop shortcuts, and registers a normal uninstaller in "Apps &
+   features" — no Flutter, no Visual Studio, nothing else to install, those
+   only ran on GitHub's build machine.
+3. Launch TradingMT5 from the Start Menu or desktop shortcut the installer
+   created.
+
+A portable `TradingMT5-Windows-<version>.zip` (extract-and-run, no
+installer, no shortcuts, no uninstaller) is also published alongside it on
+the same Release, for anyone who specifically wants that instead.
 
 ## Before Power works
 
@@ -58,8 +67,11 @@ identity store — everything Linux knows, now on Windows.
   needed.
 - **MT5 launch**: Linux runs MT5 under Wine; Windows runs it natively, no
   wrapper needed.
+- **Installer**: Linux has no installer at all (a systemd service file +
+  a manually-placed bundle); Windows gets a real one
+  (`windows_installer/tradingmt5.iss`, Inno Setup, compiled by CI).
 
-All three are implemented and compile clean, but **none have been
+All of the above are implemented and compile clean, but **none have been
 exercised against a real Windows session yet** — the first real run is
 the actual test. Report anything that doesn't work and it'll get fixed the
 same way every other bug in this app has been: investigated against real

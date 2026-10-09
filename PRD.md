@@ -1564,12 +1564,36 @@ Every push to `main` (and manual `workflow_dispatch`) on the GitHub Actions
 the `windows/` platform scaffold (this step **cannot** run on the Linux
 dev machine — Flutter's own capability gate for writing those files is
 keyed to the host platform), `flutter pub get`, `flutter build windows
---release` (GUI) + `dart compile exe bin\engine.dart` (engine), packaged as
-`TradingMT5-Windows-<version>.zip`, and published as a **versioned GitHub
-Release** (tagged `v<major.minor.patch>` from `pubspec.yaml`'s own version,
+--release` (GUI) + `dart compile exe bin\engine.dart` (engine) into the
+same Release folder, then **two** packaging steps run side by side:
+
+1. **`TradingMT5-Windows-<version>.zip`** — the raw Release folder,
+   `Compress-Archive`'d as-is. Extract-and-run, no install step, no
+   shortcuts, no uninstaller — for anyone who specifically wants a
+   portable copy.
+2. **`TradingMT5-Setup-<version>.exe`** — a real installer (2026-10-09, per
+   the user: "i am not looking for exe direct run file. i want a setup
+   exe file where it setup all and everything on windows"), compiled from
+   `windows_installer/tradingmt5.iss` via Inno Setup (`ISCC.exe`,
+   installed on the runner with `choco install innosetup` rather than
+   assumed pre-installed, since that varies by runner image generation).
+   `/DMyAppVersion=<version>` is passed on the ISCC command line — the
+   `.iss` file itself never hardcodes a version, same "pubspec.yaml is the
+   one source of truth" discipline as everywhere else in this pipeline
+   (§18, invariant 15). The installer copies the whole Release folder
+   (GUI bundle + the sibling engine exe — preserving the sibling
+   relationship `EngineControlRepository._enginePath` depends on) to
+   `%LOCALAPPDATA%\Programs\TradingMT5` (per-user, no admin/UAC prompt —
+   same convention already used for MT5/TradingView's own Windows default
+   paths, §19.2), creates Start Menu and optional Desktop shortcuts, and
+   registers a normal "Apps & features" uninstaller entry.
+
+Both artifacts are published as a **versioned GitHub Release** (tagged
+`v<major.minor.patch>` from `pubspec.yaml`'s own version,
 `softprops/action-gh-release@v2`, `make_latest: true`) — a permanent,
 clearly-versioned download link, not a 30-day Actions artifact that doesn't
-say which fixes it includes.
+say which fixes it includes. The installer is the primary, recommended
+download (WINDOWS.md); the zip is secondary.
 
 ### 19.4 Moving data Linux → Windows
 
@@ -1599,6 +1623,14 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-09** — Windows gets a real installer: `TradingMT5-Setup-
+  <version>.exe` (Inno Setup, `windows_installer/tradingmt5.iss`, compiled
+  by CI), published alongside the existing portable zip. Per-user install
+  (no admin prompt), Start Menu + optional Desktop shortcuts, a normal
+  uninstaller — replacing the old "download a zip, extract it yourself,
+  run the bare exe in place" flow, per the user: "i am not looking for exe
+  direct run file. i want a setup exe file where it setup all and
+  everything on windows" (§19.3).
 - **2026-10-09** — The Dashboard's per-row Auto `Switch` replaced with a
   Play/Pause button backed by a genuinely new state (`PausedPairStore`),
   not a repurposed old one: pausing a pair no longer removes it from

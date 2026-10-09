@@ -14,6 +14,16 @@ name: Windows build
 # has it") - tagged from pubspec.yaml's own version, so the download is a
 # permanent, clearly-versioned link instead of a 30-day Actions artifact
 # that doesn't say which fixes it includes.
+#
+# Publishes a real installer, not just a zip (2026-10-09, per the user: "i
+# am not looking for exe direct run file. i want a setup exe file where it
+# setup all and everything on windows") - compiles windows_installer\
+# tradingmt5.iss (Inno Setup) into TradingMT5-Setup-<version>.exe, which
+# installs to a per-user folder, creates Start Menu/Desktop shortcuts, and
+# registers a normal Windows uninstaller - no manual unzip-and-run-the-bare-
+# exe step left for the user. The raw zip is still published alongside it
+# for anyone who genuinely wants a portable, no-install copy, but the
+# installer is the primary, recommended download (see WINDOWS.md).
 on:
   push:
     branches: [main]
@@ -55,8 +65,25 @@ jobs:
       - name: Build engine (release)
         run: dart compile exe bin\engine.dart -o build\windows\x64\runner\Release\tradingmt5_engine.exe
 
-      - name: Package release folder
+      - name: Package release folder (portable zip)
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath TradingMT5-Windows-${{ steps.version.outputs.full }}.zip
+
+      # windows-latest doesn't ship Inno Setup pre-installed on every image
+      # generation - installing it explicitly via Chocolatey (already on
+      # every windows-latest runner) is reliable regardless of image
+      # version, rather than hoping ISCC.exe happens to already be there.
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build Windows installer (Inno Setup)
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion=${{ steps.version.outputs.full }} windows_installer\tradingmt5.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: TradingMT5-Setup-${{ steps.version.outputs.full }}
+          path: installer_output\TradingMT5-Setup-${{ steps.version.outputs.full }}.exe
+          retention-days: 30
 
       - uses: actions/upload-artifact@v4
         with:
@@ -69,7 +96,9 @@ jobs:
         with:
           tag_name: ${{ steps.version.outputs.tag }}
           name: ${{ steps.version.outputs.tag }}
-          files: TradingMT5-Windows-${{ steps.version.outputs.full }}.zip
+          files: |
+            installer_output\TradingMT5-Setup-${{ steps.version.outputs.full }}.exe
+            TradingMT5-Windows-${{ steps.version.outputs.full }}.zip
           # Same tag pushed again (another fix at the same pubspec version)
-          # updates the existing release's asset instead of failing.
+          # updates the existing release's assets instead of failing.
           make_latest: true
