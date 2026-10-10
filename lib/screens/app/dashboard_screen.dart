@@ -8,6 +8,7 @@ import '../../data/models/power_health.dart';
 import '../../data/models/watched_symbol.dart';
 import '../../data/providers/app_providers.dart';
 import '../../utilities/util_date.dart';
+import '../../widgets/add_pair_dialog.dart';
 import '../../widgets/auto_trades_card.dart';
 import '../../widgets/control_toggles_bar.dart';
 import '../../widgets/reuse_status_light.dart';
@@ -129,9 +130,25 @@ class DashboardScreen extends ConsumerWidget {
           const Divider(height: 1),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-            child: Text(
-              'Market Watch',
-              style: Theme.of(context).textTheme.titleMedium,
+            child: Row(
+              children: [
+                Text(
+                  'Market Watch',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const Spacer(),
+                // 2026-10-10, per the user: "user should have capability to
+                // add/remove pairs in forex/crypto/stock" - unlike "Start
+                // Auto Trade" below (which only covers symbols already
+                // visible in MT5's Market Watch), this adds a pair MT5 may
+                // not even know about yet, confirmed across all three apps
+                // first (see AddPairDialog).
+                OutlinedButton.icon(
+                  onPressed: () => _addPair(context, ref),
+                  icon: const Icon(Icons.add, size: 18),
+                  label: const Text('Add Pair'),
+                ),
+              ],
             ),
           ),
           watched.when(
@@ -148,6 +165,8 @@ class DashboardScreen extends ConsumerWidget {
               // re-selectable here at all.
               autoManagedBases: autoManagedBases,
               symbolMappings: config.symbols,
+              onRemovePair: (tvSymbol, hasRunningPosition) =>
+                  _removePair(context, ref, tvSymbol, hasRunningPosition),
             ),
             loading: () => const Padding(
               padding: EdgeInsets.all(16),
@@ -204,6 +223,48 @@ class DashboardScreen extends ConsumerWidget {
     // here forces a fresh read, which cascades to autoTradesProvider since
     // it `ref.watch`es configProvider.
     ref.invalidate(configProvider);
+    ref.invalidate(autoTradesProvider);
+  }
+
+  Future<void> _addPair(BuildContext context, WidgetRef ref) async {
+    final added = await showDialog<bool>(
+      context: context,
+      builder: (context) => const AddPairDialog(),
+    );
+    if (added == true) {
+      ref.invalidate(configProvider);
+      ref.invalidate(watchedSymbolsProvider);
+      ref.invalidate(autoTradesProvider);
+    }
+  }
+
+  Future<void> _removePair(
+    BuildContext context,
+    WidgetRef ref,
+    String tvSymbol,
+    bool hasRunningPosition,
+  ) async {
+    if (hasRunningPosition) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Cannot remove $tvSymbol — a position is currently running.')),
+      );
+      return;
+    }
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Remove pair'),
+        content: Text('Remove $tvSymbol from tradingMT5\'s pair list? This does not touch MT5\'s own Market Watch.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Remove')),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    ref.read(controlRepositoryProvider).removeSymbolMapping(tvSymbol, hasRunningPosition: false);
+    ref.invalidate(configProvider);
+    ref.invalidate(watchedSymbolsProvider);
     ref.invalidate(autoTradesProvider);
   }
 }

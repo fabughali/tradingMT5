@@ -343,6 +343,15 @@ logs/
                                      never auto-recreate (an explicit
                                      "unretire" — re-adding via Auto — is the
                                      only way back in).
+  symbol-resolve.json              — SymbolResolveStore (2026-10-10): Add
+                                     Pair dialog's GUI<->engine request/
+                                     response scratch pad for "does
+                                     TradingView genuinely have a chart for
+                                     this candidate symbol" - same one-shot
+                                     request shape as terminate-requests.json,
+                                     but carries a status (pending/found/
+                                     not_found) + the resolved symbol back to
+                                     the GUI instead of just being cleared.
   waiting-reasons.json             — WaitingReasonStore: the broker's own
                                      exact rejection text for the last failed
                                      open attempt, per tvSymbol.
@@ -1435,6 +1444,56 @@ with an open position) and "Start Auto Trade," which opens
 confirm; stocks need a hand-typed ticker, since this broker's stock
 `symbol` values are display names, not real tickers).
 
+### 16.12a Add/Remove Pairs (`lib/widgets/add_pair_dialog.dart`)
+
+2026-10-10, per the user: "user should have capability to add/remove pairs
+in forex/crypto/stock. but be careful, adding a pair should be confirmed
+from three apps (mt5: if this pair is listed, trading view: if this pair
+matching the name or need mapping, tradingMT5: if this pair existed in the
+list or not)." Unlike `StartAutoTradeDialog` (§16.12, which only ever
+covers symbols already visible in MT5's own Market Watch), `AddPairDialog`
+can add a pair MT5 doesn't even know about yet, from a header button next
+to "Market Watch."
+
+- **Asset-class picker** (Forex/Crypto/Stock) + a search box seeded from
+  `requestedInstruments` (`lib/data/models/instrument.dart`), with a free-text
+  fallback for anything not in that curated list. Picking a suggestion
+  pre-fills a candidate MT5 symbol (`SymbolResolver.candidateFor`) and a
+  candidate TradingView symbol (the same crypto `BASEUSD.lv ↔ BASEUSDT`
+  convention `WatchedSymbol.derivedTradingViewSymbol` already uses in
+  reverse) — both fields stay hand-editable before checking.
+- **Three independent, all-must-pass checks**, run in parallel:
+  1. **tradingMT5** — an instant local read of `config.json`'s own
+     `symbols` mapping; fails if either candidate symbol is already mapped.
+  2. **MT5** — `Mt5Client.findSymbolInFullCatalog` (`include_hidden: true`),
+     called directly from the GUI. Safe to do without going through the
+     engine, since MT5's MCP protocol supports multiple concurrent client
+     connections (already proven by every other direct-from-GUI MT5 read in
+     `app_providers.dart`) — unlike the TradingView check below.
+  3. **TradingView** — routed through a new file-based request/response
+     store, `SymbolResolveStore` (`lib/data/identity/symbol_resolve_store.dart`,
+     `logs/symbol-resolve.json`): the GUI writes a `'pending'` entry, and
+     `EngineService._processAllPendingSymbolResolveRequests` drains it each
+     cycle by switching TradingView's chart (via the engine's own, sole CDP
+     connection — see §14.7) to the candidate and recording what it finds.
+     The dialog polls the store every 1.5s (30s timeout) since a second
+     direct CDP connection from the GUI is exactly the single-attach
+     violation §14.7 exists to prevent.
+- **"Add"** (enabled only once all three checks pass) calls
+  `Mt5Client.addMarketWatchSymbol` (visibility only — a no-op if already
+  shown) then `EngineControlRepository.addSymbolMapping`, same as the
+  existing Start Auto Trade path.
+- **"Remove pair"** — a small trash icon on any already-mapped card in
+  `WatchedSymbolsList` (§16.12), confirmed via a dialog, refused outright by
+  `EngineControlRepository.removeSymbolMapping` if the symbol has an open
+  position. Strips the mapping from `config.json`'s `symbols` array and
+  every per-base identity store (`AutoManagedStore`, `PausedPairStore`,
+  `RetiredStore`, `LastTagStore`, the per-category pending-signal stores) —
+  the same cleanup a natural Last-tagged retirement already does, so a
+  removed pair leaves nothing stale behind for a later re-add. Never touches
+  MT5's own Market Watch visibility or Red-list membership (neither has any
+  bearing on trading decisions — see the Red-list note in §16.12).
+
 ### 16.13 `ReuseNavShell`/`ReuseStatusLight`
 
 Shared chrome: the persistent sidebar nav (Dashboard/History/Logs/Settings)
@@ -1684,6 +1743,23 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-10** — Add/Remove Pairs (§16.12a), per the user: "user should
+  have capability to add/remove pairs in forex/crypto/stock. but be
+  careful, adding a pair should be confirmed from three apps (mt5 ...
+  trading view ... tradingMT5 ...)." New `AddPairDialog` runs all three
+  checks (a local `config.json` read, a direct GUI-side
+  `Mt5Client.findSymbolInFullCatalog` call, and a TradingView existence
+  check routed through a brand-new file-based request/response store,
+  `SymbolResolveStore` — the GUI can't check TradingView directly since the
+  engine already owns the one real CDP connection, §14.7) before enabling
+  "Add." A matching "Remove pair" trash icon on `WatchedSymbolsList`
+  (blocked while a position is running) strips the mapping from
+  `config.json` and every per-base identity store via a new
+  `EngineControlRepository.removeSymbolMapping`. Followed the user's own
+  reminder mid-request: "crypto is mapped btcusd in mt5 = btcusdt in
+  trading view" — reused the existing `SymbolResolver`/
+  `derivedTradingViewSymbol` naming conventions rather than inventing new
+  ones.
 - **2026-10-10** — Backup & Restore reworked on three fronts, all per the
   user in one request: (1) native "Browse" file-picker dialogs for both
   Export and Import, shelled out to `zenity`/PowerShell rather than a

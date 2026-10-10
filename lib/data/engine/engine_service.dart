@@ -15,6 +15,7 @@ import '../identity/paused_pair_store.dart';
 import '../identity/pending_signal_store.dart';
 import '../identity/retired_store.dart';
 import '../identity/supertrend_pending_store.dart';
+import '../identity/symbol_resolve_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
 import '../identity/unpause_check_request_store.dart';
@@ -120,6 +121,7 @@ class EngineService {
     supertrendPending = SupertrendPendingStore(storage);
     paused = PausedPairStore(storage);
     unpauseRequests = UnpauseCheckRequestStore(storage);
+    symbolResolve = SymbolResolveStore(storage);
     // Backfill [firstOpen] from every past trade this app has ever closed,
     // so the new "wait for a confirmed opposite signal before a pair's
     // first-ever entry" gate (2026-10-06, per the user) only applies to
@@ -201,6 +203,7 @@ class EngineService {
   late final SupertrendPendingStore supertrendPending;
   late final PausedPairStore paused;
   late final UnpauseCheckRequestStore unpauseRequests;
+  late final SymbolResolveStore symbolResolve;
 
   /// Tickets the retroactive direction audit has already checked since the
   /// last time it was forced to re-run - in-memory only, see the audit's
@@ -847,6 +850,14 @@ class EngineService {
     // normal retry-cooldown gate, instead of being checked twice in one
     // cycle.
     await _processAllPendingUnpauseChecks(technique);
+
+    // 2026-10-10, per the user's Add Pair flow ("confirmed from three apps
+    // ... trading view: if this pair matching the name or need mapping") -
+    // the GUI can't check TradingView itself (CDP is this engine's own
+    // exclusive single connection - see _ensureCdpUpInFlight's own doc
+    // comment), so it asks here instead. Processed early, same reasoning
+    // as the unpause-check drain above.
+    await _processAllPendingSymbolResolveRequests();
 
     for (final category in allAutoCategories) {
       if (storage.fileExists(storage.autoCategoryPausedFileFor(category))) {
@@ -2675,6 +2686,37 @@ class EngineService {
         logger.log('Unpause checkup error for $base: $e\n$st', level: 'ERROR');
       }
       unpauseRequests.clear(base);
+    }
+  }
+
+  /// Drains every pending "does this TradingView symbol exist" request
+  /// (2026-10-10, Add Pair flow - see [SymbolResolveStore]'s own doc
+  /// comment for why this has to go through the engine at all). For each
+  /// candidate: switches the shared chart to it and checks whether
+  /// TradingView actually resolved to something, exactly the same
+  /// `setChartView` call/base-ticker comparison every normal signal read
+  /// already uses - no new chart-reading logic, just a one-off use of the
+  /// existing mechanism with no resolution requested (only the symbol
+  /// itself is being verified, nothing about a specific timeframe). A
+  /// failure anywhere in this (TradingView not installed, CDP down, the
+  /// symbol genuinely not resolving) is recorded as "not found" rather
+  /// than left pending forever - the GUI is polling for an answer, and an
+  /// explicit "no" is always better than a request that silently never
+  /// completes.
+  Future<void> _processAllPendingSymbolResolveRequests() async {
+    for (final candidate in symbolResolve.loadPending()) {
+      try {
+        await _ensureCdpUp();
+        final result = await setChartView(_cdp!, candidate, null);
+        symbolResolve.recordResult(
+          candidate,
+          found: result.ok,
+          resolvedSymbol: result.state?.symbol,
+        );
+      } catch (e) {
+        logger.log('Symbol resolve check failed for $candidate: $e', level: 'WARNING');
+        symbolResolve.recordResult(candidate, found: false);
+      }
     }
   }
 

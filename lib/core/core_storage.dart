@@ -129,6 +129,12 @@ class CoreStorage {
   /// [UnpauseCheckRequestStore]'s own doc comment for the full spec.
   String get unpauseCheckRequestsFile => p.join(logsDir, 'unpause-check-requests.json');
 
+  /// GUI-requested "does this TradingView symbol exist" checks + the
+  /// engine's own answers (2026-10-10, Add Pair flow). See
+  /// [SymbolResolveStore]'s own doc comment for why this needs the engine
+  /// (the sole CDP connection owner) rather than being a direct GUI check.
+  String get symbolResolveFile => p.join(logsDir, 'symbol-resolve.json');
+
   /// Last known-exact reason a base is sitting in "Waiting" with nothing
   /// open (2026-09-29, per the user: "waiting pairs should reflect exact
   /// reason ... not guess ... for example (not enough margin)"). Keyed by

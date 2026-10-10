@@ -9,6 +9,7 @@ import '../identity/paused_pair_store.dart';
 import '../identity/pending_signal_store.dart';
 import '../identity/retired_store.dart';
 import '../identity/supertrend_pending_store.dart';
+import '../identity/symbol_resolve_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
 import '../identity/unpause_check_request_store.dart';
@@ -40,6 +41,7 @@ class EngineControlRepository {
       _supertrendPending = SupertrendPendingStore(_storage),
       _paused = PausedPairStore(_storage),
       _unpauseRequests = UnpauseCheckRequestStore(_storage),
+      _symbolResolve = SymbolResolveStore(_storage),
       _logger = AppLogger(_storage);
 
   final CoreStorage _storage;
@@ -52,6 +54,7 @@ class EngineControlRepository {
   final SupertrendPendingStore _supertrendPending;
   final PausedPairStore _paused;
   final UnpauseCheckRequestStore _unpauseRequests;
+  final SymbolResolveStore _symbolResolve;
 
   /// 2026-10-03, per the user: "if log did not tell you what i did in app
   /// then update/upgrade log to include everything happening auto or by
@@ -151,6 +154,67 @@ class EngineControlRepository {
       '${paused ? 'Paused' : 'Resumed'} $tvSymbol (Dashboard)'
       '${paused ? '' : ' - queued an instant re-check'}.',
     );
+  }
+
+  /// Add Pair dialog (2026-10-10) — GUI side of the TradingView-existence
+  /// check: writes a 'pending' entry [SymbolResolveStore] the engine drains
+  /// on its next cycle via the one CDP connection it already owns. See
+  /// [SymbolResolveStore]'s own doc comment for why this can't be done
+  /// directly from the GUI the way the MT5-catalog check can.
+  void requestSymbolResolve(String candidate) {
+    _symbolResolve.request(candidate);
+    _logUserAction('Requested TradingView symbol check for $candidate (Add Pair).');
+  }
+
+  /// Add Pair dialog — polls for the engine's answer to a prior
+  /// [requestSymbolResolve]. Null means no request yet, or already cleared.
+  SymbolResolveResult? peekSymbolResolve(String candidate) =>
+      _symbolResolve.peek(candidate);
+
+  /// Add Pair dialog — tidies up the scratch entry once shown to the user
+  /// or the dialog is dismissed.
+  void clearSymbolResolve(String candidate) => _symbolResolve.clear(candidate);
+
+  /// Add Pair dialog's "Remove pair" affordance (2026-10-10, per the user:
+  /// "user should have capability to add/remove pairs"). Refuses outright
+  /// if [hasRunningPosition] is true - removing a mapping out from under a
+  /// live position would strand it with no engine code path able to manage
+  /// or close it again. Otherwise strips [tvSymbol] from config.json's
+  /// `symbols` array and every per-base identity store, exactly mirroring
+  /// what a natural Last-tagged retirement already does to those same
+  /// stores, so a removed pair leaves no stale state behind to confuse a
+  /// later re-add.
+  bool removeSymbolMapping(String tvSymbol, {required bool hasRunningPosition}) {
+    if (hasRunningPosition) {
+      _logUserAction(
+        'Remove pair refused for $tvSymbol (Add Pair) - a position is currently running.',
+      );
+      return false;
+    }
+    final json = Map<String, dynamic>.from(
+      _storage.readJsonObject(_storage.configFile) ?? AppConfig.defaultConfig.toJson(),
+    );
+    final symbols = ((json['symbols'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .where(
+          (s) => (s['tradingview_symbol'] as String?)?.toUpperCase() !=
+              tvSymbol.toUpperCase(),
+        )
+        .toList();
+    json['symbols'] = symbols;
+    _storage.writeJson(_storage.configFile, json);
+
+    _autoManaged.removeBase(tvSymbol);
+    _paused.setPaused(tvSymbol, false);
+    _retired.removeRetiredBases([tvSymbol]);
+    _lastTag.setLastTagged(tvSymbol, false);
+    for (final category in allAutoCategories) {
+      final barKey = '${category.wireValue}|$tvSymbol';
+      _pendingSignals.clear(barKey);
+      _supertrendPending.clear(barKey);
+    }
+    _logUserAction('Removed $tvSymbol from the pair list (Add Pair).');
+    return true;
   }
 
   /// Dashboard Last toggle — on means the CURRENT trade is the last one for

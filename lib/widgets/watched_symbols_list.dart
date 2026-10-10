@@ -29,6 +29,7 @@ class WatchedSymbolsList extends ConsumerStatefulWidget {
     required this.onStartAutoTrade,
     required this.autoManagedBases,
     required this.symbolMappings,
+    required this.onRemovePair,
     this.maxPerSection,
   });
 
@@ -53,6 +54,13 @@ class WatchedSymbolsList extends ConsumerStatefulWidget {
   /// returns null for those) and must fall back to whatever mapping
   /// already exists, if any.
   final List<SymbolMapping> symbolMappings;
+
+  /// "Remove pair" affordance on an already-mapped symbol's card (2026-10-10,
+  /// per the user's Add/Remove Pairs request). Second argument is whether
+  /// the symbol currently has an open position — the caller refuses the
+  /// removal outright in that case rather than stranding a live position
+  /// with no engine code path able to manage it.
+  final void Function(String tvSymbol, bool hasRunningPosition) onRemovePair;
 
   /// Cap rows shown per section (e.g. for a Dashboard summary) — null shows
   /// everything.
@@ -110,12 +118,20 @@ class _WatchedSymbolsListState extends ConsumerState<WatchedSymbolsList> {
   /// pair already auto-managed - running, waiting, or pending, any state -
   /// shouldn't be re-selectable here).
   bool _isAlreadyAutoManaged(WatchedSymbol s) {
+    final tv = _mappedTvSymbol(s);
+    if (tv == null || tv.isEmpty) return false;
+    return widget.autoManagedBases.contains(tv.toUpperCase());
+  }
+
+  /// [s]'s tradingview_symbol per config.json's own mapping, if one exists
+  /// yet — unlike [_isAlreadyAutoManaged], this is true for any mapped
+  /// symbol regardless of auto-managed status, since "Remove pair" targets
+  /// the mapping itself (config.json's `symbols` array), not auto-management.
+  String? _mappedTvSymbol(WatchedSymbol s) {
     final existing = widget.symbolMappings.where(
       (m) => m.mt5Symbol.toUpperCase() == s.symbol.toUpperCase(),
     );
-    final tv = existing.isNotEmpty ? existing.first.tradingViewSymbol : s.derivedTradingViewSymbol;
-    if (tv == null || tv.isEmpty) return false;
-    return widget.autoManagedBases.contains(tv.toUpperCase());
+    return existing.isNotEmpty ? existing.first.tradingViewSymbol : null;
   }
 
   @override
@@ -133,6 +149,10 @@ class _WatchedSymbolsListState extends ConsumerState<WatchedSymbolsList> {
     final autoManagedMt5Symbols = {
       for (final s in symbols)
         if (_isAlreadyAutoManaged(s)) s.symbol,
+    };
+    final mappedTvSymbols = {
+      for (final s in symbols)
+        if (_mappedTvSymbol(s) case final tv?) s.symbol: tv,
     };
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -177,6 +197,8 @@ class _WatchedSymbolsListState extends ConsumerState<WatchedSymbolsList> {
           selected: _selected,
           onToggle: _toggle,
           autoManagedMt5Symbols: autoManagedMt5Symbols,
+          mappedTvSymbols: mappedTvSymbols,
+          onRemovePair: widget.onRemovePair,
           accent: context.tradingColors.forex,
           accentContainer: context.tradingColors.forexContainer,
         ),
@@ -188,6 +210,8 @@ class _WatchedSymbolsListState extends ConsumerState<WatchedSymbolsList> {
           selected: _selected,
           onToggle: _toggle,
           autoManagedMt5Symbols: autoManagedMt5Symbols,
+          mappedTvSymbols: mappedTvSymbols,
+          onRemovePair: widget.onRemovePair,
           accent: context.tradingColors.crypto,
           accentContainer: context.tradingColors.cryptoContainer,
         ),
@@ -199,6 +223,8 @@ class _WatchedSymbolsListState extends ConsumerState<WatchedSymbolsList> {
           selected: _selected,
           onToggle: _toggle,
           autoManagedMt5Symbols: autoManagedMt5Symbols,
+          mappedTvSymbols: mappedTvSymbols,
+          onRemovePair: widget.onRemovePair,
           accent: context.tradingColors.stock,
           accentContainer: context.tradingColors.stockContainer,
         ),
@@ -215,6 +241,8 @@ class _Section extends StatelessWidget {
     required this.selected,
     required this.onToggle,
     required this.autoManagedMt5Symbols,
+    required this.mappedTvSymbols,
+    required this.onRemovePair,
     required this.accent,
     required this.accentContainer,
     this.max,
@@ -226,6 +254,8 @@ class _Section extends StatelessWidget {
   final Set<String> selected;
   final void Function(String symbol, bool? checked) onToggle;
   final Set<String> autoManagedMt5Symbols;
+  final Map<String, String> mappedTvSymbols;
+  final void Function(String tvSymbol, bool hasRunningPosition) onRemovePair;
   final Color accent;
   final Color accentContainer;
   final int? max;
@@ -286,9 +316,11 @@ class _Section extends StatelessWidget {
                       symbol: s,
                       position: snapshot.openPositionSides[s.symbol],
                       alreadyAutoManaged: autoManagedMt5Symbols.contains(s.symbol),
+                      mappedTvSymbol: mappedTvSymbols[s.symbol],
                       checked: selected.contains(s.symbol),
                       accent: accent,
                       onToggle: (checked) => onToggle(s.symbol, checked),
+                      onRemovePair: onRemovePair,
                     ),
                 ],
               ),
@@ -320,9 +352,11 @@ class _SymbolCard extends StatelessWidget {
     required this.symbol,
     required this.position,
     required this.alreadyAutoManaged,
+    required this.mappedTvSymbol,
     required this.checked,
     required this.accent,
     required this.onToggle,
+    required this.onRemovePair,
   });
 
   final WatchedSymbol symbol;
@@ -332,9 +366,14 @@ class _SymbolCard extends StatelessWidget {
   /// is on waiting or pending ... but they are in auto list" - true for
   /// ANY state (running, waiting, pending), not just a live position.
   final bool alreadyAutoManaged;
+
+  /// This symbol's tradingview_symbol per config.json's own mapping, if any
+  /// - non-null means a "Remove pair" affordance should show (2026-10-10).
+  final String? mappedTvSymbol;
   final bool checked;
   final Color accent;
   final ValueChanged<bool?> onToggle;
+  final void Function(String tvSymbol, bool hasRunningPosition) onRemovePair;
 
   @override
   Widget build(BuildContext context) {
@@ -387,8 +426,26 @@ class _SymbolCard extends StatelessWidget {
                     ),
                     if (checked)
                       Icon(Icons.check_circle, size: 16, color: accent)
-                    else if (!disabled)
+                    else if (!disabled && mappedTvSymbol == null)
                       Icon(Icons.circle_outlined, size: 16, color: scheme.outlineVariant),
+                    if (mappedTvSymbol != null)
+                      Tooltip(
+                        message: position != null
+                            ? 'Cannot remove — a position is currently running'
+                            : 'Remove pair',
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () => onRemovePair(mappedTvSymbol!, position != null),
+                          child: Padding(
+                            padding: const EdgeInsets.all(2),
+                            child: Icon(
+                              Icons.delete_outline,
+                              size: 16,
+                              color: position != null ? scheme.outlineVariant : scheme.error,
+                            ),
+                          ),
+                        ),
+                      ),
                   ],
                 ),
                 const SizedBox(height: 4),

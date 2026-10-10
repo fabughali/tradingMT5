@@ -242,6 +242,33 @@ class Mt5Client {
   Future<Map<String, dynamic>> getAccountInfo() =>
       callTool('get_trading_account_info', const {});
 
+  /// Checks whether an EXACT symbol name exists anywhere in the broker's
+  /// full catalog (2026-10-10, per the user's Add Pair flow: "confirmed
+  /// from three apps (mt5: if this pair is listed...)") — `include_hidden:
+  /// true` so this finds a symbol even if it isn't currently visible in
+  /// Market Watch, unlike [getMarketWatchSymbol]. Read-only. Returns the
+  /// raw symbol record (digits, volume bounds, etc.) if found, or null.
+  Future<Map<String, dynamic>?> findSymbolInFullCatalog(String symbol) async {
+    final result = await callTool('get_marketwatch_symbols', {
+      'symbol': symbol,
+      'include_hidden': true,
+      'limit': 1,
+    });
+    final symbols = ((result['symbols'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>();
+    return symbols.isEmpty ? null : symbols.first;
+  }
+
+  /// Adds a symbol to MT5's Market Watch — visibility only, per the
+  /// corresponding [removeMarketWatchSymbol]'s own contract ("never places,
+  /// modifies, or cancels orders"); a symbol already present in the
+  /// broker's full catalog (confirmed via [findSymbolInFullCatalog] first)
+  /// but not currently shown in Market Watch needs this before it has a
+  /// live bid/ask the rest of the app can read at all (2026-10-10, Add Pair
+  /// flow). No-op (not an error) if the symbol is already visible.
+  Future<Map<String, dynamic>> addMarketWatchSymbol(String symbol) =>
+      callTool('add_marketwatch_symbol', {'symbol': symbol});
+
   /// Removes a symbol from MT5's Market Watch — visibility only, per the
   /// tool's own contract ("never places, modifies, or cancels orders").
   /// The GUI additionally refuses to call this for a symbol with an open
