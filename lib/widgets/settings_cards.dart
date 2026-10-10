@@ -1,11 +1,13 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
 
+import '../core/app_version.dart';
 import '../core/core_constants.dart';
 import '../data/backup/backup_service.dart';
+import '../data/backup/file_dialog.dart';
 import '../data/mt5/mt5_client.dart';
 import '../data/net/connectivity.dart';
 import '../data/providers/app_providers.dart';
@@ -454,18 +456,48 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
   String? _importMessage;
   Color? _importMessageColor;
 
+  /// Cached once, at startup - used only to suggest a filename INSIDE the
+  /// Browse dialog (2026-10-10, per the user: "exported file should have
+  /// time stamp and app version"). Never used to pre-fill the path field
+  /// itself any more - see [initState]'s own doc comment on why that field
+  /// now starts deliberately empty.
+  String _cachedVersion = 'unknown';
+
   @override
   void initState() {
     super.initState();
     // 2026-10-03, per the user: "create a app backup folder in the root" -
-    // defaults exports into CoreStorage.backupsDir instead of bare $HOME,
-    // and ensures that folder actually exists right now rather than lazily
-    // on first export.
+    // CoreStorage.backupsDir is still where Browse starts both dialogs and
+    // still gets created right now rather than lazily on first use.
     final storage = ref.read(storageProvider);
     storage.ensureDir(storage.backupsDir);
-    final stamp = DateTime.now().toIso8601String().split('T').first;
-    _exportPathCtrl = TextEditingController(text: '${storage.backupsDir}/tradingmt5-backup-$stamp.tmt5');
-    _importPathCtrl = TextEditingController();
+    // 2026-10-10, per the user: "there should be no default path. so user
+    // need to choose the path (navigate) before file is created ... same
+    // for import, there is no default path" - supersedes the earlier
+    // behavior (a pre-filled Save-to-path default, no import default at
+    // all). Both fields now start genuinely empty; Export/Import are
+    // disabled until the user has explicitly set one, via Browse or by
+    // typing - see the build method's own `enabled` wiring.
+    _exportPathCtrl = TextEditingController()..addListener(() => setState(() {}));
+    _importPathCtrl = TextEditingController()..addListener(() => setState(() {}));
+    readAppVersion().then((version) {
+      if (mounted) setState(() => _cachedVersion = version);
+    });
+  }
+
+  String _pad2(int n) => n.toString().padLeft(2, '0');
+
+  /// `tradingmt5-backup-<local date+time>-v<version>.tmt5` (2026-10-10, per
+  /// the user's own wording: "exported file should have time stamp and app
+  /// version"). Local time, not UTC - the filename is for the human looking
+  /// at their own file browser, not a machine-parsed log line; the export's
+  /// internal `_meta.json` manifest (see [BackupService.exportTo]) still
+  /// records the precise UTC instant for anything that needs it exactly.
+  String _defaultExportName(String version) {
+    final now = DateTime.now();
+    final stamp =
+        '${now.year}${_pad2(now.month)}${_pad2(now.day)}-${_pad2(now.hour)}${_pad2(now.minute)}${_pad2(now.second)}';
+    return 'tradingmt5-backup-$stamp-v$version.tmt5';
   }
 
   @override
@@ -549,6 +581,33 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
     return result;
   }
 
+  /// Settings screen "Browse..." button next to the export path field
+  /// (2026-10-10, per the user: "once user choose to export data, app need
+  /// to make user choose where to export that file by navigation") - a
+  /// native save-file dialog, not a Flutter plugin (see
+  /// [pickSaveLocation]'s own doc comment for why). Falls back to leaving
+  /// the text field exactly as it was if the dialog is cancelled or the
+  /// underlying tool isn't available - the field stays manually editable
+  /// either way.
+  Future<void> _browseExportLocation() async {
+    final storage = ref.read(storageProvider);
+    final currentName = p.basename(_exportPathCtrl.text.trim());
+    final picked = await pickSaveLocation(
+      suggestedName: currentName.isEmpty ? _defaultExportName(_cachedVersion) : currentName,
+      suggestedDir: storage.backupsDir,
+    );
+    if (picked != null && mounted) setState(() => _exportPathCtrl.text = picked);
+  }
+
+  /// Same idea as [_browseExportLocation] but an open-file dialog
+  /// (2026-10-10, per the user: "once user need to import data, app need
+  /// to make user choose the path by navigation").
+  Future<void> _browseImportLocation() async {
+    final storage = ref.read(storageProvider);
+    final picked = await pickOpenFile(suggestedDir: storage.backupsDir);
+    if (picked != null && mounted) setState(() => _importPathCtrl.text = picked);
+  }
+
   Future<void> _doExport() async {
     final password = await _promptPassword(confirm: true);
     if (password == null) return;
@@ -557,7 +616,10 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
       _exportMessage = null;
     });
     try {
-      await BackupService(ref.read(storageProvider)).exportTo(_exportPathCtrl.text.trim(), password);
+      final version = await readAppVersion();
+      await BackupService(
+        ref.read(storageProvider),
+      ).exportTo(_exportPathCtrl.text.trim(), password, appVersion: version);
       if (!mounted) return;
       setState(() {
         _exportMessage = 'Exported to ${_exportPathCtrl.text.trim()}';
@@ -588,10 +650,18 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
       builder: (context) => AlertDialog(
         title: const Text('Overwrite everything on this machine?'),
         content: const Text(
-          'Importing replaces config, connection settings, auto-managed pairs, trade '
-          'history, and every other piece of trading state currently on THIS machine '
-          'with what\'s in the backup file. This cannot be undone. The app and engine '
-          'need a restart afterward to pick up the imported data.',
+          // 2026-10-10, per the user: a backup never carries credentials/
+          // connection settings at all any more (see BackupService's own
+          // doc comment) - corrected from the earlier wording, which
+          // claimed "connection settings" would be replaced; this
+          // machine's own MT5/TradingView host, port, and API key are
+          // left exactly as they are, never touched by an import.
+          'Importing replaces auto-managed pairs, trade history, and every other '
+          'piece of trading state currently on THIS machine with what\'s in the '
+          'backup file. Your MT5/TradingView connection settings and API key on '
+          'this machine are never touched - backups never contain credentials. '
+          'This cannot be undone. The app and engine need a restart afterward to '
+          'pick up the imported data.',
         ),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
@@ -611,10 +681,14 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
       _importMessage = null;
     });
     try {
-      await BackupService(ref.read(storageProvider)).importFrom(path, password);
+      final metadata = await BackupService(ref.read(storageProvider)).importFrom(path, password);
       if (!mounted) return;
+      final stamp = metadata == null
+          ? ''
+          : ' (backup from ${metadata.exportedAt.toLocal().toString().split('.').first}, '
+                'v${metadata.appVersion})';
       setState(() {
-        _importMessage = 'Imported. Restart the app and engine now.';
+        _importMessage = 'Imported$stamp. Restart the app and engine now.';
         _importMessageColor = Colors.green;
       });
     } catch (e) {
@@ -643,20 +717,51 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Everything needed to continue on another machine - config, connections, '
-            'auto-managed pairs, trade history - as one password-encrypted file.',
+            // 2026-10-10, per the user: "credentials are not included in '
+            // exported/imported files. only user data" - corrected from the
+            // old wording, which claimed "connections" (host/port/API key)
+            // were included; they never are any more.
+            'Everything needed to continue on another machine - symbols, auto-managed '
+            'pairs, trade history, every other piece of trading state - as one '
+            'password-encrypted file. Never includes your API key, host, or port - '
+            'those stay local to this machine.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
           ),
           const SizedBox(height: 8),
-          TextField(
-            controller: _exportPathCtrl,
-            decoration: const InputDecoration(labelText: 'Save to path', isDense: true),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _exportPathCtrl,
+                  decoration: const InputDecoration(labelText: 'Save to path', isDense: true),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // 2026-10-10, per the user: "once user choose to export data,
+              // app need to make user choose where to export that file by
+              // navigation" - a native save-file dialog (see
+              // pickSaveLocation's own doc comment); the field above stays
+              // manually editable too, since the dialog can fail/be
+              // unavailable on a machine without zenity/PowerShell.
+              IconButton.filledTonal(
+                onPressed: _browseExportLocation,
+                icon: const Icon(Icons.folder_open, size: 18),
+                tooltip: 'Choose where to save',
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           Row(
             children: [
               FilledButton.icon(
-                onPressed: _exportState == _BackupOpState.working ? null : _doExport,
+                // 2026-10-10, per the user: "user need to choose the path
+                // (navigate) before file is created" - Export is disabled
+                // until a path actually exists in the field, so there's no
+                // way to export without first either Browsing or typing one.
+                onPressed: _exportState == _BackupOpState.working || _exportPathCtrl.text.trim().isEmpty
+                    ? null
+                    : _doExport,
                 icon: _exportState == _BackupOpState.working
                     ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.upload, size: 16),
@@ -682,19 +787,37 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Overwrites everything on THIS machine with a backup\'s contents.',
+            'Overwrites everything on THIS machine with a backup\'s contents - never '
+            'your API key, host, or port, which backups never include.',
             style: Theme.of(context).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
           ),
           const SizedBox(height: 8),
-          TextField(
-            controller: _importPathCtrl,
-            decoration: const InputDecoration(labelText: 'Backup file path', isDense: true),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _importPathCtrl,
+                  decoration: const InputDecoration(labelText: 'Backup file path', isDense: true),
+                ),
+              ),
+              const SizedBox(width: 8),
+              // 2026-10-10, per the user: "once user need to import data,
+              // app need to make user choose the path by navigation".
+              IconButton.filledTonal(
+                onPressed: _browseImportLocation,
+                icon: const Icon(Icons.folder_open, size: 18),
+                tooltip: 'Choose a backup file',
+              ),
+            ],
           ),
           const SizedBox(height: 8),
           Row(
             children: [
               OutlinedButton.icon(
-                onPressed: _importState == _BackupOpState.working ? null : _doImport,
+                onPressed: _importState == _BackupOpState.working || _importPathCtrl.text.trim().isEmpty
+                    ? null
+                    : _doImport,
                 icon: _importState == _BackupOpState.working
                     ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.download, size: 16),
@@ -720,27 +843,6 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
 class AboutCard extends StatelessWidget {
   const AboutCard({super.key});
 
-  /// Reads the real version straight out of pubspec.yaml itself, bundled
-  /// as a plain asset (2026-10-08, per the user: "why app version still
-  /// fixed?? ... is exe file matching with linux?" - found live: the
-  /// PREVIOUS version of this card showed a hand-typed string constant
-  /// that was supposed to be "kept in sync with pubspec.yaml" manually on
-  /// every bump - it was updated exactly once, at `1.0.0+1`, and silently
-  /// drifted for every release after that (1.1.0 through 1.2.2) since
-  /// nothing ever enforced the sync. `package_info_plus` would normally be
-  /// the standard fix, but this project's working directory sits on a
-  /// FAT32-formatted drive, which doesn't support symlinks at all -
-  /// Flutter's native-plugin build step needs one for ANY plugin with real
-  /// platform code and fails outright here. Reading pubspec.yaml's own
-  /// `version:` line back out of the asset bundle needs no native plugin
-  /// and no symlink, and is still a single source of truth - there is no
-  /// second copy left to drift from here on.
-  Future<String> _readVersion() async {
-    final text = await rootBundle.loadString('pubspec.yaml');
-    final match = RegExp(r'^version:\s*(\S+)', multiLine: true).firstMatch(text);
-    return match?.group(1) ?? 'unknown';
-  }
-
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -748,7 +850,16 @@ class AboutCard extends StatelessWidget {
       icon: Icons.info_outline,
       title: 'About',
       child: FutureBuilder<String>(
-        future: _readVersion(),
+        // 2026-10-08, per the user: "why app version still fixed??" - found
+        // live the previous hand-typed version constant drifted silently
+        // for every release after its first. Reads pubspec.yaml itself
+        // (bundled as a plain asset - no native plugin, no FAT32 symlink
+        // issue) via the shared readAppVersion (lib/core/app_version.dart,
+        // 2026-10-10, factored out so BackupRestoreCard can stamp exports
+        // with the same single source of truth - kept as its OWN file,
+        // separate from CoreConstants, since CoreConstants is shared by
+        // engine-reachable code that can't import anything Flutter-only).
+        future: readAppVersion(),
         builder: (context, snapshot) {
           final versionText = snapshot.data == null ? 'version …' : 'version ${snapshot.data}';
           return Text(

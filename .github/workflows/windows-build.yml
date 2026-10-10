@@ -51,6 +51,20 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      # 2026-10-10, per the user: "app icon in exe should have app fave
+      # icon/logo" - `flutter create` (the step above) scaffolds
+      # windows/runner/resources/app_icon.ico with Flutter's own generic
+      # placeholder icon every single run, since windows/ is regenerated
+      # fresh each time (never committed - see this workflow's own top
+      # comment). Overwriting it with the app's real icon (committed at
+      # windows_installer/app_icon.ico - a proper 6-resolution .ico built
+      # from assets/icons/icon_512.png, the same source Linux's own
+      # my_application.cc already uses for its window icon) BEFORE the
+      # build step below means Runner.rc compiles the real icon into
+      # trading_mt5.exe itself, not a placeholder.
+      - name: Apply app icon
+        run: Copy-Item windows_installer\app_icon.ico windows\runner\resources\app_icon.ico -Force
+
       - name: Read version from pubspec.yaml
         id: version
         shell: bash

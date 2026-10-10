@@ -44,6 +44,14 @@ OutputBaseFilename=TradingMT5-Setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
+; The installer EXE's own icon (2026-10-10, per the user: "app icon in exe
+; should have app fave icon/logo") - distinct from trading_mt5.exe's own
+; icon (applied separately, via this workflow's "Apply app icon" step
+; copying this same file over windows\runner\resources\app_icon.ico before
+; the app itself builds). UninstallDisplayIcon already points at the real
+; app exe, so the "Apps & features" entry automatically shows the real icon
+; too, once that exe carries it - no separate setting needed there.
+SetupIconFile=app_icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 ArchitecturesInstallIn64BitMode=x64
 ; The engine exe and the GUI exe must stay SIBLING files in the install

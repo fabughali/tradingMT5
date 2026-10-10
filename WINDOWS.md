@@ -75,6 +75,10 @@ identity store — everything Linux knows, now on Windows.
 - **Installer**: Linux has no installer at all (a systemd service file +
   a manually-placed bundle); Windows gets a real one
   (`windows_installer/tradingmt5.iss`, Inno Setup, compiled by CI).
+- **App icon**: `trading_mt5.exe` is now compiled with the real app icon
+  (`windows_installer/app_icon.ico`), copied over Flutter's generic
+  placeholder by CI before the build — matches Linux's own window icon,
+  already wired up separately in `linux/runner/my_application.cc`.
 
 All of the above are implemented and compile clean, but **none have been
 exercised against a real Windows session yet** — the first real run is

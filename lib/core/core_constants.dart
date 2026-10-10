@@ -1,6 +1,18 @@
 /// App-wide constants that aren't naturally part of any single data-layer
 /// file. Keep this small — most constants belong next to the code that
 /// actually uses them (e.g. poll intervals live in the provider that polls).
+///
+/// **Must stay free of any `package:flutter/...` import.** This file is
+/// shared by `data/tradingview/cdp_client.dart`, which is part of the
+/// engine's own dependency graph (`bin/engine.dart`, compiled with plain
+/// `dart compile exe`, never `flutter build`) — confirmed live 2026-10-10:
+/// adding a single `package:flutter/services.dart` import here (for
+/// `rootBundle`, to read the app version) broke the engine's AOT compile
+/// outright ("TextPosition isn't a type" deep inside Flutter's own
+/// text-layout internals), since `dart compile exe` cannot build real
+/// Flutter framework code the way `flutter build` can. See
+/// `lib/core/app_version.dart` for the GUI-only version reader this was
+/// split back out into.
 class CoreConstants {
   CoreConstants._();
 

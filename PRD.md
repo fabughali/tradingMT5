@@ -1332,7 +1332,27 @@ A plain single-column stack of four cards (`lib/widgets/settings_cards.dart`):
   key (masked, with a show/hide toggle), each with its own Test + Save.
 - **`BackupRestoreCard`** — Export (password-encrypted `.tmt5` file to a
   chosen path) / Import (overwrite this machine's entire data directory from
-  a backup, same password).
+  a backup, same password). Neither field has a default path any more
+  (2026-10-10, per the user: "there should be no default path. so user
+  need to choose the path (navigate) before file is created") — both start
+  empty and their action button stays disabled until a path exists, via
+  either typing one or the native "Browse" dialog next to each field
+  (`lib/data/backup/file_dialog.dart` — `zenity` on Linux, PowerShell's
+  `System.Windows.Forms` dialogs on Windows; deliberately not a Flutter
+  file-picker plugin, which would hit the same FAT32-symlink wall as
+  `package_info_plus`, §19.5). **No credentials, API keys, or connection
+  settings are ever included in a backup** (2026-10-10, per the user:
+  "credentials are not included in exported imported files. only user
+  data... api, ports, credentials are not included") — `.env` is excluded
+  entirely and `config.json`'s `mt5`/`cdp` blocks are stripped before
+  export; import merges the backup's config.json over the local one,
+  preserving this machine's own connection settings rather than deleting
+  them (`BackupService._sanitizeConfigForExport`/`_mergeImportedConfig`).
+  Every export also embeds a small `_meta.json` manifest (export timestamp
+  + app version) inside the archive, independent of the filename (which is
+  *also* stamped `tradingmt5-backup-<timestamp>-v<version>.tmt5` — per the
+  user: "exported file should have time stamp and app version") — surviving
+  a rename, and shown back to the user on the next successful import.
 - **`AboutCard`** — app name + live version, read from `pubspec.yaml`
   (bundled as a Flutter asset, parsed at runtime — see §19's note on why).
 
@@ -1617,6 +1637,25 @@ prompt for that one step regardless of this installer's own
 `PrivilegesRequired=lowest` — the rest of the install (copying TradingMT5
 itself) stays fully per-user/unelevated either way.
 
+**Real app icon, not Flutter's generic placeholder** (2026-10-10, per the
+user: "app icon in exe should have app fave icon/logo"). `flutter create`
+(the scaffold-generation step) writes a generic placeholder icon into
+`windows/runner/resources/app_icon.ico` on every single run, since
+`windows/` is regenerated fresh each time rather than committed. A new
+workflow step, "Apply app icon," overwrites it with the real one — a
+6-resolution `.ico` (16/32/48/64/128/256px) built once from
+`assets/icons/icon_512.png` (the same source Linux's own
+`linux/runner/my_application.cc` already uses for its window icon, via
+`gtk_window_set_icon_from_file`) and committed at
+`windows_installer/app_icon.ico` — *before* `flutter build windows
+--release` runs, so `Runner.rc` compiles the real icon directly into
+`trading_mt5.exe`. The installer's own `.exe` additionally sets
+`SetupIconFile=app_icon.ico` in `tradingmt5.iss` for its own identity while
+running; the Start Menu/Desktop shortcuts and the "Apps & features" entry
+all resolve their icon from the target `trading_mt5.exe` automatically
+once that exe itself carries the real icon, with no separate setting
+needed for any of them.
+
 ### 19.4 Moving data Linux → Windows
 
 Entirely via the existing, unmodified Backup & Restore feature (§16.7, §22):
@@ -1645,6 +1684,25 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-10** — Backup & Restore reworked on three fronts, all per the
+  user in one request: (1) native "Browse" file-picker dialogs for both
+  Export and Import, shelled out to `zenity`/PowerShell rather than a
+  Flutter plugin (§16.7); (2) no default path for either field any more —
+  the user must explicitly choose one before the action button enables;
+  (3) backups now stamp a timestamp + app version into both the filename
+  and an internal manifest, and never include credentials/ports at all
+  (`.env` excluded entirely, `config.json`'s `mt5`/`cdp` stripped at
+  export and never overwritten at import). Also: a real app icon
+  (`windows_installer/app_icon.ico`) now gets compiled directly into
+  `trading_mt5.exe` by CI, replacing Flutter's generic placeholder — Linux
+  already had its own icon wired up from an earlier session, this closed
+  the same gap for Windows (§19.3). **A genuine regression caught before
+  shipping**: the first attempt put the new version-reading helper in
+  `core_constants.dart`, which is shared by `cdp_client.dart` —
+  engine-reachable code the plain `dart compile exe` build can't carry any
+  `package:flutter/...` import through at all. Broke the engine's AOT
+  build outright; fixed by splitting it into its own GUI-only file,
+  `lib/core/app_version.dart` (see that file's own doc comment).
 - **2026-10-09** — CRITICAL, Windows: the installer's actual first
   real-machine run (its first-ever test off the CI/GitHub environment)
   failed outright at launch with "the code execution cannot proceed
