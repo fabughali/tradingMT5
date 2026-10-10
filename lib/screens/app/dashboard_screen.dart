@@ -6,6 +6,7 @@ import '../../data/models/app_config.dart';
 import '../../data/models/decision_technique.dart';
 import '../../data/models/power_health.dart';
 import '../../data/models/watched_symbol.dart';
+import '../../data/mt5/mt5_client.dart';
 import '../../data/providers/app_providers.dart';
 import '../../utilities/util_date.dart';
 import '../../widgets/add_pair_dialog.dart';
@@ -165,8 +166,7 @@ class DashboardScreen extends ConsumerWidget {
               // re-selectable here at all.
               autoManagedBases: autoManagedBases,
               symbolMappings: config.symbols,
-              onRemovePair: (tvSymbol, hasRunningPosition) =>
-                  _removePair(context, ref, tvSymbol, hasRunningPosition),
+              onRemovePair: (symbol, tvSymbol) => _removePair(context, ref, symbol, tvSymbol),
             ),
             loading: () => const Padding(
               padding: EdgeInsets.all(16),
@@ -238,23 +238,25 @@ class DashboardScreen extends ConsumerWidget {
     }
   }
 
-  Future<void> _removePair(
-    BuildContext context,
-    WidgetRef ref,
-    String tvSymbol,
-    bool hasRunningPosition,
-  ) async {
-    if (hasRunningPosition) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Cannot remove $tvSymbol — a position is currently running.')),
-      );
-      return;
-    }
+  /// "Remove pair" trash icon on a `WatchedSymbolsList` card (2026-10-10,
+  /// per the user: "all already existed pairs in forex/crypto/stock should
+  /// have trash icon (can be deleted) ... only pairs in auto cant be
+  /// deleted"). The card itself already refuses the tap while auto-managed
+  /// or running, so by the time this runs removal is always safe. Fully
+  /// deletes the pair: unmaps it from tradingMT5 (if [tvSymbol] is non-null
+  /// — a symbol with no mapping yet has nothing to unmap) AND removes it
+  /// from THIS machine's own MT5 Market Watch, so it's gone from every one
+  /// of the three apps the Add Pair flow confirms a new pair against.
+  Future<void> _removePair(BuildContext context, WidgetRef ref, WatchedSymbol symbol, String? tvSymbol) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Remove pair'),
-        content: Text('Remove $tvSymbol from tradingMT5\'s pair list? This does not touch MT5\'s own Market Watch.'),
+        content: Text(
+          'Remove ${symbol.symbol} entirely?'
+          '${tvSymbol != null ? ' Unmaps it from tradingMT5 and' : ' Removes it'} '
+          'from MT5\'s Market Watch.',
+        ),
         actions: [
           TextButton(onPressed: () => Navigator.of(context).pop(false), child: const Text('Cancel')),
           FilledButton(onPressed: () => Navigator.of(context).pop(true), child: const Text('Remove')),
@@ -262,7 +264,31 @@ class DashboardScreen extends ConsumerWidget {
       ),
     );
     if (confirmed != true) return;
-    ref.read(controlRepositoryProvider).removeSymbolMapping(tvSymbol, hasRunningPosition: false);
+
+    if (tvSymbol != null) {
+      ref.read(controlRepositoryProvider).removeSymbolMapping(tvSymbol, hasRunningPosition: false);
+    }
+    final storage = ref.read(storageProvider);
+    final config = ref.read(configProvider);
+    final env = storage.readEnvFile();
+    final client = Mt5Client(
+      apiKey: env['MT5_MCP_API_KEY'] ?? '',
+      host: config.mt5.mcpHost,
+      port: config.mt5.mcpPort,
+    );
+    try {
+      await client.connect();
+      await client.removeMarketWatchSymbol(symbol.symbol);
+    } catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Removed from tradingMT5, but MT5 Market Watch removal failed: $e')),
+        );
+      }
+    } finally {
+      client.close();
+    }
+
     ref.invalidate(configProvider);
     ref.invalidate(watchedSymbolsProvider);
     ref.invalidate(autoTradesProvider);

@@ -8,6 +8,7 @@ import '../core/app_version.dart';
 import '../core/core_constants.dart';
 import '../data/backup/backup_service.dart';
 import '../data/backup/file_dialog.dart';
+import '../data/models/app_config.dart';
 import '../data/mt5/mt5_client.dart';
 import '../data/net/connectivity.dart';
 import '../data/providers/app_providers.dart';
@@ -687,6 +688,20 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
           ? ''
           : ' (backup from ${metadata.exportedAt.toLocal().toString().split('.').first}, '
                 'v${metadata.appVersion})';
+      // 2026-10-10, per the user: "if user export data and imported it in
+      // other system, forex/crypto/stock/auto list should match." The
+      // imported config.json's `symbols`/auto-managed-bases.json land on
+      // disk as plain files (same generic tree-copy every other imported
+      // file gets), so the Auto list and config.json mapping already match
+      // the exporting machine the instant the import finishes - but the
+      // Dashboard's Forex/Crypto/Stock sections aren't stored data at all,
+      // they're THIS machine's own live MT5 Market Watch visibility, which
+      // has no way to already know about a symbol it's never seen before.
+      // Explicitly adding every imported mapping's MT5 symbol to Market
+      // Watch here (this machine's own `mt5`/`cdp` settings, never touched
+      // by the import itself) closes that gap before the user even restarts.
+      await _syncMarketWatchAfterImport();
+      if (!mounted) return;
       setState(() {
         _importMessage = 'Imported$stamp. Restart the app and engine now.';
         _importMessageColor = Colors.green;
@@ -699,6 +714,36 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
       });
     } finally {
       if (mounted) setState(() => _importState = _BackupOpState.idle);
+    }
+  }
+
+  /// Makes every MT5 symbol the just-imported config.json maps to visible
+  /// in this machine's own MT5 Market Watch, so the Dashboard's Forex/
+  /// Crypto/Stock sections show the same pairs the exporting machine had,
+  /// without the user having to add each one back by hand. Best-effort: a
+  /// connection hiccup here shouldn't fail the import itself, which already
+  /// fully succeeded by the time this runs.
+  Future<void> _syncMarketWatchAfterImport() async {
+    final storage = ref.read(storageProvider);
+    final json = storage.readJsonObject(storage.configFile);
+    if (json == null) return;
+    final config = AppConfig.fromJson(json);
+    if (config.symbols.isEmpty) return;
+    final env = storage.readEnvFile();
+    final client = Mt5Client(
+      apiKey: env['MT5_MCP_API_KEY'] ?? '',
+      host: config.mt5.mcpHost,
+      port: config.mt5.mcpPort,
+    );
+    try {
+      await client.connect();
+      for (final mapping in config.symbols) {
+        await client.addMarketWatchSymbol(mapping.mt5Symbol);
+      }
+    } catch (_) {
+      // Best-effort - see this method's own doc comment.
+    } finally {
+      client.close();
     }
   }
 

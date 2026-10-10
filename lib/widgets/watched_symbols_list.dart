@@ -55,12 +55,17 @@ class WatchedSymbolsList extends ConsumerStatefulWidget {
   /// already exists, if any.
   final List<SymbolMapping> symbolMappings;
 
-  /// "Remove pair" affordance on an already-mapped symbol's card (2026-10-10,
-  /// per the user's Add/Remove Pairs request). Second argument is whether
-  /// the symbol currently has an open position — the caller refuses the
-  /// removal outright in that case rather than stranding a live position
-  /// with no engine code path able to manage it.
-  final void Function(String tvSymbol, bool hasRunningPosition) onRemovePair;
+  /// "Remove pair" affordance — every card gets one (2026-10-10, per the
+  /// user: "all already existed pairs in forex/crypto/stock should have
+  /// trash icon (can be deleted) ... only pairs in auto cant be deleted ...
+  /// once pair is not listed in auto then possible to be deleted"). Only
+  /// ever invoked for a card the user was actually allowed to tap - the
+  /// card itself disables the tap target while auto-managed or running, so
+  /// there's nothing left for the caller to re-check. [tvSymbol] is
+  /// config.json's existing mapping for this symbol, if any (null means
+  /// there's nothing to unmap — removal only touches MT5's Market Watch
+  /// visibility in that case).
+  final void Function(WatchedSymbol symbol, String? tvSymbol) onRemovePair;
 
   /// Cap rows shown per section (e.g. for a Dashboard summary) — null shows
   /// everything.
@@ -255,7 +260,7 @@ class _Section extends StatelessWidget {
   final void Function(String symbol, bool? checked) onToggle;
   final Set<String> autoManagedMt5Symbols;
   final Map<String, String> mappedTvSymbols;
-  final void Function(String tvSymbol, bool hasRunningPosition) onRemovePair;
+  final void Function(WatchedSymbol symbol, String? tvSymbol) onRemovePair;
   final Color accent;
   final Color accentContainer;
   final int? max;
@@ -373,7 +378,7 @@ class _SymbolCard extends StatelessWidget {
   final bool checked;
   final Color accent;
   final ValueChanged<bool?> onToggle;
-  final void Function(String tvSymbol, bool hasRunningPosition) onRemovePair;
+  final void Function(WatchedSymbol symbol, String? tvSymbol) onRemovePair;
 
   @override
   Widget build(BuildContext context) {
@@ -426,26 +431,37 @@ class _SymbolCard extends StatelessWidget {
                     ),
                     if (checked)
                       Icon(Icons.check_circle, size: 16, color: accent)
-                    else if (!disabled && mappedTvSymbol == null)
+                    else if (!disabled)
                       Icon(Icons.circle_outlined, size: 16, color: scheme.outlineVariant),
-                    if (mappedTvSymbol != null)
-                      Tooltip(
-                        message: position != null
-                            ? 'Cannot remove — a position is currently running'
-                            : 'Remove pair',
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(12),
-                          onTap: () => onRemovePair(mappedTvSymbol!, position != null),
-                          child: Padding(
-                            padding: const EdgeInsets.all(2),
-                            child: Icon(
-                              Icons.delete_outline,
-                              size: 16,
-                              color: position != null ? scheme.outlineVariant : scheme.error,
-                            ),
+                    // 2026-10-10, per the user: "all already existed pairs
+                    // in forex/crypto/stock should have trash icon (can be
+                    // deleted) ... only pairs in auto cant be deleted ...
+                    // once pair is not listed in auto then possible to be
+                    // deleted" - every card gets one, blocked only by
+                    // [disabled] (auto-managed, or an open position - the
+                    // latter as a safety net for a MANUALLY-opened MT5
+                    // position on a symbol this app never auto-managed).
+                    Tooltip(
+                      message: disabled
+                          ? (alreadyAutoManaged
+                                ? 'Cannot remove — this pair is in the auto list'
+                                : 'Cannot remove — a position is currently running')
+                          : 'Remove pair',
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: disabled
+                            ? null
+                            : () => onRemovePair(symbol, mappedTvSymbol),
+                        child: Padding(
+                          padding: const EdgeInsets.all(2),
+                          child: Icon(
+                            Icons.delete_outline,
+                            size: 16,
+                            color: disabled ? scheme.outlineVariant.withValues(alpha: 0.5) : scheme.error,
                           ),
                         ),
                       ),
+                    ),
                   ],
                 ),
                 const SizedBox(height: 4),

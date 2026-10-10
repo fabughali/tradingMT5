@@ -1743,6 +1743,26 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-10** — Add/Remove Pairs follow-up fixes, both caught live while
+  the user tested adding Gala right after the feature shipped:
+  (1) **`AddPairDialog` dropped typed text in the MT5/TradingView fields.**
+  The search-suggestions box was a plain conditional sibling above those
+  fields with no key; every keystroke that made it appear/disappear shifted
+  their position in the `Column`, and Flutter's unkeyed-list reconciliation
+  tore down and rebuilt their element (focus and in-flight keystrokes
+  included) on every such shift. Fixed by giving every field a stable
+  `ValueKey` so Flutter matches by identity instead of position.
+  (2) **`Mt5Client.findSymbolInFullCatalog` was exact-match AND
+  case-sensitive**, unlike MT5's own Ctrl+U search the user described by
+  hand - confirmed live against the real 2312-symbol catalog: "GALAUSD.lv"
+  genuinely exists, but "GALAUSD", "GALA", and "galausd.lv" all came back
+  null from a single case-sensitive lookup, exactly the four spellings the
+  user tried. Fixed with a bounded fallback (case-insensitive exact match,
+  then a `.lv`/`.sd` suffix variant, also case-insensitive exact) - **not**
+  a substring search, which was tried first and caught live rejecting
+  itself: a bare "USDT" candidate spuriously "matched" the unrelated forex
+  pair "USDTWD" purely because it starts with those four letters, which
+  would have silently offered the wrong instrument as a hit.
 - **2026-10-10** — Add/Remove Pairs (§16.12a), per the user: "user should
   have capability to add/remove pairs in forex/crypto/stock. but be
   careful, adding a pair should be confirmed from three apps (mt5 ...

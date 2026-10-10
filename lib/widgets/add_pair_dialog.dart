@@ -52,7 +52,14 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
 
   Timer? _tvPollTimer;
   int _tvPollElapsedMs = 0;
-  static const _tvPollTimeout = Duration(seconds: 30);
+  // 2026-10-10, live-tested: a busy engine cycle (e.g. right after a
+  // technique switch triggers several reverse-checks) can take 50s+ to
+  // reach this candidate's turn - confirmed live with KASUSDT, which
+  // genuinely resolved but only after 55s, well past an earlier 30s
+  // timeout that showed a false "timed out" despite the engine's own
+  // answer landing correctly moments later. 120s covers a normal cycle
+  // with real margin.
+  static const _tvPollTimeout = Duration(seconds: 120);
 
   bool _adding = false;
 
@@ -112,6 +119,7 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
       _tmt5Check = _CheckState.checking;
       _mt5Check = _CheckState.checking;
       _tvCheck = _CheckState.checking;
+      _tvDetail = 'Waiting for the engine\'s next cycle — can take up to a minute or two';
     });
 
     // tradingMT5: instant local check against config.json's own mappings.
@@ -254,6 +262,7 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
             mainAxisSize: MainAxisSize.min,
             children: [
               SegmentedButton<AssetClass>(
+                key: const ValueKey('assetClassPicker'),
                 segments: const [
                   ButtonSegment(value: AssetClass.forex, label: Text('Forex')),
                   ButtonSegment(value: AssetClass.crypto, label: Text('Crypto')),
@@ -266,8 +275,9 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
                   _resetChecks();
                 }),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(key: ValueKey('gap1'), height: 12),
               TextField(
+                key: const ValueKey('searchField'),
                 controller: _searchCtrl,
                 decoration: const InputDecoration(
                   labelText: 'Search',
@@ -276,34 +286,50 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
                 ),
                 onChanged: (_) => setState(() {}),
               ),
+              // 2026-10-10, live-tested bug: this box used to be a plain
+              // conditional sibling with no key, so every keystroke that
+              // flipped it in/out shifted the MT5/TradingView fields below
+              // to a different position in the Column's children list -
+              // Flutter's unkeyed-list reconciliation then tore down and
+              // rebuilt THEIR element (and focus/keystrokes with it) every
+              // time this box appeared or disappeared, so typed text in
+              // those fields kept vanishing. A stable key on every sibling
+              // here (this one included, via KeyedSubtree) makes Flutter
+              // match each child by identity instead of position, so the
+              // fields below keep their focus regardless of what this box
+              // is doing.
               if (_searchCtrl.text.isNotEmpty && _selectedInstrument == null)
-                Container(
-                  constraints: const BoxConstraints(maxHeight: 160),
-                  margin: const EdgeInsets.only(top: 4),
-                  decoration: BoxDecoration(
-                    border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
-                    borderRadius: BorderRadius.circular(8),
+                KeyedSubtree(
+                  key: const ValueKey('suggestionsBox'),
+                  child: Container(
+                    constraints: const BoxConstraints(maxHeight: 160),
+                    margin: const EdgeInsets.only(top: 4),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: filtered.isEmpty
+                        ? const Padding(
+                            padding: EdgeInsets.all(12),
+                            child: Text('No match — enter the MT5/TradingView symbols manually below.'),
+                          )
+                        : ListView(
+                            shrinkWrap: true,
+                            children: [
+                              for (final i in filtered)
+                                ListTile(
+                                  dense: true,
+                                  title: Text(i.displayName),
+                                  subtitle: Text(i.key),
+                                  onTap: () => _pickInstrument(i),
+                                ),
+                            ],
+                          ),
                   ),
-                  child: filtered.isEmpty
-                      ? const Padding(
-                          padding: EdgeInsets.all(12),
-                          child: Text('No match — enter the MT5/TradingView symbols manually below.'),
-                        )
-                      : ListView(
-                          shrinkWrap: true,
-                          children: [
-                            for (final i in filtered)
-                              ListTile(
-                                dense: true,
-                                title: Text(i.displayName),
-                                subtitle: Text(i.key),
-                                onTap: () => _pickInstrument(i),
-                              ),
-                          ],
-                        ),
                 ),
-              const SizedBox(height: 12),
+              const SizedBox(key: ValueKey('gap2'), height: 12),
               TextField(
+                key: const ValueKey('mt5Field'),
                 controller: _mt5Ctrl,
                 decoration: const InputDecoration(
                   labelText: 'MT5 symbol (candidate)',
@@ -312,8 +338,9 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
                 ),
                 onChanged: (_) => setState(_resetChecks),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(key: ValueKey('gap3'), height: 8),
               TextField(
+                key: const ValueKey('tvField'),
                 controller: _tvCtrl,
                 decoration: const InputDecoration(
                   labelText: 'TradingView symbol (candidate)',
@@ -323,17 +350,18 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
                 textCapitalization: TextCapitalization.characters,
                 onChanged: (_) => setState(_resetChecks),
               ),
-              const SizedBox(height: 12),
+              const SizedBox(key: ValueKey('gap4'), height: 12),
               FilledButton.tonal(
+                key: const ValueKey('checkAvailabilityButton'),
                 onPressed: _mt5Ctrl.text.trim().isEmpty || _tvCtrl.text.trim().isEmpty
                     ? null
                     : _runChecks,
                 child: const Text('Check availability'),
               ),
-              const SizedBox(height: 12),
-              _CheckRow(label: 'tradingMT5', state: _tmt5Check, detail: _tmt5Detail),
-              _CheckRow(label: 'MT5', state: _mt5Check, detail: _mt5Detail),
-              _CheckRow(label: 'TradingView', state: _tvCheck, detail: _tvDetail),
+              const SizedBox(key: ValueKey('gap5'), height: 12),
+              _CheckRow(key: const ValueKey('tmt5Check'), label: 'tradingMT5', state: _tmt5Check, detail: _tmt5Detail),
+              _CheckRow(key: const ValueKey('mt5Check'), label: 'MT5', state: _mt5Check, detail: _mt5Detail),
+              _CheckRow(key: const ValueKey('tvCheck'), label: 'TradingView', state: _tvCheck, detail: _tvDetail),
             ],
           ),
         ),
@@ -359,7 +387,7 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
 }
 
 class _CheckRow extends StatelessWidget {
-  const _CheckRow({required this.label, required this.state, this.detail});
+  const _CheckRow({super.key, required this.label, required this.state, this.detail});
 
   final String label;
   final _CheckState state;

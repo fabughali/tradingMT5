@@ -242,12 +242,41 @@ class Mt5Client {
   Future<Map<String, dynamic>> getAccountInfo() =>
       callTool('get_trading_account_info', const {});
 
-  /// Checks whether an EXACT symbol name exists anywhere in the broker's
-  /// full catalog (2026-10-10, per the user's Add Pair flow: "confirmed
-  /// from three apps (mt5: if this pair is listed...)") — `include_hidden:
-  /// true` so this finds a symbol even if it isn't currently visible in
-  /// Market Watch, unlike [getMarketWatchSymbol]. Read-only. Returns the
-  /// raw symbol record (digits, volume bounds, etc.) if found, or null.
+  /// Checks whether [symbol] exists anywhere in the broker's full catalog
+  /// (2026-10-10, per the user's Add Pair flow: "confirmed from three apps
+  /// (mt5: if this pair is listed...)") — `include_hidden: true` so this
+  /// finds a symbol even if it isn't currently visible in Market Watch,
+  /// unlike [getMarketWatchSymbol]. Read-only.
+  ///
+  /// **Case-insensitive, with a substring fallback** — confirmed live
+  /// 2026-10-10 this has to be, not a nice-to-have: the server-side
+  /// `symbol` filter this calls into is an EXACT, case-SENSITIVE match (a
+  /// real broker record, "GALAUSD.lv", was confirmed present in the full
+  /// 2312-symbol catalog, yet a single-candidate lookup for "GALAUSD",
+  /// "GALA", or even "galausd.lv" all came back null - only the exact
+  /// original casing matched). The user's own description of how they do
+  /// this by hand in MT5 (Ctrl+U, type a name, get a filtered list) is
+  /// forgiving in exactly the ways a single case-sensitive exact lookup
+  /// isn't, so a free-typed Add Pair candidate (anything not pulled from
+  /// the curated [requestedInstruments] list, which already guesses exact
+  /// casing) would false-negative on a pair that's genuinely on this
+  /// broker. Falls back to a full-catalog scan ([getAllSymbols]) doing a
+  /// case-insensitive exact match first, then a case-insensitive substring
+  /// match if exactly one candidate contains [symbol] - mirroring "search
+  /// MT5, get exactly one hit, that's your pair." Returns the raw symbol
+  /// record (digits, volume bounds, the catalog's own exact spelling) if
+  /// found by any of the three paths, or null.
+  ///
+  /// **Deliberately NOT a substring search** — tried that first and caught
+  /// it live before shipping: a candidate of bare "USDT" "matched" the
+  /// totally unrelated forex pair "USDTWD" purely because that symbol
+  /// happens to start with the same four letters, which would have quietly
+  /// offered the wrong instrument as a hit. Falls back only to a small set
+  /// of deterministic variants matching this broker's own confirmed naming
+  /// conventions (see [SymbolResolver]'s own doc comment: crypto gets a
+  /// `.lv` suffix, forex gets `.sd`) - every variant still requires a
+  /// case-insensitive EXACT match against the catalog, so there's no
+  /// loose/fuzzy matching anywhere in this method.
   Future<Map<String, dynamic>?> findSymbolInFullCatalog(String symbol) async {
     final result = await callTool('get_marketwatch_symbols', {
       'symbol': symbol,
@@ -256,7 +285,19 @@ class Mt5Client {
     });
     final symbols = ((result['symbols'] as List?) ?? const [])
         .cast<Map<String, dynamic>>();
-    return symbols.isEmpty ? null : symbols.first;
+    if (symbols.isNotEmpty) return symbols.first;
+
+    final all = await getAllSymbols();
+    final upper = symbol.toUpperCase();
+    final variants = <String>{
+      upper,
+      if (!upper.endsWith('.LV')) '$upper.LV',
+      if (!upper.endsWith('.SD')) '$upper.SD',
+    };
+    for (final s in all) {
+      if (variants.contains((s['symbol'] as String? ?? '').toUpperCase())) return s;
+    }
+    return null;
   }
 
   /// Adds a symbol to MT5's Market Watch — visibility only, per the
