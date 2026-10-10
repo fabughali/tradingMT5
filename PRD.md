@@ -1743,6 +1743,22 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-10** — Add Pair: fixed a half-added-pair race, caught live right
+  after the previous two fixes shipped: the user passed all three checks
+  for Gala and clicked Add, got an error snackbar, but the pair "added"
+  anyway. Investigation (direct MT5 query) confirmed GALAUSD.lv WAS
+  genuinely selected/visible in MT5's Market Watch, yet config.json had no
+  mapping for it at all - `Mt5Client.addMarketWatchSymbol` succeeded
+  server-side but the client-side HTTP call still threw (almost certainly
+  the 15s timeout, since MT5 subscribing a brand-new symbol's live quotes
+  for the first time is slower than a routine call), aborting `_addPair`
+  before it ever reached `repo.addSymbolMapping`. Fixed by retrying
+  `addMarketWatchSymbol` once on any exception before giving up - safe
+  because the method's own contract is already "no-op if already visible,"
+  so a retry moments later returns fast either way. Manually completed the
+  user's own stuck GALAUSDT -> GALAUSD.lv mapping via the same
+  `EngineControlRepository.addSymbolMapping` the dialog itself calls, so
+  they don't have to redo the whole check flow.
 - **2026-10-10** — Add/Remove Pairs follow-up fixes, both caught live while
   the user tested adding Gala right after the feature shipped:
   (1) **`AddPairDialog` dropped typed text in the MT5/TradingView fields.**

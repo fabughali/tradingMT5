@@ -220,7 +220,25 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
       );
       try {
         await client.connect();
-        await client.addMarketWatchSymbol(mt5Symbol);
+        try {
+          await client.addMarketWatchSymbol(mt5Symbol);
+        } catch (_) {
+          // 2026-10-10, caught live: the symbol genuinely got added to MT5's
+          // Market Watch (confirmed server-side - "selected": true in the
+          // catalog moments later) while this SAME call still threw client-
+          // side (almost certainly the request outliving the 15s timeout
+          // while MT5 was busy subscribing a brand-new symbol's live
+          // quotes). That left a real half-added pair: visible in MT5, but
+          // never reaching the config.json mapping below, since the
+          // original code aborted the whole method right here. A retry is
+          // always safe - this call's own doc comment already guarantees
+          // "no-op (not an error) if the symbol is already visible" - and a
+          // second attempt moments later should return fast either way,
+          // since the first attempt already finished the slow part
+          // (subscribing the symbol) even though its own response never
+          // made it back in time.
+          await client.addMarketWatchSymbol(mt5Symbol);
+        }
       } finally {
         client.close();
       }

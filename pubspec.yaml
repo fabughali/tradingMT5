@@ -2,7 +2,7 @@ name: trading_mt5
 description: "TradingMT5: deterministic MT5-broker grid/signal trading engine (Flutter/Dart), standalone with TradingView and MetaTrader 5"
 publish_to: 'none'
 
-version: 1.2.11+15
+version: 1.2.12+16
 
 environment:
   sdk: ^3.12.2
