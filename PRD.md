@@ -1743,6 +1743,31 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-10** — Add Pair: the retry-once fix below turned out
+  insufficient - the SAME half-added-pair race recurred with Gala a second
+  time, because MT5's MCP calls were consistently slow under the combined
+  concurrent load of the engine's own ~5s polling plus every GUI provider,
+  not just a one-off fluke a single retry could outrun. Replaced the
+  retry-and-hope approach with a proper verify-the-real-state loop: up to 3
+  attempts (3s apart) of "call `addMarketWatchSymbol`, ignore whether it
+  itself reports success, then ask `getWatchedSymbols` directly whether the
+  symbol is actually visible now" - the add step and its own exceptions are
+  no longer trusted at all, only the independent verification read is.
+  Deliberately checks `getWatchedSymbols` (what's actually selected into
+  Market Watch right now), not `findSymbolInFullCatalog` (the broker's
+  whole 2000+-symbol universe, which a candidate like GALAUSD.lv is already
+  IN before ever being watched - checking that would have reported "done"
+  without `addMarketWatchSymbol` having done anything at all). Separately,
+  per the user asking "why does the app need a cycle to check if a pair is
+  in TradingView... the cycle for what?": explained the CDP single-attach
+  constraint (§14.7) that forces the TradingView check through the
+  engine's own loop rather than a direct GUI connection, then found and
+  fixed a real slowness in that loop while explaining it -
+  `_processAllPendingSymbolResolveRequests` only ran once at the very top
+  of each full sweep, so a request made partway through a long sweep had
+  to wait out the entire rest of it (confirmed live: 55s for KASUSDT)
+  before being noticed. Now re-checked before every symbol in the inner
+  loop too, exactly like the terminate/unpause drains already were.
 - **2026-10-10** — Add Pair: fixed a half-added-pair race, caught live right
   after the previous two fixes shipped: the user passed all three checks
   for Gala and clicked Add, got an error snackbar, but the pair "added"

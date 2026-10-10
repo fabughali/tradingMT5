@@ -888,6 +888,15 @@ class EngineService {
         // drain immediately above, for an unpause-triggered instant check
         // (2026-10-09).
         await _processAllPendingUnpauseChecks(technique);
+        // Same reasoning again, for an Add Pair TradingView check
+        // (2026-10-10, per the user: "why app need to have cycle to check
+        // pair... the cycle for what?" - found live the symbol-resolve
+        // drain only ran once at the very top of the sweep, so a request
+        // made partway through a long sweep had to wait out the ENTIRE
+        // rest of it (confirmed live: 55s for KASUSDT) before being
+        // noticed, the exact same problem terminate/unpause already solved
+        // by re-checking before every symbol instead of once per lap.
+        await _processAllPendingSymbolResolveRequests();
         if (!(await _maybeRunHealthCheck())) return;
         try {
           // Re-read symbols from config.json fresh every cycle (rather than

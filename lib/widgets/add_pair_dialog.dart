@@ -220,24 +220,53 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
       );
       try {
         await client.connect();
-        try {
-          await client.addMarketWatchSymbol(mt5Symbol);
-        } catch (_) {
-          // 2026-10-10, caught live: the symbol genuinely got added to MT5's
-          // Market Watch (confirmed server-side - "selected": true in the
-          // catalog moments later) while this SAME call still threw client-
-          // side (almost certainly the request outliving the 15s timeout
-          // while MT5 was busy subscribing a brand-new symbol's live
-          // quotes). That left a real half-added pair: visible in MT5, but
-          // never reaching the config.json mapping below, since the
-          // original code aborted the whole method right here. A retry is
-          // always safe - this call's own doc comment already guarantees
-          // "no-op (not an error) if the symbol is already visible" - and a
-          // second attempt moments later should return fast either way,
-          // since the first attempt already finished the slow part
-          // (subscribing the symbol) even though its own response never
-          // made it back in time.
-          await client.addMarketWatchSymbol(mt5Symbol);
+        // 2026-10-10, caught live TWICE (a same-session retry wasn't
+        // enough the first time) - addMarketWatchSymbol can succeed on
+        // MT5's own side (confirmed server-side - "selected": true in the
+        // catalog moments later) while the client-side HTTP call itself
+        // still times out, under the combined load of the engine's own
+        // ~5s polling plus every other GUI provider also hitting MT5's MCP
+        // concurrently. A blind retry can hit the exact same slow window
+        // and time out again. The only answer that's actually trustworthy
+        // is asking MT5 directly afterward whether the symbol is visible
+        // now, regardless of whether the add call itself reported success
+        // - up to 3 attempts, 3s apart, since the first add may still be
+        // settling server-side even after its own client call already
+        // timed out once.
+        var visible = false;
+        for (var attempt = 0; attempt < 3 && !visible; attempt++) {
+          try {
+            await client.addMarketWatchSymbol(mt5Symbol);
+          } catch (_) {
+            // Ignored here - checked for real via getWatchedSymbols below
+            // instead of trusting this call's own success/failure.
+            // Deliberately NOT findSymbolInFullCatalog - that checks the
+            // broker's full 2000+-symbol universe (include_hidden: true),
+            // which GALAUSD.lv (and most candidates) is already IN before
+            // ever being added to Market Watch, so it would report
+            // "visible" even when addMarketWatchSymbol had done nothing at
+            // all. getWatchedSymbols only returns what's actually selected
+            // into Market Watch right now - the real thing being checked.
+          }
+          try {
+            final watched = await client.getWatchedSymbols();
+            visible = watched.any(
+              (s) => (s['symbol'] as String? ?? '').toUpperCase() == mt5Symbol.toUpperCase(),
+            );
+          } catch (_) {
+            // This verification call can be just as slow under the same
+            // concurrent MT5 load as the add call above - a transient
+            // failure here just means "try the whole thing again," not
+            // "give up."
+          }
+          if (!visible && attempt < 2) {
+            await Future<void>.delayed(const Duration(seconds: 3));
+          }
+        }
+        if (!visible) {
+          throw Mt5ClientException(
+            'MT5 never confirmed "$mt5Symbol" became visible in Market Watch.',
+          );
         }
       } finally {
         client.close();
