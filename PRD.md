@@ -1455,34 +1455,58 @@ covers symbols already visible in MT5's own Market Watch), `AddPairDialog`
 can add a pair MT5 doesn't even know about yet, from a header button next
 to "Market Watch."
 
-- **Asset-class picker** (Forex/Crypto/Stock) + a search box seeded from
-  `requestedInstruments` (`lib/data/models/instrument.dart`), with a free-text
-  fallback for anything not in that curated list. Picking a suggestion
-  pre-fills a candidate MT5 symbol (`SymbolResolver.candidateFor`) and a
-  candidate TradingView symbol (the same crypto `BASEUSD.lv ↔ BASEUSDT`
-  convention `WatchedSymbol.derivedTradingViewSymbol` already uses in
-  reverse) — both fields stay hand-editable before checking.
-- **Three independent, all-must-pass checks**, run in parallel:
-  1. **tradingMT5** — an instant local read of `config.json`'s own
-     `symbols` mapping; fails if either candidate symbol is already mapped.
-  2. **MT5** — `Mt5Client.findSymbolInFullCatalog` (`include_hidden: true`),
-     called directly from the GUI. Safe to do without going through the
-     engine, since MT5's MCP protocol supports multiple concurrent client
-     connections (already proven by every other direct-from-GUI MT5 read in
-     `app_providers.dart`) — unlike the TradingView check below.
-  3. **TradingView** — routed through a new file-based request/response
-     store, `SymbolResolveStore` (`lib/data/identity/symbol_resolve_store.dart`,
-     `logs/symbol-resolve.json`): the GUI writes a `'pending'` entry, and
-     `EngineService._processAllPendingSymbolResolveRequests` drains it each
-     cycle by switching TradingView's chart (via the engine's own, sole CDP
-     connection — see §14.7) to the candidate and recording what it finds.
-     The dialog polls the store every 1.5s (30s timeout) since a second
-     direct CDP connection from the GUI is exactly the single-attach
-     violation §14.7 exists to prevent.
-- **"Add"** (enabled only once all three checks pass) calls
-  `Mt5Client.addMarketWatchSymbol` (visibility only — a no-op if already
-  shown) then `EngineControlRepository.addSymbolMapping`, same as the
-  existing Start Auto Trade path.
+- **A single search field** (2026-10-10, reworked same day per further
+  feedback: "why there are 3 search textfield??? there should be only
+  one"), optionally backed by a suggestion dropdown seeded from
+  `requestedInstruments` (`lib/data/models/instrument.dart`) — pick a
+  suggestion or just type free text (e.g. "Gala", "EUR/USD", "NVDA",
+  or either of MT5's/TradingView's own spellings for a crypto pair, see
+  below) and press Search/Enter.
+- **tradingMT5 checked FIRST, instantly, before any network call** — a
+  local `config.json` read; a match shows a SnackBar ("Already in
+  tradingMT5 — nothing to add") and stops right there, never touching
+  MT5 or TradingView at all.
+- **MT5** — `Mt5Client.findSymbolInFullCatalog`, called directly from the
+  GUI (safe without going through the engine, since MT5's MCP protocol
+  supports multiple concurrent client connections — unlike the
+  TradingView check below). Tries the query as typed, and — since MT5
+  quotes every crypto pair in plain USD, never USDT (`SymbolResolver`'s
+  own doc comment) — ALSO tries it with a trailing "USDT" shortened to
+  "USD" (2026-10-10, per the user: "if user type galausdt (crypto) then
+  app need to search (galausd) in mt5 not (galausdt)"), so either
+  spelling of a crypto pair finds the same real broker symbol.
+- **Asset class is auto-detected from the real MT5 match**, not chosen
+  up front (2026-10-10, per the user: "app should be smart enough to
+  understand if this new pair is for forex or crypto or stock"): a `.lv`
+  suffix means crypto, `.sd` means forex (this broker's own confirmed
+  convention — see `SymbolResolver`'s doc comment), checked against the
+  ACTUAL matched symbol, not the user's typed text. Only when neither
+  suffix matches (ambiguous between a stock and this broker's two
+  no-suffix forex exceptions, USDINR/USDKRW) does a manual Forex/Crypto/
+  Stock picker — the "knob" the user asked for — appear at all.
+- **TradingView** — routed through a file-based request/response store,
+  `SymbolResolveStore` (`lib/data/identity/symbol_resolve_store.dart`,
+  `logs/symbol-resolve.json`): the GUI writes a `'pending'` entry, and
+  `EngineService._processAllPendingSymbolResolveRequests` drains it
+  (re-checked before every symbol in the main loop, not just once per
+  sweep — see §20's 2026-10-10 entry) by switching TradingView's chart
+  (via the engine's own, sole CDP connection — see §14.7) to a candidate
+  DERIVED from the real MT5 match the same way
+  `WatchedSymbol.derivedTradingViewSymbol` already does in reverse (e.g.
+  MT5's "GALAUSD.lv" → "GALAUSDT", per the user: "if user type galausd
+  (crypto pair) then app need to search (galausdt) in trading view").
+  If that guess doesn't resolve, a one-off override field appears so the
+  user can correct it without starting over — the one case (stocks, whose
+  MT5 catalog name is often a display name unrelated to the real ticker)
+  this broker's own data can't auto-derive.
+- **"Add"** (enabled only once MT5 and TradingView both pass) calls
+  `Mt5Client.addMarketWatchSymbol`, **verified afterward via
+  `getWatchedSymbols`** rather than trusted on its own report (2026-10-10,
+  caught live TWICE with Gala: the add can succeed on MT5's own side while
+  the client-side HTTP call still times out under combined engine+GUI
+  polling load — up to 3 attempts, 3s apart, checking the real Market
+  Watch state each time), then `EngineControlRepository.addSymbolMapping`.
+  The dialog closes and the Dashboard shows a "Pair added" SnackBar.
 - **"Remove pair"** — a small trash icon on any already-mapped card in
   `WatchedSymbolsList` (§16.12), confirmed via a dialog, refused outright by
   `EngineControlRepository.removeSymbolMapping` if the symbol has an open
@@ -1743,6 +1767,26 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-10** — Add Pair UX rework (§16.12a), per the user's direct
+  feedback right after the feature shipped: "user need to choose if to add
+  the pair to crypto or to forex or to stock... app should be smart enough
+  to understand" + "why there are 3 search textfield??? there should be
+  only one" + "app need to check if pair is already listed in tradingmt5
+  before checking with mt5 and trading view." Collapsed the asset-class
+  picker + 3 separate text fields into one search field: asset class is
+  now auto-detected from the REAL matched MT5 symbol's own suffix (`.lv`
+  crypto, `.sd` forex), with a manual picker appearing only when that's
+  genuinely ambiguous; the tradingMT5 duplicate check runs first and
+  instantly, via a SnackBar, before MT5/TradingView are ever contacted at
+  all. Two follow-up corrections from the same conversation, both about
+  bridging MT5's and TradingView's different crypto-pair spellings (MT5:
+  `GALAUSD.lv`, TradingView: `GALAUSDT`) regardless of which one the user
+  types: the MT5 search now also tries a typed "...USDT" shortened to
+  "...USD" (so typing the TradingView spelling still finds MT5's own
+  symbol), and the TradingView check always derives its candidate from the
+  REAL MT5 match via the same `BASEUSD.lv ↔ BASEUSDT` convention
+  `WatchedSymbol.derivedTradingViewSymbol` already uses, never from the
+  raw typed text directly.
 - **2026-10-10** — Add Pair: the retry-once fix below turned out
   insufficient - the SAME half-added-pair race recurred with Gala a second
   time, because MT5's MCP calls were consistently slow under the combined

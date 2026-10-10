@@ -235,6 +235,15 @@ class DashboardScreen extends ConsumerWidget {
       ref.invalidate(configProvider);
       ref.invalidate(watchedSymbolsProvider);
       ref.invalidate(autoTradesProvider);
+      // 2026-10-10, per the user: "once user click on add, pair added ...
+      // add dialog disappear and snack bar show success" - shown here
+      // rather than inside the dialog itself, since the dialog's own
+      // context is already gone by the time this runs.
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Pair added.')),
+        );
+      }
     }
   }
 
