@@ -1653,12 +1653,34 @@ guarantee.
   Windows — Windows resolves the taskbar icon from the exe's own identity
   automatically.
 
-### 19.2 Default install paths (verify against a real install)
+### 19.2 Default install paths (confirmed 2026-10-11 against a real install)
 
 - MT5: `C:\Program Files\MetaTrader 5\terminal64.exe`
-  (`Mt5LaunchConfig.defaultForWindows`).
-- TradingView: `%LOCALAPPDATA%\Programs\tradingview\TradingView.exe`
-  (`LaunchConfig.defaultForWindows`).
+  (`Mt5LaunchConfig.defaultForWindows`) — confirmed correct as originally
+  guessed.
+- TradingView: the original guess
+  (`%LOCALAPPDATA%\Programs\tradingview\TradingView.exe`, a traditional
+  per-user electron-builder install) is tried first, but the real machine
+  this was tested on had TradingView installed via the **Microsoft Store**
+  instead — a completely different MSIX/Appx mechanism
+  (`C:\Program Files\WindowsApps\TradingView.Desktop_<version>_x64__<hash>\
+  TradingView.exe`) no path guess could find, since that folder's
+  version+hash suffix changes on every TradingView update. Resolved live
+  instead via `Get-AppxPackage` (`LaunchConfig.defaultForWindows`,
+  `_resolveWindowsAppxTradingViewPath` in `lib/data/tradingview/launch.dart`)
+  — the same official API Windows itself uses to track installed Store
+  apps, shelled out to via PowerShell. That folder's own ACL is locked down
+  enough that even a plain `File.existsSync` can false-negative on a file
+  the owning user genuinely has (confirmed live: `Get-ChildItem` on it
+  returned nothing for a package `Get-AppxPackage` confirmed was theirs) —
+  see `LaunchConfig.confirmedInstalled`'s own doc comment for why
+  `isTradingViewInstalled` trusts the Appx resolution directly instead of
+  re-checking the filesystem. **Still unverified**: whether a Store-
+  installed TradingView actually accepts `--remote-debugging-port` at
+  launch at all (MSIX apps can run inside a container that strips custom
+  CLI flags) — if it doesn't, the practical fix is the non-Store direct
+  download from tradingview.com/desktop instead, same installer family as
+  Linux/Mac already use successfully.
 
 ### 19.3 Build/release pipeline
 
@@ -1766,6 +1788,24 @@ This section is intentionally selective — a running record of the real,
 live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
+
+- **2026-10-11** — Windows: fixed TradingView detection for a Microsoft
+  Store install (§19.2), the app's first real-machine report of "TradingView
+  is installed but the app doesn't detect it." Live diagnosis (a PowerShell
+  scan covering every standard install root, Start Menu shortcuts, and
+  registry uninstall entries - all came back empty) ruled out a simple
+  wrong-guessed-path fix and instead found TradingView installed via the
+  Store as an MSIX/Appx package, a fundamentally different mechanism from
+  the per-user electron-builder install the original Windows port assumed.
+  `LaunchConfig.defaultForWindows` now resolves this live via
+  `Get-AppxPackage` when the traditional path isn't found, and
+  `isTradingViewInstalled` trusts that resolution directly rather than
+  re-checking the filesystem (the `WindowsApps` folder's ACL can make even
+  a same-user file-existence check false-negative, confirmed live).
+  Whether the Store version's sandbox actually honors the
+  `--remote-debugging-port` flag this app's entire TradingView automation
+  depends on is still unverified pending the user's own test - if it
+  doesn't, the fallback is TradingView's direct (non-Store) download.
 
 - **2026-10-10** — Add Pair UX rework (§16.12a), per the user's direct
   feedback right after the feature shipped: "user need to choose if to add

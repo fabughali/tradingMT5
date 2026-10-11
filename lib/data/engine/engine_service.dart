@@ -975,7 +975,7 @@ class EngineService {
       level: 'CRITICAL',
     );
     try {
-      final binaryPath = _tradingViewLaunchConfig(home).binaryPath;
+      final binaryPath = (await _tradingViewLaunchConfig(home)).binaryPath;
       if (Platform.isWindows) {
         final imageName = binaryPath.split(RegExp(r'[\\/]')).last;
         await Process.run('taskkill', ['/F', '/IM', imageName]);
@@ -997,9 +997,10 @@ class EngineService {
   }
 
   /// Platform-appropriate TradingView launch config - see
-  /// [LaunchConfig.defaultForWindows]'s own doc comment (UNTESTED against a
-  /// real Windows machine).
-  LaunchConfig _tradingViewLaunchConfig(String home) {
+  /// [LaunchConfig.defaultForWindows]'s own doc comment (confirmed live
+  /// 2026-10-11 - async now, since resolving a Microsoft Store install
+  /// means shelling out to `Get-AppxPackage`).
+  Future<LaunchConfig> _tradingViewLaunchConfig(String home) async {
     if (Platform.isWindows) return LaunchConfig.defaultForWindows();
     return LaunchConfig.defaultForHome(home);
   }
@@ -1092,7 +1093,7 @@ class EngineService {
     final home =
         Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '.';
     if (!await isCdpUp(host, port)) {
-      final tvLaunchConfig = _tradingViewLaunchConfig(home);
+      final tvLaunchConfig = await _tradingViewLaunchConfig(home);
       if (!isTradingViewInstalled(tvLaunchConfig)) {
         throw TradingViewNotInstalledException(tvLaunchConfig.binaryPath);
       }

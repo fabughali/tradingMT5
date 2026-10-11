@@ -63,6 +63,7 @@ class LaunchConfig {
     this.dbusSessionBusAddress,
     this.xdgRuntimeDir,
     this.desktopFile,
+    this.confirmedInstalled = false,
   });
 
   final String binaryPath;
@@ -70,6 +71,16 @@ class LaunchConfig {
   final String? xauthority;
   final String? dbusSessionBusAddress;
   final String? xdgRuntimeDir;
+
+  /// True when installation was already positively confirmed through a
+  /// channel OTHER than a plain file-existence check (2026-10-11, confirmed
+  /// live: a Microsoft Store/Appx install's `WindowsApps` folder carries a
+  /// locked-down ACL that can make even [File.existsSync] on the OWNING
+  /// user's own file come back false - `Get-ChildItem` on that exact folder
+  /// returned nothing for a package the user's own `Get-AppxPackage` query
+  /// confirmed was genuinely theirs). When true, [isTradingViewInstalled]
+  /// trusts this instead of re-checking the filesystem.
+  final bool confirmedInstalled;
 
   /// The installed `.desktop` file for TradingView (same role as
   /// `Mt5LaunchConfig.desktopFile`) - used only to tell GNOME Shell which
@@ -84,15 +95,64 @@ class LaunchConfig {
     desktopFile: '$home/.local/share/applications/tradingview.desktop',
   );
 
-  /// Windows port (2026-10-07, UNTESTED against a real Windows machine -
-  /// verify this default install path once an actual build runs there).
-  /// Electron apps built with electron-builder (which TradingView Desktop
-  /// is) default to a per-user install under `%LOCALAPPDATA%\Programs`,
-  /// no admin rights required - [launchTradingView]'s own Windows branch
-  /// only uses this as a fallback the user can override.
-  static LaunchConfig defaultForWindows() {
+  /// Windows port (2026-10-11, confirmed live against a real Windows
+  /// machine, correcting the original 2026-10-07 guess). That original
+  /// guess — a per-user electron-builder install under
+  /// `%LOCALAPPDATA%\Programs` — is still tried FIRST, since it's exactly
+  /// right for TradingView's direct, non-Store download from
+  /// tradingview.com/desktop. But a real install was found live via the
+  /// **Microsoft Store** instead: an MSIX/Appx package at
+  /// `C:\Program Files\WindowsApps\TradingView.Desktop_VERSION_x64__HASH\TradingView.exe`
+  /// — a completely different install mechanism no path guess could ever
+  /// find, since that version+hash folder suffix changes on every
+  /// TradingView update. Falls back to asking
+  /// `Get-AppxPackage` directly (the same official API Windows itself
+  /// uses to track installed Store apps) rather than hardcoding today's
+  /// exact folder name, via [_resolveWindowsAppxTradingViewPath].
+  static Future<LaunchConfig> defaultForWindows() async {
     final localAppData = Platform.environment['LOCALAPPDATA'] ?? '';
-    return LaunchConfig(binaryPath: '$localAppData\\Programs\\tradingview\\TradingView.exe');
+    final traditionalPath = '$localAppData\\Programs\\tradingview\\TradingView.exe';
+    if (File(traditionalPath).existsSync()) {
+      return LaunchConfig(binaryPath: traditionalPath);
+    }
+    final appxPath = await _resolveWindowsAppxTradingViewPath();
+    if (appxPath != null) {
+      return LaunchConfig(binaryPath: appxPath, confirmedInstalled: true);
+    }
+    // Neither found - return the traditional guess anyway so the existing
+    // "not installed" error path ([isTradingViewInstalled]) still fires
+    // with a sensible, informative path in its own error message, rather
+    // than an empty/null one.
+    return LaunchConfig(binaryPath: traditionalPath);
+  }
+}
+
+/// Asks PowerShell's `Get-AppxPackage` cmdlet directly for TradingView
+/// Desktop's real install location when it was installed via the
+/// Microsoft Store (2026-10-11, confirmed live: `(Get-AppxPackage
+/// *TradingView*).InstallLocation` → `C:\Program Files\WindowsApps\
+/// TradingView.Desktop_3.4.1.8194_x64__n534cwy3pjxzj`, with the manifest's
+/// own `<Application Executable="...">` confirming the exe inside it is
+/// named plainly `TradingView.exe`). Returns null (never throws) on any
+/// failure — no Appx package found, PowerShell unavailable, etc. Returns
+/// the constructed path directly from `Get-AppxPackage`'s own answer,
+/// deliberately WITHOUT a [File.existsSync] re-check: that check is exactly
+/// what [LaunchConfig.confirmedInstalled]'s own doc comment explains is
+/// unreliable against this folder's locked-down ACL, so PowerShell's own
+/// package-registry answer (queried as the SAME user, via the same API
+/// Windows itself uses) is trusted directly instead.
+Future<String?> _resolveWindowsAppxTradingViewPath() async {
+  try {
+    final result = await Process.run('powershell', [
+      '-NoProfile',
+      '-Command',
+      r'(Get-AppxPackage -Name "*TradingView*" | Select-Object -First 1).InstallLocation',
+    ]).timeout(const Duration(seconds: 10));
+    final installLocation = (result.stdout as String).trim();
+    if (installLocation.isEmpty) return null;
+    return '$installLocation\\TradingView.exe';
+  } catch (_) {
+    return null;
   }
 }
 
@@ -100,8 +160,12 @@ class LaunchConfig {
 /// comment for the exact same reasoning, mirrored here
 /// ([PowerHealthState.tradingViewNotInstalled]). Unlike MT5, TradingView
 /// Desktop is native on Linux too (no Wine) - just the one file-existence
-/// check on either platform.
-bool isTradingViewInstalled(LaunchConfig config) => File(config.binaryPath).existsSync();
+/// check on either platform, UNLESS [LaunchConfig.confirmedInstalled] is
+/// already true (a Microsoft Store/Appx install, confirmed via a channel
+/// other than the filesystem - see that field's own doc comment for why a
+/// plain file check can't be trusted there).
+bool isTradingViewInstalled(LaunchConfig config) =>
+    config.confirmedInstalled || File(config.binaryPath).existsSync();
 
 Future<bool> isCdpUp(String host, int port) async {
   final client = HttpClient();
