@@ -1789,6 +1789,15 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-11** — Backup & Restore: fixed the export filename's timestamp
+  going stale after the first export, per the user: "each export should
+  have new time stamp... it is not updating." `_browseExportLocation` only
+  generated a fresh `_defaultExportName` when the path field was EMPTY -
+  harmless on a brand-new install, but once the field held any previous
+  export's filename (which it always does after the very first Browse
+  click or export), every subsequent Browse just re-suggested that exact
+  same stale name, timestamp included, for the rest of the session. Now
+  always generates a fresh one.
 - **2026-10-11** — Windows: fixed TradingView detection for a Microsoft
   Store install (§19.2), the app's first real-machine report of "TradingView
   is installed but the app doesn't detect it." Live diagnosis (a PowerShell

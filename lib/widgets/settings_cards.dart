@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:path/path.dart' as p;
 
 import '../core/app_version.dart';
 import '../core/core_constants.dart';
@@ -592,9 +591,14 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
   /// either way.
   Future<void> _browseExportLocation() async {
     final storage = ref.read(storageProvider);
-    final currentName = p.basename(_exportPathCtrl.text.trim());
+    // 2026-10-11, per the user: "each export should have new timestamp in
+    // the file name" - always fresh, never reused. The old code only
+    // generated a new stamp when the field was EMPTY, so after the very
+    // first export (or any Browse click) it kept suggesting that same
+    // stale filename - with its now-old timestamp - on every subsequent
+    // export for the rest of the session.
     final picked = await pickSaveLocation(
-      suggestedName: currentName.isEmpty ? _defaultExportName(_cachedVersion) : currentName,
+      suggestedName: _defaultExportName(_cachedVersion),
       suggestedDir: storage.backupsDir,
     );
     if (picked != null && mounted) setState(() => _exportPathCtrl.text = picked);
