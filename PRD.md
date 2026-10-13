@@ -1981,6 +1981,24 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-13** — Bug fix: the SL ratchet/baseline-SL retroactive sweep
+  (`_maybeApplySlRatchet`, §10.1/§10.2) was called AFTER
+  `_reverseCheckOnTechniqueSwitchIfNeeded` in `_runCycle` - a single long
+  `await` that walks every auto-managed base through TradingView
+  sequentially on every engine start (confirmed live ~45-60s per base;
+  with ~20+ bases, 15-20+ minutes to return). Found live after the user
+  asked why the SLL column stayed empty and currently-running trades
+  never got the new baseline SL: every redeploy this session restarted
+  the engine mid-sweep, so that first slow sweep never once reached
+  completion, meaning the ratchet/baseline code - fully wired and
+  correctly throttled - had never actually executed in production. Fixed
+  by moving the ratchet sweep and the margin gate refresh to the very top
+  of `_runCycle`, ahead of the slow technique-switch sweep (both are pure
+  MT5 - no CDP/TradingView involved - so they never needed to wait behind
+  it). Verified live: the instant the engine reached `health: ready`
+  post-fix, all 17 real open positions were retroactively tightened to
+  their baseline SL in under a second.
+
 - **2026-10-13** — New feature: baseline stop-loss at ignition (§10.2),
   filling in the SL ratchet's own "0% or below" row (which used to mean
   "unchanged" - the 60/40 model's typically ~40%+ wide SL). Per the user's

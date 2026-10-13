@@ -1123,6 +1123,26 @@ class EngineService {
       return;
     }
 
+    // 2026-10-13, moved ahead of everything else in this cycle (was after
+    // [_reverseCheckOnTechniqueSwitchIfNeeded]) - found live that the
+    // startup/technique-switch reverse-check sweep below is a single long
+    // `await` that walks every auto-managed base through TradingView
+    // sequentially (confirmed ~45-60s per base from real log timestamps),
+    // so with ~20+ auto-managed bases it can take 15-20+ minutes to return.
+    // Since both this sweep and the margin gate are pure MT5 (no CDP/
+    // TradingView involved at all - see [_applySlRatchet]'s own doc
+    // comment), there's no reason they need to wait behind it; sequencing
+    // them after meant that on every restart during this session's rapid
+    // redeploy cycle, that first slow sweep got interrupted by the NEXT
+    // restart before it ever returned - so this safety-critical sweep had
+    // never once actually executed in production despite being fully
+    // wired and throttled correctly. Self-throttled internally, so calling
+    // this first changes nothing about its own cadence - just removes the
+    // slow sweep as a gate in front of it.
+    await _maybeApplySlRatchet();
+    // Same reasoning - margin level is account-wide, not per-symbol.
+    await _maybeRefreshMarginGate();
+
     await _reconcileClosedPositions();
 
     // 2026-10-04, per the user: "dont let app to add, remove pairs from
@@ -1156,16 +1176,6 @@ class EngineService {
     // comment), so it asks here instead. Processed early, same reasoning
     // as the unpause-check drain above.
     await _processAllPendingSymbolResolveRequests();
-
-    // 2026-10-13, per the user - also called here (not just inside the
-    // per-symbol loop below) so it still runs even on a cycle where that
-    // loop has zero iterations (e.g. no bases currently auto-managed at
-    // all) - this sweep doesn't depend on the loop's own `tvSymbol`
-    // iteration variable, it's a single bulk pass over every open
-    // position regardless.
-    await _maybeApplySlRatchet();
-    // Same reasoning - margin level is account-wide, not per-symbol.
-    await _maybeRefreshMarginGate();
 
     for (final category in allAutoCategories) {
       if (storage.fileExists(storage.autoCategoryPausedFileFor(category))) {
