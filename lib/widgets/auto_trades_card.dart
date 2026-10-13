@@ -143,6 +143,79 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     if (confirmed == true) widget.onResetPnlSince();
   }
 
+  /// SLL column's (i) icon (2026-10-13, per the user: "once user click on
+  /// this icon... app will show the sll percent category setup in a
+  /// dialog") - the exact ladder `highestSlRatchetThresholdCrossed`/
+  /// `slRatioForThreshold` (§10.1) implement, spelled out so there's never
+  /// any guessing about what a given rung actually means.
+  void _showSllInfoDialog(BuildContext context) {
+    const rows = [
+      ('0% or below', 'unchanged (no ratchet SL)'),
+      ('+5%', '+2%'),
+      ('+10%', '+5%'),
+      ('+15%', '+10%'),
+      ('+20%', '+15%'),
+      ('+25%', '+20%'),
+      ('+30% and beyond', 'keeps going: threshold − 5'),
+    ];
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('SL Ratchet (SLL)'),
+        content: SizedBox(
+          width: 360,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Tightening-only stop-loss, keyed off each trade\'s own live '
+                'P&L% - never loosens once a rung is locked.',
+              ),
+              const SizedBox(height: 12),
+              Table(
+                columnWidths: const {0: FlexColumnWidth(1), 1: FlexColumnWidth(1)},
+                children: [
+                  const TableRow(
+                    children: [
+                      Padding(
+                        padding: EdgeInsets.symmetric(vertical: 4),
+                        child: Text('Floating P&L', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                      Padding(
+                        padding: EdgeInsets.symmetric(vertical: 4),
+                        child: Text('SL locks to', style: TextStyle(fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                  for (final r in rows)
+                    TableRow(
+                      children: [
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Text(r.$1),
+                        ),
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: Text(r.$2),
+                        ),
+                      ],
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   List<AutoTradeRow> _sorted(List<AutoTradeRow> rows) {
     final out = [...rows];
     switch (_sortMode) {
@@ -397,6 +470,32 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                     const DataColumn(label: Text('SL')),
                     const DataColumn(label: Text('TP')),
                     const DataColumn(label: Text('P&L')),
+                    DataColumn(
+                      label: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Text('SLL'),
+                          const SizedBox(width: 2),
+                          // 2026-10-13, per the user: "(i) icon... once
+                          // user click on this icon... app will show the
+                          // sll percent category setup in a dialog" - so
+                          // the ladder's exact thresholds are always one
+                          // tap away instead of something to remember.
+                          InkWell(
+                            borderRadius: BorderRadius.circular(10),
+                            onTap: () => _showSllInfoDialog(context),
+                            child: Padding(
+                              padding: const EdgeInsets.all(2),
+                              child: Icon(
+                                Icons.info_outline,
+                                size: 14,
+                                color: scheme.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                     const DataColumn(label: Center(child: Text('Volume'))),
                     const DataColumn(label: Text('Open')),
                     if (!widget.hideUpdateCloseColumns) ...[
@@ -495,6 +594,26 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                                     : row.profit! >= 0
                                     ? Colors.green
                                     : Colors.red,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          DataCell(
+                            // 2026-10-13, per the user: "a column in auto
+                            // table to show current sll set... so user know
+                            // what is current sll setup without any
+                            // guessing" - the SL ratchet rung currently
+                            // locked for this position (§10.1), straight
+                            // from SlRatchetStore - "—" means it hasn't
+                            // crossed the first rung (+5%) yet.
+                            Text(
+                              row.slRatchetThreshold == null
+                                  ? '—'
+                                  : '+${row.slRatchetThreshold}%',
+                              style: TextStyle(
+                                color: row.slRatchetThreshold == null
+                                    ? scheme.onSurfaceVariant
+                                    : Colors.green,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),

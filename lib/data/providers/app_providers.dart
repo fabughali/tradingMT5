@@ -302,6 +302,13 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           storage.readJsonObject(storage.lastCheckedFile) ?? const {};
       final pendingSignalsRaw =
           storage.readJsonObject(storage.pendingSignalsFile) ?? const {};
+      // 2026-10-13, per the user: "can i have a column in auto table to
+      // show current sll set... so user know what is current sll setup
+      // without any guessing" - read straight from SlRatchetStore's own
+      // file, keyed by ticket (same cross-process plain-file-read pattern
+      // every other identity store here already uses).
+      final slRatchetRaw =
+          storage.readJsonObject(storage.slRatchetStateFile) ?? const {};
       final tradeVolumes = TradeVolumeStore(storage);
       // One bulk call covers every symbol's volume_min/step/max (2026-10-03)
       // - same data [WatchedSymbol] already parses for the New Order
@@ -361,6 +368,10 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           final entry = ticket != null
               ? entrySignalsRaw['$ticket'] as Map<String, dynamic>?
               : null;
+          final slRatchetThreshold = ticket != null
+              ? ((slRatchetRaw['$ticket'] as Map<String, dynamic>?)?['threshold'] as num?)
+                    ?.toInt()
+              : null;
           // "Close A"/"Close B" (2026-09-30, per the user) - only
           // meaningful when the currently-pending candidate (if any)
           // actually disagrees with this row's running direction, i.e. it
@@ -415,6 +426,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               takeProfit: (position['take_profit'] as num?)?.toDouble(),
               profit: positionProfit,
               pnlPercent: pnlPercentForRow,
+              slRatchetThreshold: slRatchetThreshold,
               ticket: ticket,
               openedAt: DateTime.tryParse(
                 position['create_time'] as String? ?? '',

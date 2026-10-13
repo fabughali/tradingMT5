@@ -30,6 +30,7 @@ class AutoTradeRow {
     this.takeProfit,
     this.profit,
     this.pnlPercent,
+    this.slRatchetThreshold,
     this.ticket,
     this.openedAt,
     this.startTag,
@@ -80,6 +81,15 @@ class AutoTradeRow {
   /// whenever [profit] is null, or the notional value can't be computed
   /// (price/volume/contract size missing or zero).
   final double? pnlPercent;
+
+  /// The SL ratchet rung currently locked for this position (5/10/15/...),
+  /// or null if it's never crossed the first rung (2026-10-13, per the
+  /// user: "can i have a column in auto table to show current sll set...
+  /// so user know what is current sll setup without any guessing"). Read
+  /// straight from `SlRatchetStore`'s own file, keyed by this row's own
+  /// [ticket] - see `EngineService._applySlRatchet`/§10.1 for how this gets
+  /// set in the first place. Only ever set for [AutoTradeStatus.running].
+  final int? slRatchetThreshold;
 
   /// The position or order ticket, whichever applies.
   final int? ticket;

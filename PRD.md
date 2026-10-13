@@ -1472,7 +1472,8 @@ works" button rather than an easy-to-miss bare dropdown).
 
 One row per auto-managed symbol: symbol, trade id, status chip
 (Running/Waiting-pending/Waiting), side, price, SL, TP, live P&L (value and
-percentage — see below), volume
+percentage — see below), SLL (the SL ratchet rung currently locked, if any
+— see below), volume
 (with +/- stepper, showing a struck-through old value in yellow when a
 desired-but-not-yet-applied override exists), open time, start/update
 signal, Close A/Close B preview, Check mark (this candle cycle), a per-row
@@ -1508,6 +1509,17 @@ usage — none — and inspected real MT5 MCP responses for both an open
 position and account info — no margin/leverage field in either). Null
 whenever the notional value can't be computed; shown in parentheses next
 to the dollar figure, omitted entirely when null.
+
+**SLL column** (2026-10-13, per the user: "can i have a column in auto
+table to show current sll set... so user know what is current sll setup
+without any guessing") — `AutoTradeRow.slRatchetThreshold`, read straight
+from `SlRatchetStore`'s own file (`logs/sl-ratchet-state.json`) keyed by
+this row's ticket, same cross-process plain-file-read pattern every other
+identity store here already uses. Shows `+15%`-style for whatever rung is
+currently locked, or `—` if the position hasn't crossed the first rung
+(+5%) yet. The column header carries an (i) icon — tapping it opens a
+dialog spelling out the exact ladder table (§10.1) so what each rung
+actually means is never something to remember or guess at.
 
 **Update/Close A/Close B columns are hidden entirely while Supertrend Plus
 is the active technique** (`hideUpdateCloseColumns`, 2026-10-08, per the
@@ -1883,6 +1895,14 @@ This section is intentionally selective — a running record of the real,
 live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
+
+- **2026-10-13** — Dashboard: new "SLL" column on `AutoTradesCard` (§16.11)
+  showing the SL ratchet rung currently locked per position (`+15%`-style,
+  `—` if none yet), per the user: "so user know what is current sll setup
+  without any guessing." Read straight from `SlRatchetStore`'s own file,
+  no engine change needed. Header carries an (i) icon opening a dialog
+  with the full ladder table, so the exact thresholds are always visible
+  rather than something to remember.
 
 - **2026-10-13** — New feature: tightening-only SL ratchet ladder (§10.1),
   the first concrete piece of porting tradingPionex's "Stop Loss Lock"
