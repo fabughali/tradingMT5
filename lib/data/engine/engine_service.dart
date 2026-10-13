@@ -4,6 +4,7 @@ import 'dart:io';
 import '../../core/core_storage.dart';
 import '../../utilities/auto_cycle.dart';
 import '../identity/auto_managed_store.dart';
+import '../identity/baseline_stop_strike_store.dart';
 import '../identity/bot_category_store.dart';
 import '../identity/entry_signal_store.dart';
 import '../identity/first_open_store.dart';
@@ -125,6 +126,7 @@ class EngineService {
     unpauseRequests = UnpauseCheckRequestStore(storage);
     symbolResolve = SymbolResolveStore(storage);
     slRatchet = SlRatchetStore(storage);
+    baselineStopStrikes = BaselineStopStrikeStore(storage);
     // Backfill [firstOpen] from every past trade this app has ever closed,
     // so the new "wait for a confirmed opposite signal before a pair's
     // first-ever entry" gate (2026-10-06, per the user) only applies to
@@ -208,6 +210,7 @@ class EngineService {
   late final UnpauseCheckRequestStore unpauseRequests;
   late final SymbolResolveStore symbolResolve;
   late final SlRatchetStore slRatchet;
+  late final BaselineStopStrikeStore baselineStopStrikes;
 
   /// Tickets the retroactive direction audit has already checked since the
   /// last time it was forced to re-run - in-memory only, see the audit's
@@ -467,6 +470,45 @@ class EngineService {
       final notional = volume * contractSize * priceOpen;
       if (notional == 0) continue;
       final pnlPercent = profit / notional * 100;
+
+      // 2026-10-13, per the user: "apply above also on currently running
+      // and waiting pairs" - retroactively tightens any already-open
+      // position that's never been ratchet-protected (so it's still
+      // sitting at its original open-time SL, typically MUCH wider than
+      // the new baseline) down to the same -10%/-$10-whichever-first
+      // baseline [_openPosition] now sets at ignition. Never fires for a
+      // position the ratchet has already locked (that SL is already
+      // tighter by construction - the ratchet only ever engages once P&L
+      // is positive) and never loosens an SL that's already at or past
+      // the baseline.
+      final currentSl = (position['stop_loss'] as num?)?.toDouble();
+      if (slRatchet.highestThreshold(ticket) == null && currentSl != null && currentSl != 0) {
+        final tradeDirection = direction == 'buy' ? TradeDirection.long : TradeDirection.short;
+        final baselineSl = _baselineStopLoss(
+          entry: priceOpen,
+          direction: tradeDirection,
+          volume: volume,
+          contractSize: contractSize,
+          digits: digits,
+        );
+        final tighterThanCurrent = tradeDirection == TradeDirection.long
+            ? baselineSl > currentSl
+            : baselineSl < currentSl;
+        if (tighterThanCurrent) {
+          try {
+            await mt5.modifyStopLossTakeProfit(symbol: mt5Symbol, positionTicket: ticket, sl: baselineSl);
+            logger.log(
+              'BASELINE SL: $tvSymbol ($mt5Symbol) retroactively tightened '
+              'to $baselineSl (was $currentSl).',
+            );
+          } catch (e) {
+            logger.log(
+              'BASELINE SL: failed to retroactively tighten $tvSymbol ($mt5Symbol): $e',
+              level: 'ERROR',
+            );
+          }
+        }
+      }
 
       final newThreshold = highestSlRatchetThresholdCrossed(pnlPercent);
       if (newThreshold == null) continue;
@@ -981,6 +1023,28 @@ class EngineService {
       final openSnapshot = entrySignals.takeFor(ticket);
       final direction =
           (record['type'] as String?) == 'sell' ? TradeDirection.short : TradeDirection.long;
+
+      // 2026-10-13, per the user: "if pair beent terminated two times in
+      // same signal, then this pair will not start over again until
+      // signal is flipped." A qualifying "baseline stop" is a stop_loss
+      // close where the ratchet never tightened this ticket's SL first
+      // (`slRatchet.highestThreshold == null`) - otherwise this was a
+      // RATCHET-protected profit-lock hit, not a repeated-failure-at-open
+      // one, and shouldn't count toward the block. Any other close
+      // (take-profit, a ratchet-protected SL, closed outside the app)
+      // breaks whatever streak was building.
+      if (stopReason == 'stop_loss' && slRatchet.highestThreshold(ticket) == null) {
+        final directionStr = direction == TradeDirection.long ? 'long' : 'short';
+        baselineStopStrikes.recordBaselineStop(tvSymbol, directionStr);
+        logger.log(
+          'BASELINE STOP: $mt5Symbol ($category) hit the baseline SL as '
+          '$directionStr (strike ${baselineStopStrikes.strikes(tvSymbol)}/2 '
+          'before this pair is blocked until the signal flips).',
+        );
+      } else {
+        baselineStopStrikes.clear(tvSymbol);
+      }
+
       storage.appendJsonl(
         storage.botHistoryFile,
         BotHistoryEntry(
@@ -2357,8 +2421,24 @@ class EngineService {
     final restingSl = (pendingOrder['stop_loss'] as num?)?.toDouble();
     final restingTp = (pendingOrder['take_profit'] as num?)?.toDouble();
     final target = await _computeTargetLevels(mt5Symbol, newDirection, rangeTop, rangeBottom);
+    // 2026-10-13, per the user - compared against the SAME baseline SL
+    // [_openPosition] would use to re-place this order (not the 60/40
+    // model's own `target.sl`), using the resting order's own volume, so
+    // a resting order that no longer matches the current baseline rule
+    // (e.g. this feature just shipped) gets correctly flagged stale too.
+    final restingVolume = (pendingOrder['volume_current'] as num?)?.toDouble() ??
+        (pendingOrder['volume_initial'] as num?)?.toDouble();
+    final expectedSl = target != null && restingVolume != null
+        ? _baselineStopLoss(
+            entry: target.entry,
+            direction: newDirection,
+            volume: restingVolume,
+            contractSize: (target.info['contract_size'] as num?)?.toDouble() ?? 1.0,
+            digits: target.digits,
+          )
+        : null;
     final changed = target != null &&
-        (restingDirection != newDirection || restingSl != target.sl || restingTp != target.tp);
+        (restingDirection != newDirection || restingSl != expectedSl || restingTp != target.tp);
     if (!changed) {
       logger.log(
         '$tvSymbol ($category): a pending order for this symbol/category '
@@ -2575,6 +2655,41 @@ class EngineService {
     );
   }
 
+  /// The tighter of a flat -10% (of notional) or a flat -$10 stop-loss,
+  /// whichever would be reached FIRST as price moves against the position
+  /// (2026-10-13, per the user: "set -10%/or/-10$ (which one occurs
+  /// first) as max stop loss once pair ignited"). Fills in the SL ratchet
+  /// ladder's own "0% or below" row (§10.1) - replaces the 60/40
+  /// liquidation-avoidance model's own [_computeTargetLevels] `sl`
+  /// (confirmed live this is typically MUCH wider than 10%, e.g. entry
+  /// 1.7784/SL 2.6313 on a real SELL, a ~48% distance) - the ratchet
+  /// tightens FROM here the moment P&L turns positive, this is the worst
+  /// case below that. Needs [volume] (bigger volume reaches a flat $10
+  /// loss on a SMALLER price move, so "whichever occurs first" is
+  /// genuinely volume-aware, not just a fixed percent) - called separately
+  /// from [_computeTargetLevels] because the real volume for a fresh open
+  /// isn't known until after the step-down retry ladder picks it.
+  double _baselineStopLoss({
+    required double entry,
+    required TradeDirection direction,
+    required double volume,
+    required double contractSize,
+    required int digits,
+  }) {
+    final percentSl = direction == TradeDirection.long ? entry * 0.90 : entry * 1.10;
+    final notionalPerUnit = volume * contractSize;
+    final dollarDistance = notionalPerUnit > 0 ? 10 / notionalPerUnit : double.infinity;
+    final dollarSl = direction == TradeDirection.long ? entry - dollarDistance : entry + dollarDistance;
+    // "Whichever occurs first" = whichever price is CLOSER to entry (hit
+    // by a smaller adverse move). Long's SL sits below entry, so the
+    // HIGHER of the two candidates is closer/tighter; short's sits above,
+    // so the LOWER one is.
+    final tighter = direction == TradeDirection.long
+        ? (percentSl > dollarSl ? percentSl : dollarSl)
+        : (percentSl < dollarSl ? percentSl : dollarSl);
+    return _roundToDigits(tighter, digits);
+  }
+
   /// Returns true only on a genuine success (position opened directly, or
   /// a pending-fallback order triggered within the poll window) - every
   /// other path (not found, corrupted range, order rejected, no ticket
@@ -2590,6 +2705,26 @@ class EngineService {
     Signal openSignal,
   ) async {
     final mt5Symbol = mapping.mt5Symbol;
+
+    // 2026-10-13, per the user: "if pair beent terminated two times in
+    // same signal, then this pair will not start over again until signal
+    // is flipped" - the single gate every open path funnels through
+    // (5 call sites, all into this one function), so there's only one
+    // place this check needs to live. [direction] differing from whatever
+    // direction was blocked IS the flip - this naturally never blocks the
+    // opposite direction, no separate "clear on flip" logic needed here.
+    final directionStr = direction == TradeDirection.long ? 'long' : 'short';
+    if (baselineStopStrikes.isBlocked(mapping.tradingViewSymbol, directionStr)) {
+      logger.log(
+        '$mt5Symbol ($category): refusing to open '
+        '${direction == TradeDirection.long ? 'BUY' : 'SELL'} - hit the '
+        'baseline stop-loss twice in a row on this exact signal with '
+        'nothing breaking the streak in between. Waiting for the opposite '
+        'signal before trying this pair again.',
+      );
+      return false;
+    }
+
     final target = await _computeTargetLevels(mt5Symbol, direction, rangeTop, rangeBottom);
     if (target == null) return false;
     final info = target.info;
@@ -2597,7 +2732,7 @@ class EngineService {
     final bid = target.bid;
     final ask = target.ask;
     final digits = target.digits;
-    final sl = target.sl;
+    var sl = target.sl;
     final tp = target.tp;
     // Reverted 2026-09-27, per a live test the user asked for: flooring
     // this at 0.01 (per the user seeing 0.01 in MT5's own New Order
@@ -2629,6 +2764,18 @@ class EngineService {
     if (tryVolume < floorVolume) tryVolume = floorVolume;
     final point = (info['point'] as num?)?.toDouble() ?? 0.0;
     final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
+
+    // 2026-10-13, per the user - the real volume for this attempt is only
+    // known now (after the step-down retry ladder above), so the baseline
+    // SL (§10's own "whichever occurs first" spec) can only be finalized
+    // here, not inside [_computeTargetLevels].
+    sl = _baselineStopLoss(
+      entry: entry,
+      direction: direction,
+      volume: tryVolume,
+      contractSize: (info['contract_size'] as num?)?.toDouble() ?? 1.0,
+      digits: digits,
+    );
 
     logger.log(
       '$mt5Symbol ($category): opening ${direction == TradeDirection.long ? 'BUY' : 'SELL'} '
@@ -2846,6 +2993,12 @@ class EngineService {
     botCategories.forget(ticket);
     widenApplied.forget(ticket);
     risk.closePosition(mt5Symbol, category);
+    // 2026-10-13, per the user - this is always an ACTIVE close (opposite
+    // signal confirmed, or a manual terminate), never a passive baseline-SL
+    // hit (those are only ever detected after the fact, in
+    // [_reconcileClosedPositions]) - always breaks whatever streak was
+    // building for this base.
+    baselineStopStrikes.clear(tvSymbol);
     _finalizeLastTagOnClose(category, tvSymbol);
   }
 

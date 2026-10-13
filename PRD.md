@@ -356,6 +356,11 @@ logs/
                                      ratchet rung already locked, keyed by
                                      MT5 position ticket (not base) so a
                                      recycled trade starts fresh - see §10.1.
+  baseline-stop-strikes.json       — BaselineStopStrikeStore (2026-10-13):
+                                     consecutive baseline-SL terminations per
+                                     base (not ticket) - 2 in a row on the
+                                     same direction blocks reopening until
+                                     the signal flips - see §10.2.
   waiting-reasons.json             — WaitingReasonStore: the broker's own
                                      exact rejection text for the last failed
                                      open attempt, per tvSymbol.
@@ -917,7 +922,7 @@ no I/O):
 
 | Floating P&L | SL locks to |
 |---|---|
-| 0% or below | unchanged (no ratchet SL applied) |
+| 0% or below | the baseline SL set at ignition — see §10.2 |
 | +5% | +2% |
 | +10% | +5% |
 | +15% | +10% |
@@ -962,6 +967,64 @@ open every sweep, so the file never grows unboundedly.
 percentage of the position's own notional value, not margin/leverage
 (this app has no margin-sizing concept to divide into — see that
 section's own doc comment).
+
+### 10.2 Baseline stop-loss at ignition, and the two-strikes block
+
+2026-10-13, per the user, filling in §10.1's own "0% or below" row (which
+used to mean "unchanged" — whatever the 60/40 liquidation-avoidance model
+computed, confirmed live this is typically MUCH wider than 10%, e.g. entry
+1.7784/SL 2.6313 on a real SELL — a ~48% distance).
+
+**The baseline SL** (`EngineService._baselineStopLoss`) is the TIGHTER of
+a flat **-10%** (of notional) or a flat **-$10**, whichever price would be
+reached FIRST as the trade moves against the position — per the user's
+own revised spec: "-10%/or/-10$ (which one occurs first)." Needs the
+trade's own volume (a bigger position reaches a flat $10 loss on a
+*smaller* price move, so this genuinely depends on size, not just a fixed
+percent) — computed only once the real volume for an attempt is final
+(the step-down retry ladder, §12, can still shrink it), never inside
+`_computeTargetLevels` itself. Replaces that function's own 60/40-model
+`sl` output entirely for every fresh open and every stale-resting-order
+refresh; TP is untouched.
+
+**Applied retroactively to already-running positions too** ("apply above
+also on currently running and waiting pairs"), folded into §10.1's own
+sweep (same bulk position fetch, no extra MT5 calls): any open position
+the ratchet has never touched (`SlRatchetStore.highestThreshold == null`)
+gets tightened down to the baseline if its current SL is wider — verified
+live against this account's real 13 open positions before deploying, all
+13 computed sensible tightenings (a mix of percent-wins and dollar-wins
+cases depending on each symbol's own price and volume). Never loosens,
+and never touches a position the ratchet has already locked (that SL is
+already tighter by construction).
+
+**Two-strikes block** (`BaselineStopStrikeStore`,
+`lib/data/identity/baseline_stop_strike_store.dart`,
+`logs/baseline-stop-strikes.json`) — per the user's own worked example:
+XRP ignites SELL, hits the baseline SL, terminates; re-ignites SELL
+(same signal), hits the baseline SL again, terminates — "app will not
+open any further trades unless xrp becomes buy signal." Keyed by base
+(tvSymbol), tracking a streak ACROSS trades, unlike `SlRatchetStore`'s
+per-ticket state:
+
+- A **qualifying "baseline stop"** is a `stop_loss`-reason close
+  (`_reconcileClosedPositions`, §15.4) where the ratchet never tightened
+  that ticket first (`SlRatchetStore.highestThreshold == null`) — a
+  ratchet-protected close (a profit-lock hit) is a WIN, not a repeated
+  failure, and never counts.
+- Recorded in the SAME direction as the last one → streak increments.
+  Recorded in the OPPOSITE direction → starts a fresh streak at 1 (the
+  signal already flipped since the last failure).
+- Any OTHER close — take-profit, a ratchet-protected SL, an opposite-
+  signal close (`_closePosition`), a manual terminate — clears the streak
+  outright, breaking whatever pattern was building.
+- Once a direction hits **2** consecutive baseline stops,
+  `EngineService._openPosition` (the single function all 5 open call
+  sites funnel through) refuses to open that same direction again, log
+  explaining why, until the signal genuinely flips — direction differing
+  from whatever was blocked IS the flip, so there's no separate
+  "clear on flip" logic needed; the block simply doesn't apply to the
+  opposite direction at all.
 
 ## 11. The Auto category system
 
@@ -1917,6 +1980,22 @@ This section is intentionally selective — a running record of the real,
 live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
+
+- **2026-10-13** — New feature: baseline stop-loss at ignition (§10.2),
+  filling in the SL ratchet's own "0% or below" row (which used to mean
+  "unchanged" - the 60/40 model's typically ~40%+ wide SL). Per the user's
+  revised spec: the tighter of -10% or a flat -$10, "whichever occurs
+  first" - genuinely volume-aware (a bigger position reaches $10 on a
+  smaller price move), not a fixed percent. Replaces the 60/40 model's SL
+  entirely for every fresh open and stale-order refresh; applied
+  retroactively to already-running positions too via the existing ratchet
+  sweep (verified live against this account's real 13 open positions
+  before deploying - all computed sensible tightenings). Paired with a new
+  two-strikes block (`BaselineStopStrikeStore`): a pair that hits this
+  baseline SL twice in a row on the same signal, with nothing breaking the
+  streak in between, stops auto-reopening until the signal genuinely
+  flips direction - any other close (TP, a ratchet-protected SL, a manual
+  close) clears the streak.
 
 - **2026-10-13** — New feature: margin-level risk gate (§10), per the user
   while watching live trading right after the SL ratchet shipped: "if

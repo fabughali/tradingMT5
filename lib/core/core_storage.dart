@@ -143,6 +143,13 @@ class CoreStorage {
   /// [SlRatchetStore]'s own doc comment for the full spec.
   String get slRatchetStateFile => p.join(logsDir, 'sl-ratchet-state.json');
 
+  /// Per-base "consecutive baseline stop-loss terminations" streak
+  /// (2026-10-13, per the user: "if pair beent terminated two times in
+  /// same signal, then this pair will not start over again until signal
+  /// is flipped"). See [BaselineStopStrikeStore]'s own doc comment for the
+  /// full spec.
+  String get baselineStopStrikesFile => p.join(logsDir, 'baseline-stop-strikes.json');
+
   /// Last known-exact reason a base is sitting in "Waiting" with nothing
   /// open (2026-09-29, per the user: "waiting pairs should reflect exact
   /// reason ... not guess ... for example (not enough margin)"). Keyed by
