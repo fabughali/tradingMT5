@@ -135,6 +135,14 @@ class CoreStorage {
   /// (the sole CDP connection owner) rather than being a direct GUI check.
   String get symbolResolveFile => p.join(logsDir, 'symbol-resolve.json');
 
+  /// Per-ticket "highest SL ratchet rung already locked" state (2026-10-13,
+  /// per the user — a tightening-only stop-loss ladder keyed off live
+  /// floating P&L%, scaled to this account's own real trade-history
+  /// distribution rather than tradingPionex's +100%/+200% SLL thresholds,
+  /// which never once fired against this account's real data). See
+  /// [SlRatchetStore]'s own doc comment for the full spec.
+  String get slRatchetStateFile => p.join(logsDir, 'sl-ratchet-state.json');
+
   /// Last known-exact reason a base is sitting in "Waiting" with nothing
   /// open (2026-09-29, per the user: "waiting pairs should reflect exact
   /// reason ... not guess ... for example (not enough margin)"). Keyed by

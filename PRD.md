@@ -352,6 +352,10 @@ logs/
                                      but carries a status (pending/found/
                                      not_found) + the resolved symbol back to
                                      the GUI instead of just being cleared.
+  sl-ratchet-state.json            — SlRatchetStore (2026-10-13): highest SL
+                                     ratchet rung already locked, keyed by
+                                     MT5 position ticket (not base) so a
+                                     recycled trade starts fresh - see §10.1.
   waiting-reasons.json             — WaitingReasonStore: the broker's own
                                      exact rejection text for the last failed
                                      open attempt, per tvSymbol.
@@ -866,6 +870,76 @@ structure this app's simpler model doesn't have).
 
 `maxPositions` and `maxTradeSizePct` exist in `RiskConfig` but are not
 currently enforced anywhere in the engine (reserved config surface).
+
+### 10.1 SL ratchet — tightening-only stop-loss ladder keyed off live P&L%
+
+2026-10-13, per the user, while exploring porting tradingPionex's "Stop
+Loss Lock" (SLL) concept here. **Deliberately not a port of tradingPionex's
+own +100%/+200% SLL thresholds** — studied this account's own real trade
+history first rather than assuming tradingPionex's numbers would transfer:
+computed each of 123 real app-driven ("Expert" reason) closed trades' ACTUAL
+peak floating P&L% from real MT5 H1 candle data (not just the final close
+price), and found 94% never even reached +10% peak, while every single one
+of the 7 that DID cross +10% went on to close at a LOSS — full swings of
+20-37 percentage points (e.g. ALGOUSD.lv peaked +18.48%, closed -18.41%;
+OPUSD.lv peaked +11.14%, closed -17.27%). tradingPionex's own +100% gate
+would never have fired once against this account's real behavior — a
+flat port would have shipped a feature that does nothing. The ladder below
+uses half-size rungs (5% steps, not tradingPionex's 10%) scaled to the
+range that actually matters here, confirmed with the user directly before
+building.
+
+**The ladder** (`lib/data/engine/sl_ratchet_ladder.dart`,
+`highestSlRatchetThresholdCrossed`/`slRatioForThreshold` — pure functions,
+no I/O):
+
+| Floating P&L | SL locks to |
+|---|---|
+| 0% or below | unchanged (no ratchet SL applied) |
+| +5% | +2% |
+| +10% | +5% |
+| +15% | +10% |
+| +20% | +15% |
+| +25% | +20% |
+| +30% and beyond | keeps going: threshold − 5 |
+
++5% is the one special case (locks to +2%, not 0%) — every rung from +10%
+on is just threshold-5, mirroring tradingPionex's own "+10% locks to +5%,
+not 0%" precedent for its first rung. **Only ever tightens, never
+loosens** — once a rung is crossed and applied, it stays locked even if
+P&L later retraces below it.
+
+**Pure MT5, deliberately never touches TradingView/CDP at all** — unlike
+every other per-cycle engine check, this only needs live P&L (already on
+every open position from `get_trading_open_positions`) and a stop-loss
+modification (`Mt5Client.modifyStopLossTakeProfit`, wrapping the real
+`trade_modify_sl_tp` MCP tool — confirmed live against the actual server
+schema before using it, though this feature is the first code path to ever
+actually CALL it). Since it never contends for the single shared
+TradingView chart connection, it doesn't need anything like
+`_stopLossLockTimer`'s cooperative yield-when-busy dance tradingPionex's
+own SLL needed — it's just `EngineService._applySlRatchet`, self-throttled
+to 30s (`_maybeApplySlRatchet`) and called at the same per-symbol
+boundaries as the mandatory health recheck (§15.3).
+
+**Scope**: every open position whose MT5 symbol maps to a currently
+auto-managed, non-retired, non-paused base — the exact same skip
+conditions `_runCycle`'s own main loop already applies, so a paused pair's
+running trade is left completely untouched ("paused means no action at
+all" stays true here too). A manually-opened MT5 position on a symbol this
+app doesn't manage is never touched.
+
+**State**: `SlRatchetStore` (`lib/data/identity/sl_ratchet_store.dart`,
+`logs/sl-ratchet-state.json`) — the highest rung already locked, keyed by
+MT5 position ticket (not base/symbol), so a recycled/reopened trade on the
+same pair starts the ladder fresh at zero. Pruned of any ticket no longer
+open every sweep, so the file never grows unboundedly.
+
+**Percentage basis**: identical formula to the Dashboard's P&L% column
+(§16.11) — `profit / (volume * contractSize * priceOpen) * 100`, i.e.
+percentage of the position's own notional value, not margin/leverage
+(this app has no margin-sizing concept to divide into — see that
+section's own doc comment).
 
 ## 11. The Auto category system
 
@@ -1809,6 +1883,26 @@ This section is intentionally selective — a running record of the real,
 live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
+
+- **2026-10-13** — New feature: tightening-only SL ratchet ladder (§10.1),
+  the first concrete piece of porting tradingPionex's "Stop Loss Lock"
+  concept here. Explicitly refused to just copy tradingPionex's +100%/+200%
+  thresholds — studied this account's own real trade history first: 123
+  real app-driven closed trades, computed each one's actual PEAK floating
+  P&L% from real MT5 H1 candle data (not just final close), found 94%
+  never reached +10% peak and 100% of the ones that did reversed into a
+  loss by close (20-37 percentage point swings). tradingPionex's +100%
+  gate would never have fired once against this data. Shipped a half-size
+  ladder (5% steps: +5%→+2%, +10%→+5%, +15%→+10%, ... threshold-5
+  indefinitely) scaled to the range that actually matters here, confirmed
+  with the user before building. Architecturally simpler than
+  tradingPionex's own SLL: this never touches TradingView/CDP at all (pure
+  MT5 - live P&L + `trade_modify_sl_tp`), so none of tradingPionex's
+  shared-single-chart cooperative-yield machinery was needed - just one
+  more self-throttled (30s) check alongside the engine's existing
+  per-symbol loop. New `SlRatchetStore` (`logs/sl-ratchet-state.json`,
+  keyed by position ticket) tracks the highest rung already locked per
+  position so it never loosens and a recycled trade starts fresh.
 
 - **2026-10-13** — Dashboard: P&L column now shows percentage alongside
   the dollar value (§16.11), the first concrete step while the user

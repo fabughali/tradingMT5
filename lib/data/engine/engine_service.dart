@@ -14,6 +14,7 @@ import '../identity/open_position_store.dart';
 import '../identity/paused_pair_store.dart';
 import '../identity/pending_signal_store.dart';
 import '../identity/retired_store.dart';
+import '../identity/sl_ratchet_store.dart';
 import '../identity/supertrend_pending_store.dart';
 import '../identity/symbol_resolve_store.dart';
 import '../identity/terminate_request_store.dart';
@@ -42,6 +43,7 @@ import '../tradingview/chart_state.dart';
 import '../tradingview/enforce.dart';
 import '../tradingview/launch.dart';
 import '../tradingview/signals_reader.dart';
+import 'sl_ratchet_ladder.dart';
 
 /// Thrown by [EngineService._ensureCdpUpImpl] when TradingView genuinely
 /// isn't installed at the configured path (2026-10-07, per the user: "app
@@ -122,6 +124,7 @@ class EngineService {
     paused = PausedPairStore(storage);
     unpauseRequests = UnpauseCheckRequestStore(storage);
     symbolResolve = SymbolResolveStore(storage);
+    slRatchet = SlRatchetStore(storage);
     // Backfill [firstOpen] from every past trade this app has ever closed,
     // so the new "wait for a confirmed opposite signal before a pair's
     // first-ever entry" gate (2026-10-06, per the user) only applies to
@@ -204,6 +207,7 @@ class EngineService {
   late final PausedPairStore paused;
   late final UnpauseCheckRequestStore unpauseRequests;
   late final SymbolResolveStore symbolResolve;
+  late final SlRatchetStore slRatchet;
 
   /// Tickets the retroactive direction audit has already checked since the
   /// last time it was forced to re-run - in-memory only, see the audit's
@@ -364,6 +368,137 @@ class EngineService {
       return false;
     }
     return true;
+  }
+
+  /// SL ratchet sweep cadence (2026-10-13, per the user). No need for
+  /// anything close to [_healthCheckInterval]'s 5s - this is a protective
+  /// safety net against a trade giving back profit, not a time-critical
+  /// signal read, and it's genuinely pure MT5 (see [_applySlRatchet]'s own
+  /// doc comment for why this never touches TradingView/CDP at all) so
+  /// there's no chart-contention reason to run it any faster either. 30s
+  /// still reacts well within the kind of multi-minute reversal swings the
+  /// real trade-history study behind this feature found.
+  DateTime _lastSlRatchetAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _slRatchetInterval = Duration(seconds: 30);
+
+  Future<void> _maybeApplySlRatchet() async {
+    if (DateTime.now().difference(_lastSlRatchetAt) < _slRatchetInterval) {
+      return;
+    }
+    _lastSlRatchetAt = DateTime.now();
+    try {
+      await _applySlRatchet();
+    } catch (e, st) {
+      logger.log('SL ratchet sweep failed: $e\n$st', level: 'ERROR');
+    }
+  }
+
+  /// Tightening-only stop-loss ladder (2026-10-13, per the user - see
+  /// [highestSlRatchetThresholdCrossed]'s own doc comment for the real
+  /// trade-history study behind the specific thresholds). Deliberately pure
+  /// MT5 - unlike every other per-cycle check in this file, this never
+  /// touches TradingView/CDP at all (just live P&L% + a stop-loss
+  /// modification, both plain MT5 MCP calls), so unlike
+  /// [_processAllPendingSymbolResolveRequests] there's no single-shared-
+  /// chart reason this couldn't safely run concurrently with anything else
+  /// - it's still just awaited sequentially here for the same
+  /// keep-it-simple reasoning as everything else in this engine, not
+  /// because it has to be.
+  ///
+  /// Scope: every OPEN position whose MT5 symbol maps to a currently
+  /// auto-managed, non-retired, non-paused base - mirrors exactly what
+  /// [_runCycle]'s own main loop already skips, so a paused pair's running
+  /// trade is left completely untouched by this too, consistent with
+  /// "paused means no action at all." A manually-opened MT5 position on a
+  /// symbol this app doesn't manage is never touched.
+  Future<void> _applySlRatchet() async {
+    final symbols = _loadSymbolsFresh();
+    final tvByMt5Symbol = {
+      for (final m in symbols) m.mt5Symbol.toUpperCase(): m.tradingViewSymbol,
+    };
+    final autoManaged = autoManagedByCategory[AutoCategory.oneHour]!;
+
+    final positionsResult = await mt5.getOpenPositions();
+    final positions = ((positionsResult['positions'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>();
+
+    final stillOpenTickets = <int>{};
+    for (final position in positions) {
+      final ticket = int.tryParse('${position['position_id']}');
+      if (ticket != null) stillOpenTickets.add(ticket);
+    }
+    // Always prune, even with zero open positions right now - a position
+    // that closed since the last sweep should have its old rung state
+    // dropped immediately, not linger until the next time something else
+    // happens to be open.
+    slRatchet.pruneClosed(stillOpenTickets);
+    if (positions.isEmpty) return;
+
+    // Bulk-fetched once per sweep (not per position) for contract size and
+    // quote-precision digits - the same live catalog data
+    // [AutoTradeRow.pnlPercent] already reads on the GUI side.
+    final watchedBySymbol = {
+      for (final w in await mt5.getWatchedSymbols())
+        (w['symbol'] as String).toUpperCase(): w,
+    };
+
+    for (final position in positions) {
+      final ticket = int.tryParse('${position['position_id']}');
+      final mt5Symbol = position['symbol'] as String?;
+      if (ticket == null || mt5Symbol == null) continue;
+
+      final tvSymbol = tvByMt5Symbol[mt5Symbol.toUpperCase()];
+      if (tvSymbol == null) continue;
+      if (!autoManaged.isAutoManaged(tvSymbol)) continue;
+      if (retired.isRetiredBase(tvSymbol)) continue;
+      if (paused.isPaused(tvSymbol)) continue;
+
+      final profit = (position['profit'] as num?)?.toDouble();
+      final priceOpen = (position['price_open'] as num?)?.toDouble();
+      final volume = (position['volume'] as num?)?.toDouble();
+      final direction = position['action'] as String?;
+      if (profit == null || priceOpen == null || volume == null || direction == null) {
+        continue;
+      }
+
+      final watched = watchedBySymbol[mt5Symbol.toUpperCase()];
+      final contractSize = (watched?['contract_size'] as num?)?.toDouble() ?? 1.0;
+      final digits = (watched?['digits'] as num?)?.toInt() ?? 2;
+      final notional = volume * contractSize * priceOpen;
+      if (notional == 0) continue;
+      final pnlPercent = profit / notional * 100;
+
+      final newThreshold = highestSlRatchetThresholdCrossed(pnlPercent);
+      if (newThreshold == null) continue;
+      final existingThreshold = slRatchet.highestThreshold(ticket);
+      if (existingThreshold != null && newThreshold <= existingThreshold) continue;
+
+      final lockPercent = slRatioForThreshold(newThreshold);
+      final isBuy = direction == 'buy';
+      final rawSl = isBuy
+          ? priceOpen * (1 + lockPercent / 100)
+          : priceOpen * (1 - lockPercent / 100);
+      final newSl = _roundToDigits(rawSl, digits);
+
+      try {
+        await mt5.modifyStopLossTakeProfit(
+          symbol: mt5Symbol,
+          positionTicket: ticket,
+          sl: newSl,
+        );
+        slRatchet.recordLock(ticket, newThreshold);
+        logger.log(
+          'SL RATCHET: $tvSymbol ($mt5Symbol) crossed +$newThreshold% P&L - '
+          'locked SL to +${lockPercent.toStringAsFixed(0)}% (price $newSl).',
+        );
+      } catch (e) {
+        logger.log(
+          'SL RATCHET: failed to modify SL for $tvSymbol ($mt5Symbol) at '
+          '+$newThreshold%: $e',
+          level: 'ERROR',
+        );
+      }
+    }
   }
 
   Future<void> run() async {
@@ -859,6 +994,14 @@ class EngineService {
     // as the unpause-check drain above.
     await _processAllPendingSymbolResolveRequests();
 
+    // 2026-10-13, per the user - also called here (not just inside the
+    // per-symbol loop below) so it still runs even on a cycle where that
+    // loop has zero iterations (e.g. no bases currently auto-managed at
+    // all) - this sweep doesn't depend on the loop's own `tvSymbol`
+    // iteration variable, it's a single bulk pass over every open
+    // position regardless.
+    await _maybeApplySlRatchet();
+
     for (final category in allAutoCategories) {
       if (storage.fileExists(storage.autoCategoryPausedFileFor(category))) {
         continue;
@@ -897,6 +1040,10 @@ class EngineService {
         // noticed, the exact same problem terminate/unpause already solved
         // by re-checking before every symbol instead of once per lap.
         await _processAllPendingSymbolResolveRequests();
+        // Self-throttled to [_slRatchetInterval] internally - safe to call
+        // this liberally at every per-symbol boundary in the loop, same
+        // pattern as the mandatory health recheck right below (2026-10-13).
+        await _maybeApplySlRatchet();
         if (!(await _maybeRunHealthCheck())) return;
         try {
           // Re-read symbols from config.json fresh every cycle (rather than
