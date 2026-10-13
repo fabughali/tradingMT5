@@ -12,6 +12,7 @@ class WatchedSymbol {
     required this.volumeMin,
     required this.volumeMax,
     required this.volumeStep,
+    required this.contractSize,
   });
 
   final String symbol;
@@ -27,6 +28,15 @@ class WatchedSymbol {
   final double volumeMax;
   final double volumeStep;
 
+  /// Units of the underlying per 1.0 lot of [volumeMin]'s own unit
+  /// (confirmed live 2026-09-17/2026-10-13: 1.0 for every crypto/stock CFD
+  /// on this broker, but NOT a safe assumption for forex, where a standard
+  /// lot is conventionally 100,000 units — always read this broker's own
+  /// reported value, never hardcode 1.0). Needed to turn a position's raw
+  /// `volume` into its real notional value (`volume * contractSize *
+  /// price`) — see [AutoTradeRow.pnlPercent]'s own doc comment for why.
+  final double contractSize;
+
   factory WatchedSymbol.fromJson(Map<String, dynamic> json) => WatchedSymbol(
     symbol: json['symbol'] as String,
     bid: (json['bid'] as num?)?.toDouble() ?? 0,
@@ -35,6 +45,7 @@ class WatchedSymbol {
     volumeMin: (json['volume_min'] as num?)?.toDouble() ?? 0.01,
     volumeMax: (json['volume_max'] as num?)?.toDouble() ?? 100,
     volumeStep: (json['volume_step'] as num?)?.toDouble() ?? 0.01,
+    contractSize: (json['contract_size'] as num?)?.toDouble() ?? 1.0,
   );
 
   /// A few forex pairs on this broker carry no suffix at all (USDINR,

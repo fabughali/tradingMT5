@@ -1397,7 +1397,8 @@ works" button rather than an easy-to-miss bare dropdown).
 ### 16.11 `AutoTradesCard` (`lib/widgets/auto_trades_card.dart`)
 
 One row per auto-managed symbol: symbol, trade id, status chip
-(Running/Waiting-pending/Waiting), side, price, SL, TP, live P&L, volume
+(Running/Waiting-pending/Waiting), side, price, SL, TP, live P&L (value and
+percentage — see below), volume
 (with +/- stepper, showing a struck-through old value in yellow when a
 desired-but-not-yet-applied override exists), open time, start/update
 signal, Close A/Close B preview, Check mark (this candle cycle), a per-row
@@ -1413,6 +1414,26 @@ a Play icon while paused (pressing it resumes AND queues an instant
 re-check). Chosen specifically because a toggle's on/off state didn't
 convey which action pressing it would actually take — see §11.1 for the
 full pause/resume semantics.
+
+**P&L column shows value and percentage** (2026-10-13, per the user, while
+exploring whether tradingPionex's "Stop Loss Lock" percentage-based profit
+concept could translate here: "p&l column will become 2.5 (132.78%)").
+`AutoTradeRow.pnlPercent` = `profit / (volume * contractSize * priceOpen) *
+100` — P&L as a percentage of the position's own **notional value**
+(trade size), computed from fields this app already fetches every poll
+(`WatchedSymbol.contractSize`, newly added, parses the broker's own
+`contract_size` field — confirmed live 1.0 for every crypto/stock CFD on
+this broker, but never hardcode that for forex, where a standard lot is
+conventionally 100,000 units). Deliberately **not** a percentage of margin
+or leverage — this app carries no investment/margin-sizing concept at all
+(§10's own "no investment/margin sizing" principle) and neither MT5's
+position data nor its account info exposes a leverage or per-position
+margin field to divide into (confirmed live, checked before building
+anything: grepped the whole codebase for any existing margin-per-position
+usage — none — and inspected real MT5 MCP responses for both an open
+position and account info — no margin/leverage field in either). Null
+whenever the notional value can't be computed; shown in parentheses next
+to the dollar figure, omitted entirely when null.
 
 **Update/Close A/Close B columns are hidden entirely while Supertrend Plus
 is the active technique** (`hideUpdateCloseColumns`, 2026-10-08, per the
@@ -1788,6 +1809,22 @@ This section is intentionally selective — a running record of the real,
 live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
+
+- **2026-10-13** — Dashboard: P&L column now shows percentage alongside
+  the dollar value (§16.11), the first concrete step while the user
+  explores porting tradingPionex's "Stop Loss Lock" (SLL) concept here.
+  Investigated rather than guessed at the basis for the percentage: SLL's
+  own +100%/+200% thresholds were against Pionex's INVESTMENT figure, but
+  this app has no equivalent — grepped the codebase (confirms an existing,
+  deliberate "no investment/margin sizing" design principle) and inspected
+  live MT5 responses (an open order and full account info) and found no
+  margin or leverage field anywhere to divide into. Landed on percentage of
+  the position's own notional value (`volume * contractSize * priceOpen`)
+  instead — computable from data already fetched every poll, with a new
+  `WatchedSymbol.contractSize` field (parses the broker's own
+  `contract_size`, confirmed 1.0 for every crypto/stock CFD here but never
+  assumed for forex, where a standard lot is conventionally 100,000 units).
+  Explicitly not equivalent to a margin/leverage-based return.
 
 - **2026-10-11** — Backup & Restore: fixed the export filename's timestamp
   going stale after the first export, per the user: "each export should

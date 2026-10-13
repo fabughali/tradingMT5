@@ -388,6 +388,19 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               );
             }
           }
+          final positionProfit = (position['profit'] as num?)?.toDouble();
+          final positionPriceOpen = (position['price_open'] as num?)?.toDouble();
+          final positionVolume = (position['volume'] as num?)?.toDouble();
+          // Notional value = volume * contract size * entry price - the
+          // ONLY percentage basis computable from data this app actually
+          // has (see [AutoTradeRow.pnlPercent]'s own doc comment for why
+          // this is "return on trade size," not "return on margin").
+          final notional = (positionVolume != null && watched != null && positionPriceOpen != null)
+              ? positionVolume * watched.contractSize * positionPriceOpen
+              : null;
+          final pnlPercentForRow = (positionProfit != null && notional != null && notional != 0)
+              ? positionProfit / notional * 100
+              : null;
           rows.add(
             AutoTradeRow(
               tvSymbol: tvSymbol,
@@ -397,10 +410,11 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               isPaused: isPaused,
               isLastTagged: isLastTagged,
               direction: position['action'] as String?,
-              price: (position['price_open'] as num?)?.toDouble(),
+              price: positionPriceOpen,
               stopLoss: (position['stop_loss'] as num?)?.toDouble(),
               takeProfit: (position['take_profit'] as num?)?.toDouble(),
-              profit: (position['profit'] as num?)?.toDouble(),
+              profit: positionProfit,
+              pnlPercent: pnlPercentForRow,
               ticket: ticket,
               openedAt: DateTime.tryParse(
                 position['create_time'] as String? ?? '',

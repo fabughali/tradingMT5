@@ -216,6 +216,7 @@ class _AddPairDialogState extends ConsumerState<AddPairDialog> {
       volumeMin: 0,
       volumeMax: 0,
       volumeStep: 0,
+      contractSize: 1.0,
     );
     if (probe.isCrypto) {
       await _proceedWithClass(AssetClass.crypto, probe.derivedTradingViewSymbol ?? query.toUpperCase());

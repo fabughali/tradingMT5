@@ -29,6 +29,7 @@ class AutoTradeRow {
     this.stopLoss,
     this.takeProfit,
     this.profit,
+    this.pnlPercent,
     this.ticket,
     this.openedAt,
     this.startTag,
@@ -66,6 +67,19 @@ class AutoTradeRow {
 
   /// Live floating P&L - only set for [AutoTradeStatus.running].
   final double? profit;
+
+  /// [profit] expressed as a percentage of the position's own notional
+  /// value (`currentVolume * contractSize * price`), NOT of account margin
+  /// (2026-10-13, per the user wanting a percentage alongside the dollar
+  /// figure). This app deliberately carries no investment/margin-sizing
+  /// concept at all (see `engine_service.dart`'s own "no investment/margin
+  /// sizing" doc comment) and MT5's own position/account data here has no
+  /// leverage or per-position margin field to divide into either (confirmed
+  /// live) - so this is "return on the full trade size," not "return on
+  /// capital committed," which would read much larger under leverage. Null
+  /// whenever [profit] is null, or the notional value can't be computed
+  /// (price/volume/contract size missing or zero).
+  final double? pnlPercent;
 
   /// The position or order ticket, whichever applies.
   final int? ticket;

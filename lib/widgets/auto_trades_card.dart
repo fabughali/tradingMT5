@@ -480,7 +480,15 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                             Text(
                               row.profit == null
                                   ? '—'
-                                  : '${row.profit! >= 0 ? '+' : ''}${row.profit!.toStringAsFixed(2)}',
+                                  // 2026-10-13, per the user: value alongside
+                                  // percentage, e.g. "2.50 (132.78%)" - the
+                                  // percentage is P&L relative to the
+                                  // position's own notional value (see
+                                  // [AutoTradeRow.pnlPercent]'s own doc
+                                  // comment for why, not account margin),
+                                  // omitted entirely if it can't be computed.
+                                  : '${row.profit! >= 0 ? '+' : ''}${row.profit!.toStringAsFixed(2)}'
+                                        '${row.pnlPercent == null ? '' : ' (${row.pnlPercent! >= 0 ? '+' : ''}${row.pnlPercent!.toStringAsFixed(2)}%)'}',
                               style: TextStyle(
                                 color: row.profit == null
                                     ? scheme.onSurfaceVariant
