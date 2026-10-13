@@ -1981,6 +1981,17 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-13** — Dashboard fix: the SLL column (§16.11) showed a bare
+  "—" for every position at 0% P&L or below, reading as "nothing is
+  protecting this trade." Per the user: "i want sll column to reflect
+  exactly sll not a blank... if p&l =<0, sll should b -10%/10$." A null
+  `slRatchetThreshold` never meant "no SLL" - it means the ratchet hasn't
+  crossed its first rung (+5%) yet, so the SL is still whatever baseline
+  SL (§10.2) was set at ignition. The column (and the info dialog's own
+  "0% or below" row, which still said "unchanged (no ratchet SL)" from
+  before baseline SL existed) now both show `-10%/$10` for that case
+  instead.
+
 - **2026-10-13** — Bug fix: the SL ratchet/baseline-SL retroactive sweep
   (`_maybeApplySlRatchet`, §10.1/§10.2) was called AFTER
   `_reverseCheckOnTechniqueSwitchIfNeeded` in `_runCycle` - a single long
