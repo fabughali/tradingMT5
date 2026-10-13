@@ -11,11 +11,11 @@ class GateResult {
   final String? reason;
 }
 
-/// Position caps, daily loss limit, and the STOP kill switch — ported from
-/// tradingPionex/app/lib/data/risk/risk_gate.dart. `close` is always
-/// allowed; `open` is the only gated action. These are the safety
-/// invariants both apps must never regress (kill switch, daily loss cap),
-/// carried over verbatim since they're entirely broker-agnostic.
+/// Position caps, daily loss limit, the STOP kill switch, and a live
+/// margin-level gate — ported from tradingPionex/app/lib/data/risk/
+/// risk_gate.dart, extended 2026-10-13 with the margin gate (broker-
+/// specific, MT5-only, not carried over from tradingPionex). `close` is
+/// always allowed; `open` is the only gated action.
 class RiskGate {
   RiskGate(this._storage, this._config) {
     _state = _loadOrReset();
@@ -24,6 +24,35 @@ class RiskGate {
   final CoreStorage _storage;
   final RiskConfig _config;
   late RiskState _state;
+
+  /// Live account margin level (`equity / margin * 100`, the same figure
+  /// the Dashboard's own "Margin Level" stat shows — see
+  /// `AccountSnapshot.marginLevel`'s own doc comment for the formula),
+  /// refreshed periodically by the engine (2026-10-13, per the user: "if
+  /// margin reached <= 150%... waiting non-filled trades will stay
+  /// non-filled... filled trades and non-triggered trades will become non
+  /// filled"). Null means either no margin currently in use (nothing to
+  /// protect against — never blocks) or not yet refreshed since startup
+  /// (also never blocks, so a cold start doesn't spuriously trip this
+  /// before the first real reading comes in).
+  double? _marginLevel;
+
+  /// Confirmed with the user directly: "that number margin level in
+  /// [the] status section."
+  static const double marginGateThresholdPct = 150;
+
+  /// True once live margin level has genuinely dropped to/below
+  /// [marginGateThresholdPct] — the single source of truth both [gate]
+  /// (blocks future opens) and the engine's own pending-order-cancellation
+  /// sweep key off, so the two can never disagree about current state.
+  bool get marginGateTripped =>
+      _marginLevel != null && _marginLevel! <= marginGateThresholdPct;
+
+  double? get marginLevel => _marginLevel;
+
+  void updateMarginLevel(double? marginLevel) {
+    _marginLevel = marginLevel;
+  }
 
   RiskState _loadOrReset() {
     final json = _storage.readJsonObject(_storage.stateFile);
@@ -64,6 +93,12 @@ class RiskGate {
 
     if (killSwitchTripped) {
       return const GateResult.blocked('KILL SWITCH: STOP file present');
+    }
+    if (marginGateTripped) {
+      return GateResult.blocked(
+        'MARGIN GATE: margin level ${_marginLevel!.toStringAsFixed(1)}% <= '
+        '$marginGateThresholdPct% - new opens blocked until it recovers',
+      );
     }
     if (now < _state.cooldownUntilMs) {
       final until = DateTime.fromMillisecondsSinceEpoch(

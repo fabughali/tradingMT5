@@ -871,6 +871,28 @@ structure this app's simpler model doesn't have).
 `maxPositions` and `maxTradeSizePct` exist in `RiskConfig` but are not
 currently enforced anywhere in the engine (reserved config surface).
 
+- **Margin gate** (2026-10-13, per the user, confirmed to mean the exact
+  same "Margin Level" figure the Dashboard's account stats block already
+  shows — `equity / margin * 100`) — once this drops to **≤150%**:
+  1. Every new `open` is blocked (`RiskGate.marginGateTripped`, checked in
+     `gate()` right after the kill switch).
+  2. Every resting (placed but not-yet-triggered) pending order this app
+     itself placed gets actively **cancelled**
+     (`EngineService._cancelAllRestingPendingOrders`), reverting that pair
+     to plain "waiting" — because letting one of those trigger would only
+     push margin level lower still, the exact thing this gate exists to
+     prevent.
+  3. **Already-open (triggered) positions are never touched** — this gate
+     stops NEW exposure from being added, it never closes anything live.
+
+  Margin level is refreshed every 30s (`EngineService._maybeRefreshMarginGate`,
+  same self-throttled-at-every-per-symbol-boundary pattern as §10.1's own
+  ratchet sweep) via a plain `get_trading_account_info` call — pure MT5,
+  no TradingView/CDP involved. `null` (no margin currently in use at all)
+  never trips the gate — nothing to protect against yet. The moment margin
+  level climbs back above 150%, new opens resume automatically; nothing
+  else needs to happen.
+
 ### 10.1 SL ratchet — tightening-only stop-loss ladder keyed off live P&L%
 
 2026-10-13, per the user, while exploring porting tradingPionex's "Stop
@@ -1895,6 +1917,22 @@ This section is intentionally selective — a running record of the real,
 live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
+
+- **2026-10-13** — New feature: margin-level risk gate (§10), per the user
+  while watching live trading right after the SL ratchet shipped: "if
+  margin reached <= 150%... waiting non-filled trades will stay
+  non-filled... filled trades and non-triggered trades will become non
+  filled." Confirmed directly this means the same "Margin Level" figure
+  the Dashboard's account stats block already shows. Once margin level
+  drops to ≤150%, `RiskGate` blocks every new open (same mechanism as the
+  existing kill switch/daily-loss-limit gates) AND the engine actively
+  cancels every resting pending order it placed, so a trigger waiting to
+  happen can't push margin lower still — but never touches an
+  already-open, triggered position. Resumes normal opens automatically
+  the moment margin recovers above 150%. Verified live against the real
+  account before deploying: margin level was 250.79% (gate correctly
+  inactive) with 7 genuine resting pending orders that would be the first
+  thing cancelled if it dropped.
 
 - **2026-10-13** — Dashboard: new "SLL" column on `AutoTradesCard` (§16.11)
   showing the SL ratchet rung currently locked per position (`+15%`-style,

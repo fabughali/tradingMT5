@@ -501,6 +501,105 @@ class EngineService {
     }
   }
 
+  /// Margin gate refresh cadence (2026-10-13, per the user). Same reasoning
+  /// as [_slRatchetInterval] - a live safety check, not a time-critical
+  /// signal read, and pure MT5 (account info + resting-order cancellation,
+  /// no TradingView/CDP involved) so there's no chart-contention reason to
+  /// run it any faster.
+  DateTime _lastMarginCheckAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _marginCheckInterval = Duration(seconds: 30);
+  bool _marginGateWasTripped = false;
+
+  Future<void> _maybeRefreshMarginGate() async {
+    if (DateTime.now().difference(_lastMarginCheckAt) < _marginCheckInterval) {
+      return;
+    }
+    _lastMarginCheckAt = DateTime.now();
+    try {
+      final info = await mt5.getAccountInfo();
+      final account = info['account'] as Map<String, dynamic>?;
+      final equity = (account?['equity'] as num?)?.toDouble();
+      final margin = (account?['margin'] as num?)?.toDouble();
+      // Same null-when-no-exposure rule as the Dashboard's own
+      // AccountSnapshot.marginLevel - margin == 0 means nothing is
+      // currently at risk, so there's nothing for this gate to protect
+      // against yet.
+      final marginLevel = (equity != null && margin != null && margin > 0)
+          ? equity / margin * 100
+          : null;
+      risk.updateMarginLevel(marginLevel);
+
+      final isTripped = risk.marginGateTripped;
+      if (isTripped && !_marginGateWasTripped) {
+        logger.log(
+          'MARGIN GATE: margin level ${marginLevel!.toStringAsFixed(1)}% <= '
+          '${RiskGate.marginGateThresholdPct}% - blocking new opens and '
+          'cancelling every resting (not-yet-triggered) pending order this '
+          'app placed.',
+          level: 'WARNING',
+        );
+      } else if (!isTripped && _marginGateWasTripped) {
+        logger.log(
+          'MARGIN GATE: margin level recovered to '
+          '${marginLevel?.toStringAsFixed(1)}% - normal opens resume.',
+        );
+      }
+      _marginGateWasTripped = isTripped;
+
+      if (isTripped) {
+        await _cancelAllRestingPendingOrders();
+      }
+    } catch (e, st) {
+      logger.log('Margin gate refresh failed: $e\n$st', level: 'ERROR');
+    }
+  }
+
+  /// Cancels every resting (placed but not yet triggered) pending order
+  /// this app itself opened, across every auto category - called only
+  /// while [RiskGate.marginGateTripped] is true (2026-10-13, per the user:
+  /// "if there is a current trade filled and not yet triggered, app will
+  /// delete the fill and keep it on waiting not filled... because if any
+  /// waiting filled (non-triggered) pair is triggered, then margin will
+  /// become more lower than 150%"). Deliberately only cancels ORDERS, never
+  /// touches an already-triggered, genuinely open POSITION - this gate
+  /// stops NEW exposure from being added, it never closes anything live.
+  Future<void> _cancelAllRestingPendingOrders() async {
+    final result = await mt5.getOpenPositions();
+    final orders = ((result['orders'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>();
+    for (final category in allAutoCategories) {
+      final tag = 'trading_mt5 ${category.wireValue}';
+      for (final order in orders) {
+        if (order['comment'] != tag || order['state'] != 'placed') continue;
+        final symbol = order['symbol'] as String?;
+        final orderTicket = _parseTicket(order['order_id']);
+        if (symbol == null || orderTicket == null) continue;
+        try {
+          final deleteResult = await mt5.deleteOrder(symbol: symbol, orderTicket: orderTicket);
+          final retcode = (deleteResult['retcode'] as num?)?.toInt();
+          if (retcode != null && retcode != 10009) {
+            logger.log(
+              'MARGIN GATE: failed to cancel resting order $orderTicket '
+              '($symbol, retcode=$retcode) - will retry next sweep.',
+              level: 'ERROR',
+            );
+            continue;
+          }
+          logger.log(
+            'MARGIN GATE: cancelled resting pending order $orderTicket '
+            '($symbol) - margin level too low to let it trigger.',
+          );
+        } catch (e) {
+          logger.log(
+            'MARGIN GATE: failed to cancel resting order $orderTicket '
+            '($symbol): $e',
+            level: 'ERROR',
+          );
+        }
+      }
+    }
+  }
+
   Future<void> run() async {
     _startedAt; // force initialization now, not lazily on first read
     logger.log('Engine starting.');
@@ -1001,6 +1100,8 @@ class EngineService {
     // iteration variable, it's a single bulk pass over every open
     // position regardless.
     await _maybeApplySlRatchet();
+    // Same reasoning - margin level is account-wide, not per-symbol.
+    await _maybeRefreshMarginGate();
 
     for (final category in allAutoCategories) {
       if (storage.fileExists(storage.autoCategoryPausedFileFor(category))) {
@@ -1044,6 +1145,14 @@ class EngineService {
         // this liberally at every per-symbol boundary in the loop, same
         // pattern as the mandatory health recheck right below (2026-10-13).
         await _maybeApplySlRatchet();
+        // Same reasoning again, for the margin-level safety gate
+        // (2026-10-13, per the user) - crucially, this is what actually
+        // makes "stay non-filled until margin recovers" responsive: this
+        // IS the gate [risk.gate('open', ...)] below checks, so refreshing
+        // it right before that call (not just once per lap) is what keeps
+        // a just-tripped gate from still letting one more open through on
+        // a symbol later in the same long sweep.
+        await _maybeRefreshMarginGate();
         if (!(await _maybeRunHealthCheck())) return;
         try {
           // Re-read symbols from config.json fresh every cycle (rather than
