@@ -605,22 +605,29 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                             // guessing" - the SL ratchet rung currently
                             // locked for this position (§10.1), straight
                             // from SlRatchetStore. Null doesn't mean "no SLL
-                            // set" though - it means the ratchet hasn't
-                            // crossed its first rung (+5%) yet, so the SL is
-                            // still whatever baseline SL (§10.2) was set at
-                            // ignition: the tighter of -10% or -$10. Showing
-                            // a bare "—" there used to read as "nothing is
-                            // protecting this trade," which isn't true - per
-                            // the user: "i want sll column to reflect
-                            // exactly sll not a blank."
+                            // set" for a RUNNING (filled) position though -
+                            // it means the ratchet hasn't crossed its first
+                            // rung (+5%) yet, so the SL is still whatever
+                            // baseline SL (§10.2) was set at ignition: the
+                            // tighter of -10% or -$10. Showing a bare "—"
+                            // there used to read as "nothing is protecting
+                            // this trade," which isn't true - per the user:
+                            // "i want sll column to reflect exactly sll not
+                            // a blank." But a WAITING pair (no fill yet - no
+                            // ticket, no SL set at all) genuinely has no SLL
+                            // to show - per the user: "if pair is not yet
+                            // filled then sll should be blank."
                             Text(
-                              row.slRatchetThreshold == null
-                                  ? '-10%/\$10'
-                                  : '+${row.slRatchetThreshold}%',
+                              row.status != AutoTradeStatus.running
+                                  ? '—'
+                                  : row.slRatchetThreshold == null
+                                      ? '-10%/\$10'
+                                      : '+${row.slRatchetThreshold}%',
                               style: TextStyle(
-                                color: row.slRatchetThreshold == null
-                                    ? scheme.onSurfaceVariant
-                                    : Colors.green,
+                                color: row.status == AutoTradeStatus.running &&
+                                        row.slRatchetThreshold != null
+                                    ? Colors.green
+                                    : scheme.onSurfaceVariant,
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
