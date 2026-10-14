@@ -1985,6 +1985,20 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-14** — Hybrid Decision audit correction: the replay's own
+  Start anchor was wrong on the first attempt - it used the ticket's own
+  recorded open snapshot (whatever literally triggered that specific
+  MT5 position), which can genuinely be a flip triggered by a bare
+  zigzag tag, not a case-1 confluence. Corrected directly per the user:
+  "go backwards to the latest LL/HH case 1 open buy/sell... not go
+  backwards to the signal where trade actually open" - Start is now
+  ALWAYS the latest genuine buyOpen1/sellOpen1 event in the full
+  history, regardless of what literally opened the current ticket. A
+  direct consequence: the Dashboard's Open column for this technique
+  now reflects the audit's own computed anchor, not necessarily the
+  real-time event that caused MT5 to open that specific position -
+  confirmed as intended with the user.
+
 - **2026-10-14** — Hybrid Decision: added the retroactive full-chain
   audit it was missing since launch - per the user asking directly
   "please confirm that app open trades are updated according to buy/sell

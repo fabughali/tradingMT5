@@ -2506,23 +2506,22 @@ class EngineService {
         final runningDirection =
             (existing['action'] as String?) == 'sell' ? TradeDirection.short : TradeDirection.long;
 
-        // Same bootstrap fallback as [_checkOneSymbol]'s own: if nothing
-        // is recorded yet (very first audit for this ticket), anchor to
-        // the most recent event that's actually capable of OPENING a
-        // position (buyOpen1/sellOpen1/zigzagBuy/zigzagSell) - never a
-        // bare buyClose1/sellClose1, which [worm10DecisionFor] always
-        // treats as a no-op from flat, so one could never genuinely be
-        // this ticket's own Start in the first place.
-        Worm10Event? startEvent;
-        if (openSnapshot != null) {
-          startEvent = Worm10Event(kind: openSnapshot.kind, time: openSnapshot.barTime);
-        } else {
-          final openCapable = events
-              .where((e) => worm10DecisionFor(null, e.kind).action != Worm10Action.none)
-              .toList()
-            ..sort((a, b) => b.time.compareTo(a.time));
-          startEvent = openCapable.isEmpty ? null : openCapable.first;
-        }
+        // Start is ALWAYS the latest genuine case-1 confluence event
+        // (buyOpen1/sellOpen1) - NEVER whatever this specific ticket
+        // happens to have recorded as its own open snapshot (corrected
+        // 2026-10-14, per the user, after an initial wrong attempt: "go
+        // backwards to the latest LL/HH case 1 open buy/sell... not go
+        // backwards to the signal where trade actually open" - a running
+        // position can genuinely have been OPENED by a flip that itself
+        // fired on a bare zigzag tag, not a case-1 confluence; the audit
+        // must still anchor to the latest real case-1 event regardless of
+        // what literally opened this ticket, per the user's own spec:
+        // "look backwards at latest open signal case 1."
+        final case1Events = events
+            .where((e) => e.kind == Worm10EventKind.buyOpen1 || e.kind == Worm10EventKind.sellOpen1)
+            .toList()
+          ..sort((a, b) => b.time.compareTo(a.time));
+        final startEvent = case1Events.isEmpty ? null : case1Events.first;
 
         if (startEvent == null) {
           logger.log(
