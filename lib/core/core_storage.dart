@@ -192,6 +192,21 @@ class CoreStorage {
   /// only whether the GUI surfaces it as a live preview differs.
   String get supertrendPendingFile => p.join(logsDir, 'supertrend-pending.json');
 
+  /// Same shape as [pendingSignalsFile]/[supertrendPendingFile] but for
+  /// the third decision technique's own survive-one-candle wait
+  /// (2026-10-14, per the user's worm_10_26 + spy_9_26 technique). Keyed
+  /// by `${category.wireValue}|$tvSymbol`, storing a [Worm10EventKind]'s
+  /// wire string + bar time, same triple-confirm reasoning as the other
+  /// two.
+  String get worm10PendingFile => p.join(logsDir, 'worm10-pending.json');
+
+  /// Same shape as [entrySignalFile] but for the third decision
+  /// technique's own entry/update event kind (2026-10-14) - a
+  /// [Worm10EventKind] wire string + bar time instead of a 4-way
+  /// HH/LL/BUY/SELL tag, since this technique has six event kinds, not
+  /// four.
+  String get worm10EntrySignalFile => p.join(logsDir, 'worm10-entry-signal.json');
+
   /// Keyed by `${category.wireValue}|$tvSymbol` -> `true`, for every
   /// symbol/category that has EVER achieved a real first open (2026-10-06,
   /// per the user: "this only for new added auto trades not for recycled

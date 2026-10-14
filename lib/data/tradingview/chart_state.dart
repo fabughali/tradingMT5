@@ -75,6 +75,33 @@ const supertrendPlusScript = CustomScript(
   dataTitle: 'Supertrend Plus',
 );
 
+/// The third decision technique's own combined signal source (2026-10-14,
+/// per the user: a new script they built in TradingView, "worm_10_26",
+/// merging worm_9_26's own MSB/OB/HH/LL/BUY/SELL plots with Supertrend
+/// Plus's discrete Buy/Sell plots into ONE script — scriptIdPart confirmed
+/// live via CDP against the user's own "My Scripts" library. Reads from
+/// FOUR distinct signal plots, not two - see [readWorm10Signals]'s own doc
+/// comment for exactly which plot each spec case maps to (confirmed
+/// directly with the user after an initial wrong guess): `New Higher
+/// High`/`New Lower Low` (zigzag HH/LL), the all-caps `BUY`/`SELL`
+/// (zigzag, same heritage as worm_9_26 - used for the close-signal "case
+/// 3" only), and the mixed-case `Buy`/`Sell` (discrete Supertrend entry -
+/// used for the open-signal "case 1" confluence's "supertrend need to be
+/// X" leg). The continuous `SuperTrend Buy`/`SuperTrend Sell` trend-state
+/// flags exist on this script too but are deliberately NOT read - same
+/// reasoning as [readSupertrendSignals]'s own doc comment.
+const worm10Script = CustomScript(
+  key: 'WORM10',
+  scriptIdPart: 'USER;125eec083a7d45479dac940b5af76dc7',
+  legendTitle: 'Footprint/VFAS/EMA/HLOTT/MSB/OB/AlphaTrend/ZigZag++/SuperTrend',
+  dataTitle: 'Footprint/VFAS/EMA/HLOTT/MSB/OB/AlphaTrend/ZigZag++/SuperTrend',
+);
+
+/// This technique's RSI zone source is spy_9_26 - the SAME script already
+/// registered as [customScripts]`[1]` for Signal Flip's own setup
+/// validation (never read there). Reused directly, no new constant - just
+/// read `customScripts[1].scriptIdPart` at the call site.
+
 class ChartState {
   const ChartState({this.symbol, this.resolution, this.error});
   final String? symbol;

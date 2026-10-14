@@ -23,6 +23,8 @@ import '../identity/trade_volume_store.dart';
 import '../identity/unpause_check_request_store.dart';
 import '../identity/waiting_reason_store.dart';
 import '../identity/widen_applied_store.dart';
+import '../identity/worm10_entry_signal_store.dart';
+import '../identity/worm10_pending_signal_store.dart';
 import '../logging/app_logger.dart';
 import '../models/app_config.dart';
 import '../models/auto_category.dart';
@@ -45,6 +47,7 @@ import '../tradingview/enforce.dart';
 import '../tradingview/launch.dart';
 import '../tradingview/signals_reader.dart';
 import 'sl_ratchet_ladder.dart';
+import 'worm10_decision.dart';
 
 /// Thrown by [EngineService._ensureCdpUpImpl] when TradingView genuinely
 /// isn't installed at the configured path (2026-10-07, per the user: "app
@@ -127,6 +130,8 @@ class EngineService {
     symbolResolve = SymbolResolveStore(storage);
     slRatchet = SlRatchetStore(storage);
     baselineStopStrikes = BaselineStopStrikeStore(storage);
+    worm10Pending = Worm10PendingSignalStore(storage);
+    worm10EntrySignals = Worm10EntrySignalStore(storage);
     // Backfill [firstOpen] from every past trade this app has ever closed,
     // so the new "wait for a confirmed opposite signal before a pair's
     // first-ever entry" gate (2026-10-06, per the user) only applies to
@@ -211,6 +216,8 @@ class EngineService {
   late final SymbolResolveStore symbolResolve;
   late final SlRatchetStore slRatchet;
   late final BaselineStopStrikeStore baselineStopStrikes;
+  late final Worm10PendingSignalStore worm10Pending;
+  late final Worm10EntrySignalStore worm10EntrySignals;
 
   /// Tickets the retroactive direction audit has already checked since the
   /// last time it was forced to re-run - in-memory only, see the audit's
@@ -971,6 +978,13 @@ class EngineService {
 
     final historyResult = await mt5.getHistoryPositions();
     final history = (historyResult['positions'] as List?) ?? const [];
+    // 2026-10-14, per the user's history-card request - same contract-size
+    // lookup [_closePosition] added for an ACTIVE close, bulk-fetched once
+    // here since this loop can close several vanished tickets in one pass.
+    final contractSizeBySymbol = {
+      for (final w in await mt5.getWatchedSymbols())
+        (w['symbol'] as String).toUpperCase(): (w['contract_size'] as num?)?.toDouble() ?? 1.0,
+    };
     for (final ticket in vanished) {
       final record = history.cast<Map<String, dynamic>?>().firstWhere(
         (h) => _parseTicket(h?['position_id']) == ticket,
@@ -990,6 +1004,7 @@ class EngineService {
         botCategories.forget(ticket);
         widenApplied.forget(ticket);
         entrySignals.forget(ticket);
+        worm10EntrySignals.forget(ticket);
         continue;
       }
 
@@ -1020,7 +1035,10 @@ class EngineService {
         detail = 'Closed directly in MT5, not by this app and not at SL/TP.';
       }
 
-      final openSnapshot = entrySignals.takeFor(ticket);
+      // worm_10_26 technique keeps its own open/update snapshot - same
+      // fallback order as [_recordHistory]'s own.
+      final worm10Snapshot = worm10EntrySignals.takeFor(ticket);
+      final openSnapshot = worm10Snapshot == null ? entrySignals.takeFor(ticket) : null;
       final direction =
           (record['type'] as String?) == 'sell' ? TradeDirection.short : TradeDirection.long;
 
@@ -1045,6 +1063,15 @@ class EngineService {
         baselineStopStrikes.clear(tvSymbol);
       }
 
+      final entryPriceForPct = (record['open_price'] as num?)?.toDouble() ?? 0.0;
+      final volumeForPct = (record['volume'] as num?)?.toDouble();
+      final profitForPct = (record['profit'] as num?)?.toDouble();
+      final contractSizeForPct = contractSizeBySymbol[mt5Symbol.toUpperCase()] ?? 1.0;
+      final notionalForPct = (volumeForPct ?? 0) * contractSizeForPct * entryPriceForPct;
+      final realizedProfitPercent =
+          (profitForPct != null && notionalForPct != 0) ? profitForPct / notionalForPct * 100 : null;
+      final ratchetThreshold = slRatchet.highestThreshold(ticket);
+      final sllAtTermination = ratchetThreshold != null ? '+$ratchetThreshold%' : '-\$5';
       storage.appendJsonl(
         storage.botHistoryFile,
         BotHistoryEntry(
@@ -1055,20 +1082,26 @@ class EngineService {
           category: category,
           ticket: ticket,
           direction: direction,
-          entryPrice: (record['open_price'] as num?)?.toDouble() ?? 0.0,
+          entryPrice: entryPriceForPct,
           exitPrice: closePrice,
-          volume: (record['volume'] as num?)?.toDouble(),
+          volume: volumeForPct,
           stopLoss: stopLoss,
           takeProfit: takeProfit,
-          realizedProfit: (record['profit'] as num?)?.toDouble(),
+          realizedProfit: profitForPct,
           startTime: DateTime.tryParse(record['open_time'] as String? ?? '') ?? DateTime.now(),
           endTime: DateTime.tryParse(record['close_time'] as String? ?? ''),
-          openSignalType: openSnapshot?.tag,
-          openSignalAt: openSnapshot?.barTime,
-          updateSignalType: openSnapshot?.updateTag,
-          updateSignalAt: openSnapshot?.updateTime,
+          openSignalType: worm10Snapshot != null
+              ? worm10EventKindToWire(worm10Snapshot.kind)
+              : openSnapshot?.tag,
+          openSignalAt: worm10Snapshot?.barTime ?? openSnapshot?.barTime,
+          updateSignalType: worm10Snapshot?.updateKind != null
+              ? worm10EventKindToWire(worm10Snapshot!.updateKind!)
+              : openSnapshot?.updateTag,
+          updateSignalAt: worm10Snapshot?.updateTime ?? openSnapshot?.updateTime,
           stopReason: stopReason,
           detail: detail,
+          realizedProfitPercent: realizedProfitPercent,
+          sllAtTermination: sllAtTermination,
         ).toJson(),
       );
       logger.log('$mt5Symbol ($category): reconciled ticket=$ticket as $stopReason.');
@@ -1248,6 +1281,8 @@ class EngineService {
           );
           if (technique.id == DecisionTechnique.supertrendPlus.id) {
             await _checkOneSymbolSupertrend(category, mapping);
+          } else if (technique.id == DecisionTechnique.worm10.id) {
+            await _checkOneSymbolWorm10(category, mapping);
           } else {
             await _checkOneSymbol(category, mapping);
           }
@@ -1369,6 +1404,10 @@ class EngineService {
       final styleOk = await ensureChartStyle(client, ChartStyle.heikinAshi);
       return styleOk && await isSupertrendPresent(client);
     }
+    if (technique.id == DecisionTechnique.worm10.id) {
+      final styleOk = await ensureChartStyle(client, ChartStyle.heikinAshi);
+      return styleOk && await isWorm10Present(client);
+    }
     // Revert to regular candles (2026-10-06, per the user: "make sure once
     // user switch from supertrend to worm/spy, app need to load regular
     // candles not heiken ashi") - without this, switching back to Signal
@@ -1478,13 +1517,19 @@ class EngineService {
         connected: true,
       );
       final isSupertrend = technique.id == DecisionTechnique.supertrendPlus.id;
+      final isWorm10 = technique.id == DecisionTechnique.worm10.id;
+      final needsHeikinAshi = isSupertrend || isWorm10;
       final enforceResult = isSupertrend
           ? await enforceSupertrendPlus(host, port)
+          : isWorm10
+          ? await enforceWorm10(host, port)
           : await enforceCustomScripts(host, port);
-      // Both techniques need exactly two scripts open now - Supertrend
-      // Plus needs itself AND worm_9_26 (for its zigzag range data, see
-      // enforceSupertrendPlus's own doc comment), Signal Flip needs
-      // worm_9_26 AND spy_9_26. Same shape either way.
+      // All three techniques need exactly two scripts open now -
+      // Supertrend Plus needs itself AND worm_9_26 (for its zigzag range
+      // data, see enforceSupertrendPlus's own doc comment), worm_10_26
+      // needs itself AND spy_9_26 (its own range data is built in, no
+      // third script needed), Signal Flip needs worm_9_26 AND spy_9_26.
+      // Same shape either way.
       final ok = enforceResult.finalMsb && enforceResult.finalRsi;
       if (!ok) {
         client.close();
@@ -1496,7 +1541,7 @@ class EngineService {
           '${enforceResult.error}',
         );
       }
-      if (isSupertrend) await ensureChartStyle(client, ChartStyle.heikinAshi);
+      if (needsHeikinAshi) await ensureChartStyle(client, ChartStyle.heikinAshi);
     }
     _consecutiveStuckAttempts = 0;
     _cdp = client;
@@ -1563,6 +1608,8 @@ class EngineService {
           );
           if (technique.id == DecisionTechnique.supertrendPlus.id) {
             await _checkOneSymbolSupertrend(category, mapping, immediate: true);
+          } else if (technique.id == DecisionTechnique.worm10.id) {
+            await _checkOneSymbolWorm10(category, mapping, immediate: true);
           } else {
             await _checkOneSymbol(category, mapping, immediate: true);
           }
@@ -2349,10 +2396,289 @@ class EngineService {
     }
   }
 
+  /// The third decision technique (worm_10_26 + spy_9_26, Heikin Ashi,
+  /// 2026-10-14) - deliberately a separate method, same reasoning as
+  /// [_checkOneSymbolSupertrend]'s own doc comment. Full spec and the pure
+  /// decision logic this method is just a thin MT5/TradingView wrapper
+  /// around live in `lib/data/engine/worm10_decision.dart` - see that
+  /// file's own doc comment for the complete case-by-case reasoning,
+  /// confirmed directly with the user across multiple corrected rounds
+  /// (several earlier guesses were wrong and explicitly corrected - do not
+  /// re-derive the spec from first principles, trust that file).
+  ///
+  /// Same triple-confirm + survive-one-candle shape as [_checkOneSymbol]
+  /// (NOT [_checkOneSymbolSupertrend]'s "skip the extra candle for a
+  /// running trade" shortcut - that was explicitly scoped to "the
+  /// supertrend technique" only, never generalized to this one). Does keep
+  /// an Update concept, like [_checkOneSymbol] and unlike
+  /// [_checkOneSymbolSupertrend] - a same-direction zigzag signal while
+  /// already running is a real Update per the spec, not a non-event.
+  Future<void> _checkOneSymbolWorm10(
+    AutoCategory category,
+    SymbolMapping mapping, {
+    bool immediate = false,
+  }) async {
+    final tvSymbol = mapping.tradingViewSymbol;
+    final mt5Symbol = mapping.mt5Symbol;
+    final barKey = '${category.wireValue}|$tvSymbol';
+
+    // Drop any leftover pending entry from the OTHER two techniques for
+    // this pair - same reasoning as both of their own equivalent clears.
+    pendingSignals.clear(barKey);
+    supertrendPending.clear(barKey);
+
+    final existing = await _findAppPosition(mt5Symbol, category, tvSymbol);
+
+    final pending = worm10Pending.get(barKey);
+    if (!immediate && pending != null) {
+      final checkAt = pending.barTime + category.candlePeriod.inSeconds * 2;
+      final nowEpoch = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+      if (nowEpoch < checkAt) return;
+    }
+
+    final lastChecked = _lastCheckedAt[barKey];
+    if (!immediate && lastChecked != null && DateTime.now().difference(lastChecked) < _retryCooldown) {
+      return;
+    }
+    _lastCheckedAt[barKey] = DateTime.now();
+
+    if (existing != null) lastCheckedStore.record(tvSymbol);
+
+    await _ensureCdpUp();
+    final cdp = _cdp!;
+
+    // worm_10_26 carries its own MSB/ZigZag++ range data (same plot
+    // structure as worm_9_26, different scriptIdPart) - see
+    // [_readConfirmedRange]'s own doc comment on its [scriptIdPart]
+    // parameter.
+    final range = await _readConfirmedRange(
+      cdp,
+      category,
+      tvSymbol,
+      immediate: immediate,
+      scriptIdPart: worm10Script.scriptIdPart,
+    );
+    if (range == null) return;
+
+    await setChartView(cdp, tvSymbol, category.signalResolution);
+    var check = await readWorm10Signals(
+      cdp,
+      tvSymbol,
+      worm10Script.scriptIdPart,
+      customScripts[1].scriptIdPart,
+      onDebugError: (msg) => logger.log('$tvSymbol ($category) worm10 signal: $msg'),
+    );
+    var events = deriveWorm10Events(check);
+    // Same extra-retry treatment as every other technique's own signal read.
+    for (var i = 0; i < 2 && events.isEmpty && immediate; i++) {
+      await Future<void>.delayed(const Duration(seconds: 5));
+      check = await readWorm10Signals(
+        cdp,
+        tvSymbol,
+        worm10Script.scriptIdPart,
+        customScripts[1].scriptIdPart,
+        onDebugError: (msg) => logger.log('$tvSymbol ($category) worm10 signal retry: $msg'),
+      );
+      events = deriveWorm10Events(check);
+    }
+    if (events.isEmpty) {
+      logger.log('$tvSymbol ($category): no worm10 event yet, skipping cycle.');
+      return;
+    }
+    final latest = events.last;
+
+    // TRIPLE-read confirmation, same "1 million sure" rule as every other
+    // technique's own signal read.
+    for (var i = 0; i < 2; i++) {
+      await Future<void>.delayed(const Duration(seconds: 10));
+      final recheck = await readWorm10Signals(
+        cdp,
+        tvSymbol,
+        worm10Script.scriptIdPart,
+        customScripts[1].scriptIdPart,
+        onDebugError: (msg) => logger.log('$tvSymbol ($category) worm10 recheck: $msg'),
+      );
+      final recheckEvents = deriveWorm10Events(recheck);
+      final recheckLatest = recheckEvents.isEmpty ? null : recheckEvents.last;
+      if (recheckLatest == null || recheckLatest.kind != latest.kind || recheckLatest.time != latest.time) {
+        logger.log(
+          '$tvSymbol ($category): WORM10 SIGNAL FLICKER (read ${i + 2}/3) - first '
+          'read ${worm10EventKindToWire(latest.kind)}@${latest.time}, this read '
+          '${recheckLatest != null ? worm10EventKindToWire(recheckLatest.kind) : null}'
+          '@${recheckLatest?.time} disagree — skipping this cycle.',
+          level: 'WARNING',
+        );
+        return;
+      }
+    }
+
+    // "Survive one full extra candle" wait gate - same shape as every
+    // other technique's own, against [worm10Pending].
+    final latestWire = worm10EventKindToWire(latest.kind);
+    if (!immediate && (pending == null || pending.kind != latest.kind || pending.barTime != latest.time)) {
+      worm10Pending.set(barKey, latest.kind, latest.time);
+      logger.log(
+        '$tvSymbol ($category): worm10 $latestWire@${latest.time} triple-confirmed - '
+        'deferring action until the following candle confirms it.',
+      );
+      return;
+    }
+    if (immediate) {
+      logger.log(
+        '$tvSymbol ($category): technique switch reverse check - '
+        'worm10 $latestWire@${latest.time} triple-confirmed, acting immediately.',
+      );
+    }
+
+    final currentDirection = existing == null
+        ? null
+        : ((existing['action'] as String?) == 'sell' ? TradeDirection.short : TradeDirection.long);
+    final decision = worm10DecisionFor(currentDirection, latest.kind);
+
+    // A synthetic [Signal] matching [decision.resultDirection]/[latest.time]
+    // - [_openPosition] requires one positionally, but never actually reads
+    // it when [worm10OpenKindWire]/[worm10OpenAt] are both supplied (see
+    // that method's own doc comment) - this is purely to satisfy the type,
+    // not read for anything.
+    Signal syntheticSignal(TradeDirection dir) => Signal(
+      tag: dir == TradeDirection.long ? SignalTag.buy : SignalTag.sell,
+      time: latest.time,
+    );
+
+    switch (decision.action) {
+      case Worm10Action.none:
+        worm10Pending.clear(barKey);
+        return;
+
+      case Worm10Action.update:
+        // Same-direction re-confirmation while already running - log only,
+        // same concept as [_checkOneSymbol]'s own Update tracking.
+        if (existing != null) {
+          final ticket = _parseTicket(existing['position_id']);
+          if (ticket != null) {
+            final current = worm10EntrySignals.peek(ticket);
+            if (current?.updateKind != latest.kind || current?.updateTime != latest.time) {
+              worm10EntrySignals.recordUpdate(ticket, latest.kind, latest.time);
+              logger.log('$tvSymbol ($category): worm10 Update - $latestWire@${latest.time}.');
+            }
+          }
+        }
+        worm10Pending.clear(barKey);
+        return;
+
+      case Worm10Action.openFresh:
+        if (await _reconcileStaleRestingOrderIfAny(category, tvSymbol, mt5Symbol, decision.resultDirection!, range.top, range.bottom)) {
+          return;
+        }
+        final gate = risk.gate('open', mt5Symbol, category);
+        if (!gate.allowed) {
+          logger.log('$tvSymbol ($category): risk gate blocked open: ${gate.reason}');
+          return;
+        }
+        if (await _openPosition(
+          category,
+          mapping,
+          decision.resultDirection!,
+          range.top,
+          range.bottom,
+          syntheticSignal(decision.resultDirection!),
+          worm10OpenKindWire: latestWire,
+          worm10OpenAt: latest.time,
+        )) {
+          worm10Pending.clear(barKey);
+        }
+        return;
+
+      case Worm10Action.recycle:
+      case Worm10Action.flip:
+        if (existing == null) {
+          // Nothing actually running (e.g. a resting-but-unfilled order) -
+          // recycle/flip only make sense against a real running position;
+          // fall through to the same stale-order reconcile + open path
+          // [Worm10Action.openFresh] uses.
+          if (await _reconcileStaleRestingOrderIfAny(category, tvSymbol, mt5Symbol, decision.resultDirection!, range.top, range.bottom)) {
+            return;
+          }
+          final gate = risk.gate('open', mt5Symbol, category);
+          if (!gate.allowed) {
+            logger.log('$tvSymbol ($category): risk gate blocked open: ${gate.reason}');
+            return;
+          }
+          if (await _openPosition(
+            category,
+            mapping,
+            decision.resultDirection!,
+            range.top,
+            range.bottom,
+            syntheticSignal(decision.resultDirection!),
+            worm10OpenKindWire: latestWire,
+            worm10OpenAt: latest.time,
+          )) {
+            worm10Pending.clear(barKey);
+          }
+          return;
+        }
+        await _closePosition(
+          category,
+          tvSymbol,
+          mt5Symbol,
+          existing,
+          stopReason: decision.action == Worm10Action.recycle ? 'worm10_recycle' : 'opposite_signal',
+          detail: decision.action == Worm10Action.recycle
+              ? 'Closed and recycling fresh - the same entry confluence ($latestWire) fired again while running.'
+              : 'Closed automatically on an opposite worm10 event ($latestWire).',
+          worm10CloseKindWire: latestWire,
+          worm10CloseAt: latest.time,
+        );
+        if (await _hasPendingAppOrder(mt5Symbol, category)) {
+          logger.log(
+            '$tvSymbol ($category): a pending order for this symbol/category '
+            'is already resting in MT5 - not placing a duplicate.',
+          );
+          return;
+        }
+        final flipGate = risk.gate('open', mt5Symbol, category);
+        if (!flipGate.allowed) {
+          logger.log('$tvSymbol ($category): risk gate blocked open: ${flipGate.reason}');
+          return;
+        }
+        if (await _openPosition(
+          category,
+          mapping,
+          decision.resultDirection!,
+          range.top,
+          range.bottom,
+          syntheticSignal(decision.resultDirection!),
+          worm10OpenKindWire: latestWire,
+          worm10OpenAt: latest.time,
+        )) {
+          worm10Pending.clear(barKey);
+        }
+        return;
+    }
+  }
+
   /// Snapshots the confirmed signal that triggered an open, keyed by the
   /// real position ticket, for [BotHistoryEntry]'s open_signal_* fields
-  /// once this position eventually closes.
-  void _recordOpenSignal(int ticket, Signal signal) {
+  /// once this position eventually closes. [worm10OpenKindWire]/
+  /// [worm10OpenAt] (2026-10-14) route to [worm10EntrySignals] instead -
+  /// see [_openPosition]'s own doc comment.
+  void _recordOpenSignal(
+    int ticket,
+    Signal signal, {
+    String? worm10OpenKindWire,
+    int? worm10OpenAt,
+  }) {
+    if (worm10OpenKindWire != null && worm10OpenAt != null) {
+      worm10EntrySignals.record(
+        ticket,
+        Worm10EntrySignalSnapshot(
+          kind: worm10EventKindFromWire(worm10OpenKindWire),
+          barTime: worm10OpenAt,
+        ),
+      );
+      return;
+    }
     entrySignals.record(
       ticket,
       EntrySignalSnapshot(tag: signalTagToWire(signal.tag), barTime: signal.time),
@@ -2498,9 +2824,19 @@ class EngineService {
     AutoCategory category,
     String tvSymbol, {
     required bool immediate,
+    // 2026-10-14, per the third decision technique (worm_10_26 + spy_9_26) -
+    // that technique has worm_9_26's own ZigZag++ range data built into
+    // worm_10_26 itself (same plot structure, different scriptIdPart - see
+    // worm10Script's own doc comment), and only ever has worm_10_26
+    // attached, never worm_9_26 (the free-account 2-indicator limit only
+    // leaves room for worm_10_26 + spy_9_26). Defaults to Signal
+    // Flip/Supertrend Plus's own worm_9_26 hash so every existing call site
+    // is unaffected.
+    String? scriptIdPart,
   }) async {
+    final rangeScriptIdPart = scriptIdPart ?? customScripts[0].scriptIdPart;
     await setChartView(cdp, tvSymbol, category.rangeResolution);
-    final lines = await readLines(cdp, customScripts[0].scriptIdPart);
+    final lines = await readLines(cdp, rangeScriptIdPart);
     var range = detectZigzagRange(lines, swingCount: config.technique.rangeSwingCount);
     // Extra retries when [immediate] - see the Power-on sweep's own doc
     // comment on [_reverseCheckOnTechniqueSwitchIfNeeded] for why: a
@@ -2509,7 +2845,7 @@ class EngineService {
     // treatment every other pair in the sweep got.
     for (var i = 0; i < 2 && range == null && immediate; i++) {
       await Future<void>.delayed(const Duration(seconds: 5));
-      final retryLines = await readLines(cdp, customScripts[0].scriptIdPart);
+      final retryLines = await readLines(cdp, rangeScriptIdPart);
       range = detectZigzagRange(retryLines, swingCount: config.technique.rangeSwingCount);
     }
     if (range == null) {
@@ -2526,7 +2862,7 @@ class EngineService {
     // race as the signal read, just hitting the zigzag/range script.
     for (var i = 0; i < 2; i++) {
       await Future<void>.delayed(const Duration(seconds: 10));
-      final linesRecheck = await readLines(cdp, customScripts[0].scriptIdPart);
+      final linesRecheck = await readLines(cdp, rangeScriptIdPart);
       final rangeRecheck = detectZigzagRange(linesRecheck, swingCount: config.technique.rangeSwingCount);
       if (rangeRecheck == null || rangeRecheck.top != range.top || rangeRecheck.bottom != range.bottom) {
         logger.log(
@@ -2709,8 +3045,14 @@ class EngineService {
     TradeDirection direction,
     double rangeTop,
     double rangeBottom,
-    Signal openSignal,
-  ) async {
+    Signal openSignal, {
+    // See [_closePosition]'s own doc comment - same reasoning, for the open
+    // side. When both are provided, the open snapshot is recorded to
+    // [worm10EntrySignals] instead of [entrySignals]; [openSignal] is still
+    // required syntactically but goes unused in that case.
+    String? worm10OpenKindWire,
+    int? worm10OpenAt,
+  }) async {
     final mt5Symbol = mapping.mt5Symbol;
 
     // 2026-10-13, per the user: "if pair beent terminated two times in
@@ -2895,7 +3237,7 @@ class EngineService {
       botCategories.setCategory(ticket, category);
       if (target.widenApplied) widenApplied.markWidened(ticket);
       risk.openPosition(mt5Symbol, category);
-      _recordOpenSignal(ticket, openSignal);
+      _recordOpenSignal(ticket, openSignal, worm10OpenKindWire: worm10OpenKindWire, worm10OpenAt: worm10OpenAt);
       waitingReasons.clear(mapping.tradingViewSymbol);
       tradeVolumes.recordApplied(volKey, tryVolume);
       logger.log('$mt5Symbol ($category): opened, ticket=$ticket.');
@@ -2923,7 +3265,7 @@ class EngineService {
         botCategories.setCategory(positionTicket, category);
         if (target.widenApplied) widenApplied.markWidened(positionTicket);
         risk.openPosition(mt5Symbol, category);
-        _recordOpenSignal(positionTicket, openSignal);
+        _recordOpenSignal(positionTicket, openSignal, worm10OpenKindWire: worm10OpenKindWire, worm10OpenAt: worm10OpenAt);
         waitingReasons.clear(mapping.tradingViewSymbol);
         tradeVolumes.recordApplied(volKey, tryVolume);
         logger.log(
@@ -2979,10 +3321,39 @@ class EngineService {
     Signal? closeSignal,
     String stopReason = 'opposite_signal',
     String? detail,
+    // 2026-10-14, per the third decision technique (worm_10_26 + spy_9_26) -
+    // that technique has its own six-way [Worm10EventKind], not the 4-way
+    // [SignalTag] every other technique uses, and its own
+    // [Worm10EntrySignalStore], not [entrySignals] - these let its own
+    // caller pass its own wire strings straight through to history instead
+    // of forcing a [Signal] object that doesn't fit. Every existing call
+    // site is unaffected - leaving these null keeps the original
+    // [closeSignal]/[entrySignals] behavior exactly as it was.
+    String? worm10CloseKindWire,
+    int? worm10CloseAt,
   }) async {
     final ticket = _parseTicket(position['position_id'])!;
     logger.log('$mt5Symbol ($category): closing ticket=$ticket ($stopReason).');
     await mt5.closePosition(symbol: mt5Symbol, positionTicket: ticket);
+    // 2026-10-14, per the user: "include the P&L value in history card ...
+    // +11.02 (+33.45%)" / "include the sll setup at the trade terminal" -
+    // both need live-looked-up data ([getMarketWatchSymbol]'s contract
+    // size for the percent; [slRatchet]'s own threshold for the SLL text)
+    // that [_recordHistory] itself can't fetch (it's synchronous, called
+    // from several places). Fetched here, once, right before the one call
+    // site that matters for a real close.
+    double contractSize = 1.0;
+    try {
+      final info = await mt5.getMarketWatchSymbol(mt5Symbol);
+      final symbols = (info['symbols'] as List?) ?? const [];
+      if (symbols.isNotEmpty) {
+        contractSize = ((symbols.first as Map<String, dynamic>)['contract_size'] as num?)?.toDouble() ?? 1.0;
+      }
+    } catch (e) {
+      logger.log('$mt5Symbol ($category): could not fetch contract size for history percent: $e', level: 'WARNING');
+    }
+    final ratchetThreshold = slRatchet.highestThreshold(ticket);
+    final sllAtTermination = ratchetThreshold != null ? '+$ratchetThreshold%' : '-\$5';
     _recordHistory(
       category: category,
       tvSymbol: tvSymbol,
@@ -2995,6 +3366,10 @@ class EngineService {
           (closeSignal != null
               ? 'Closed automatically on an opposite ${closeSignal.side.name} signal.'
               : 'Closed.'),
+      worm10CloseKindWire: worm10CloseKindWire,
+      worm10CloseAt: worm10CloseAt,
+      contractSize: contractSize,
+      sllAtTermination: sllAtTermination,
     );
     openPositions.forgetPosition(ticket);
     botCategories.forget(ticket);
@@ -3105,6 +3480,8 @@ class EngineService {
       try {
         if (technique.id == DecisionTechnique.supertrendPlus.id) {
           await _checkOneSymbolSupertrend(AutoCategory.oneHour, mapping, immediate: true);
+        } else if (technique.id == DecisionTechnique.worm10.id) {
+          await _checkOneSymbolWorm10(AutoCategory.oneHour, mapping, immediate: true);
         } else {
           await _checkOneSymbol(AutoCategory.oneHour, mapping, immediate: true);
         }
@@ -3210,8 +3587,22 @@ class EngineService {
     Signal? closeSignal,
     required String stopReason,
     required String detail,
+    // See [_closePosition]'s own doc comment on these two.
+    String? worm10CloseKindWire,
+    int? worm10CloseAt,
+    // 2026-10-14, per the user's history-card request - see
+    // [_closePosition]'s own doc comment on where these come from.
+    double contractSize = 1.0,
+    String? sllAtTermination,
   }) {
-    final openSnapshot = entrySignals.takeFor(ticket);
+    // The worm_10_26 technique keeps its own open/update snapshot in
+    // [worm10EntrySignals] (a six-way [Worm10EventKind], not the 4-way
+    // [SignalTag] [entrySignals] holds) - try that store FIRST and only
+    // fall back to [entrySignals] if nothing's there, so a ticket opened
+    // under this technique never accidentally reads a stale/absent Signal
+    // Flip snapshot instead of its own.
+    final worm10Snapshot = worm10EntrySignals.takeFor(ticket);
+    final openSnapshot = worm10Snapshot == null ? entrySignals.takeFor(ticket) : null;
     final direction = (position['action'] as String?) == 'sell'
         ? TradeDirection.short
         : TradeDirection.long;
@@ -3224,6 +3615,9 @@ class EngineService {
     final startTime = DateTime.tryParse(
       (position['create_time'] as String?) ?? '',
     ) ?? DateTime.now();
+    // Same formula as the Dashboard's own live P&L% column (2026-10-14).
+    final notional = (volume ?? 0) * contractSize * entryPrice;
+    final realizedProfitPercent = (profit != null && notional != 0) ? profit / notional * 100 : null;
     storage.appendJsonl(
       storage.botHistoryFile,
       BotHistoryEntry(
@@ -3242,14 +3636,21 @@ class EngineService {
         realizedProfit: profit,
         startTime: startTime,
         endTime: DateTime.now(),
-        openSignalType: openSnapshot?.tag,
-        openSignalAt: openSnapshot?.barTime,
-        updateSignalType: openSnapshot?.updateTag,
-        updateSignalAt: openSnapshot?.updateTime,
-        closeSignalType: closeSignal != null ? signalTagToWire(closeSignal.tag) : null,
-        closeSignalAt: closeSignal?.time,
+        openSignalType: worm10Snapshot != null
+            ? worm10EventKindToWire(worm10Snapshot.kind)
+            : openSnapshot?.tag,
+        openSignalAt: worm10Snapshot?.barTime ?? openSnapshot?.barTime,
+        updateSignalType: worm10Snapshot?.updateKind != null
+            ? worm10EventKindToWire(worm10Snapshot!.updateKind!)
+            : openSnapshot?.updateTag,
+        updateSignalAt: worm10Snapshot?.updateTime ?? openSnapshot?.updateTime,
+        closeSignalType: worm10CloseKindWire ??
+            (closeSignal != null ? signalTagToWire(closeSignal.tag) : null),
+        closeSignalAt: worm10CloseAt ?? closeSignal?.time,
         stopReason: stopReason,
         detail: detail,
+        realizedProfitPercent: realizedProfitPercent,
+        sllAtTermination: sllAtTermination,
       ).toJson(),
     );
   }

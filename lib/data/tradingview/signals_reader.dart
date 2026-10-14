@@ -578,3 +578,179 @@ Future<CustomSignalsReading> readCustomSignals(CdpClient cdp) async {
   final rsi = RsiReading(values: await readStudyValues(cdp, rsiPart));
   return CustomSignalsReading(msb: msb, rsi: rsi);
 }
+
+/// worm_10_26 + spy_9_26 combined read, for the third decision technique
+/// (2026-10-14). ONE evaluate() call across both scripts, same
+/// single-round-trip discipline as every other reader here. Confirmed
+/// directly with the user, after an initial wrong guess (continuous
+/// "SuperTrend Buy"/"SuperTrend Sell" trend-state flags), exactly which
+/// plot each spec case maps to:
+///
+/// - `New Higher High`/`New Lower Low` -> [Worm10Check.zigzag]'s hh/ll tags.
+/// - `BUY`/`SELL` (all-caps, worm_9_26 heritage) -> [Worm10Check.zigzag]'s
+///   buy/sell tags - drives the CLOSE-signal "case 3" only ("if you view
+///   the buy/sell signals in technique 1 ... case 3 are the buy/sell
+///   zigzag signals, not buy/sell supertrend signals").
+/// - `Buy`/`Sell` (mixed case, discrete Supertrend entry, same plots
+///   [readSupertrendSignals] already reads) -> [Worm10Check.supertrend] -
+///   drives the OPEN-signal "case 1" confluence's "supertrend need to be
+///   X" leg only ("worm 10 has two buy signals and two sell signals ...
+///   one (buy/sell) for super trend ... those signals are for case 1
+///   open signals").
+/// - The continuous `SuperTrend Buy`/`SuperTrend Sell` trend-state flags
+///   are NOT read at all, same reasoning as [readSupertrendSignals].
+/// - spy_9_26's five RSI zone plots -> [Worm10Check.rsiZones].
+Future<Worm10Check> readWorm10Signals(
+  CdpClient cdp,
+  String symbol,
+  String worm10ScriptIdPart,
+  String rsiScriptIdPart, {
+  void Function(String message)? onDebugError,
+}) async {
+  final expr =
+      '''(function() {
+    try {
+      var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
+      var sources = chart.model().model().dataSources();
+      var worm10Src = null, rsiSrc = null;
+      for (var si = 0; si < sources.length; si++) {
+        var s = sources[si];
+        var part = '';
+        try { part = s.metaInfo().scriptIdPart || ''; } catch (e) {}
+        if (part === ${jsonEncode(worm10ScriptIdPart)}) worm10Src = s;
+        if (part === ${jsonEncode(rsiScriptIdPart)}) rsiSrc = s;
+      }
+      if (!worm10Src) return { error: 'worm_10_26 not found' };
+      if (!rsiSrc) return { error: 'spy_9_26 not found' };
+
+      function colOf(plotId) {
+        var num = parseInt((String(plotId).match(/(\\d+)\$/) || [])[1], 10);
+        return num + 1;
+      }
+      function findCol(src, title) {
+        var meta = src.metaInfo();
+        var styles = meta.styles || {};
+        for (var sk in styles) {
+          var se = styles[sk];
+          if (se && se.title === title) return colOf(sk);
+        }
+        return null;
+      }
+      function rowsOf(s) {
+        var items = (s._data && s._data._items) ? s._data._items : null;
+        var out = [];
+        if (!items) return out;
+        var total = items.length !== undefined ? items.length : Object.keys(items).length;
+        for (var r = 0; r < total; r++) {
+          var item = items[r];
+          if (!item) continue;
+          out.push(item.value || item);
+        }
+        return out;
+      }
+      var isNum = function (v) { return typeof v === 'number' && !isNaN(v) && v !== 0; };
+
+      var hhCol = findCol(worm10Src, 'New Higher High');
+      var llCol = findCol(worm10Src, 'New Lower Low');
+      var zBuyCol = findCol(worm10Src, 'BUY');
+      var zSellCol = findCol(worm10Src, 'SELL');
+      var stBuyCol = findCol(worm10Src, 'Buy');
+      var stSellCol = findCol(worm10Src, 'Sell');
+      if (hhCol == null || llCol == null || zBuyCol == null || zSellCol == null ||
+          stBuyCol == null || stSellCol == null) {
+        return { error: 'worm_10_26 plot columns not found (hh=' + hhCol + ' ll=' + llCol +
+          ' zBuy=' + zBuyCol + ' zSell=' + zSellCol + ' stBuy=' + stBuyCol + ' stSell=' + stSellCol + ')' };
+      }
+
+      var rsiBlueCol = findCol(rsiSrc, 'RSI &lt;= 20% (Blue)');
+      var rsiPurpleCol = findCol(rsiSrc, 'RSI 20-35% (Purple)');
+      var rsiWhiteCol = findCol(rsiSrc, 'RSI 35-65% (White)');
+      var rsiGreenCol = findCol(rsiSrc, 'RSI 65-80% (Green)');
+      var rsiYellowCol = findCol(rsiSrc, 'RSI &gt;= 80% (Yellow)');
+      if (rsiBlueCol == null || rsiPurpleCol == null || rsiWhiteCol == null ||
+          rsiGreenCol == null || rsiYellowCol == null) {
+        return { error: 'spy_9_26 RSI zone columns not found (blue=' + rsiBlueCol +
+          ' purple=' + rsiPurpleCol + ' white=' + rsiWhiteCol + ' green=' + rsiGreenCol +
+          ' yellow=' + rsiYellowCol + ')' };
+      }
+
+      var zigzagSignals = [];
+      var supertrendSignals = [];
+      var latestBarTime = 0;
+      var worm10Rows = rowsOf(worm10Src);
+      for (var r = 0; r < worm10Rows.length; r++) {
+        var row = worm10Rows[r];
+        var t = row[0];
+        if (typeof t !== 'number') continue;
+        if (t > latestBarTime) latestBarTime = t;
+        if (isNum(row[hhCol])) zigzagSignals.push({ time: t, tag: 'HH' });
+        if (isNum(row[llCol])) zigzagSignals.push({ time: t, tag: 'LL' });
+        if (isNum(row[zBuyCol])) zigzagSignals.push({ time: t, tag: 'BUY' });
+        if (isNum(row[zSellCol])) zigzagSignals.push({ time: t, tag: 'SELL' });
+        if (isNum(row[stBuyCol])) supertrendSignals.push({ time: t, tag: 'BUY' });
+        if (isNum(row[stSellCol])) supertrendSignals.push({ time: t, tag: 'SELL' });
+      }
+      zigzagSignals.sort(function (a, b) { return (a.time || 0) - (b.time || 0); });
+      supertrendSignals.sort(function (a, b) { return (a.time || 0) - (b.time || 0); });
+
+      var rsiZones = [];
+      var rsiRows = rowsOf(rsiSrc);
+      for (var rr = 0; rr < rsiRows.length; rr++) {
+        var rrow = rsiRows[rr];
+        var rt = rrow[0];
+        if (typeof rt !== 'number') continue;
+        if (isNum(rrow[rsiBlueCol])) rsiZones.push({ time: rt, zone: 'blue' });
+        else if (isNum(rrow[rsiPurpleCol])) rsiZones.push({ time: rt, zone: 'purple' });
+        else if (isNum(rrow[rsiWhiteCol])) rsiZones.push({ time: rt, zone: 'white' });
+        else if (isNum(rrow[rsiGreenCol])) rsiZones.push({ time: rt, zone: 'green' });
+        else if (isNum(rrow[rsiYellowCol])) rsiZones.push({ time: rt, zone: 'yellow' });
+      }
+      rsiZones.sort(function (a, b) { return (a.time || 0) - (b.time || 0); });
+
+      return {
+        zigzagSignals: zigzagSignals,
+        supertrendSignals: supertrendSignals,
+        rsiZones: rsiZones,
+        latestBarTime: latestBarTime || null
+      };
+    } catch (e) {
+      return { error: String(e && e.message || e) };
+    }
+  })()''';
+  final raw = await cdp.evaluate(expr) as Map<String, dynamic>?;
+  if (raw?['error'] != null) {
+    onDebugError?.call(raw!['error'].toString());
+  }
+  final zigzagSignals = ((raw?['zigzagSignals'] as List?) ?? const [])
+      .cast<Map<String, dynamic>>()
+      .map(Signal.fromJson)
+      .toList();
+  final supertrendSignals = ((raw?['supertrendSignals'] as List?) ?? const [])
+      .cast<Map<String, dynamic>>()
+      .map(Signal.fromJson)
+      .toList();
+  final latestBarTime = (raw?['latestBarTime'] as num?)?.toInt();
+  final rsiZoneMap = {
+    'blue': RsiZone.blue,
+    'purple': RsiZone.purple,
+    'white': RsiZone.white,
+    'green': RsiZone.green,
+    'yellow': RsiZone.yellow,
+  };
+  final rsiZones = ((raw?['rsiZones'] as List?) ?? const [])
+      .cast<Map<String, dynamic>>()
+      .map(
+        (m) => RsiZoneSample(
+          zone: rsiZoneMap[m['zone'] as String]!,
+          time: (m['time'] as num).toInt(),
+        ),
+      )
+      .toList();
+  return Worm10Check(
+    symbol: symbol,
+    zigzag: BuySellCheck(symbol: symbol, signals: zigzagSignals, latestBarTime: latestBarTime),
+    supertrend: BuySellCheck(symbol: symbol, signals: supertrendSignals, latestBarTime: latestBarTime),
+    rsiZones: rsiZones,
+    latestBarTime: latestBarTime,
+  );
+}

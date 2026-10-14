@@ -25,7 +25,7 @@ class DecisionTechnique {
   /// [CoreStorage.decisionTechniqueFile] fresh each cycle (same file this
   /// picker writes) to decide which one is active - see
   /// `EngineService._activeTechnique`.
-  static const all = [signalFlip, supertrendPlus];
+  static const all = [signalFlip, supertrendPlus, worm10];
 
   static const signalFlip = DecisionTechnique(
     id: 'signal_flip_hh_ll_buy_sell',
@@ -48,5 +48,23 @@ class DecisionTechnique {
     shortDescription:
         'A Buy signal opens long and is the close for any running short; a '
         'Sell signal does the reverse. No separate confirmation signal.',
+  );
+
+  /// Added 2026-10-14, per the user: a third technique built around a
+  /// custom script they wrote, "worm_10_26" (merging worm_9_26's own
+  /// MSB/OB/HH/LL/BUY/SELL plots with Supertrend Plus's discrete Buy/Sell
+  /// into one script), paired with spy_9_26's RSI zone plots - genuinely
+  /// using RSI for entry/exit this time (unlike Signal Flip, where
+  /// spy_9_26 is attached but never read). Also Heikin Ashi, same as
+  /// Supertrend Plus. See [EngineService._checkOneSymbolWorm10] and
+  /// `lib/data/engine/worm10_decision.dart` for the full spec - confirmed
+  /// across multiple corrected rounds directly with the user.
+  static const worm10 = DecisionTechnique(
+    id: 'worm10_spy9_heikin_ashi',
+    name: 'worm_10_26 + spy_9_26 (Heikin Ashi)',
+    shortDescription:
+        'Confluence entry (Supertrend state + HH/LL + RSI zone) with a '
+        'weaker single-signal exit; a repeat entry signal recycles the '
+        'same direction fresh instead of just confirming it.',
   );
 }

@@ -70,3 +70,54 @@ class BuySellCheck {
     return signals.reduce((a, b) => b.time > a.time ? b : a);
   }
 }
+
+/// spy_9_26's five RSI zone plots (2026-10-14, per the third decision
+/// technique's own spec) - confirmed live via CDP, exact titles: `RSI <=
+/// 20% (Blue)`, `RSI 20-35% (Purple)`, `RSI 35-65% (White)`, `RSI 65-80%
+/// (Green)`, `RSI >= 80% (Yellow)`. Blue/purple are the oversold pair (blue
+/// stronger), green/yellow the overbought pair (yellow stronger) - matches
+/// the user's own wording exactly ("rsi should be purple or blue.. blue is
+/// better" / "rsi in yellow or green area .. yellow is better").
+enum RsiZone { blue, purple, white, green, yellow }
+
+/// One RSI zone reading on one bar - same per-bar shape as [Signal], just a
+/// 5-way zone instead of a 4-way tag (spy_9_26 plots all five as mutually
+/// exclusive, so at most one is ever true per bar).
+class RsiZoneSample {
+  const RsiZoneSample({required this.zone, required this.time});
+  final RsiZone zone;
+  final int time;
+}
+
+/// worm_10_26 + spy_9_26 combined, for the third decision technique
+/// (2026-10-14). Deliberately TWO separate [BuySellCheck]s, not one merged
+/// list - [zigzag] (HH/LL/BUY/SELL, all-caps, same heritage as worm_9_26)
+/// drives the close-signal "case 3" only; [supertrend] (Buy/Sell, mixed
+/// case) drives the open-signal "case 1" confluence's "supertrend need to
+/// be X" leg only - confirmed directly with the user after an initial
+/// wrong guess, see [readWorm10Signals]'s own doc comment. Never confuse
+/// the two - same script, four different plots, two different jobs.
+class Worm10Check {
+  const Worm10Check({
+    required this.symbol,
+    required this.zigzag,
+    required this.supertrend,
+    required this.rsiZones,
+    required this.latestBarTime,
+  });
+
+  final String symbol;
+  final BuySellCheck zigzag;
+  final BuySellCheck supertrend;
+  final List<RsiZoneSample> rsiZones;
+
+  /// The newest 1H candle's open time, same role as [BuySellCheck]'s own
+  /// field - null means the indicator's data hasn't populated yet.
+  final int? latestBarTime;
+
+  /// The latest (by time) RSI zone, or null if none read yet.
+  RsiZone? get latestRsiZone {
+    if (rsiZones.isEmpty) return null;
+    return rsiZones.reduce((a, b) => b.time > a.time ? b : a).zone;
+  }
+}

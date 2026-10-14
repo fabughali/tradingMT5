@@ -29,6 +29,7 @@ class TechniqueDetailsScreen extends StatelessWidget {
 
   IconData get _heroIcon => switch (technique.id) {
     _ when technique.id == DecisionTechnique.supertrendPlus.id => Icons.insights_outlined,
+    _ when technique.id == DecisionTechnique.worm10.id => Icons.hub_outlined,
     _ => Icons.candlestick_chart_outlined,
   };
 
@@ -37,6 +38,7 @@ class TechniqueDetailsScreen extends StatelessWidget {
     final sections = switch (technique.id) {
       _ when technique.id == DecisionTechnique.signalFlip.id => _signalFlipSections(context),
       _ when technique.id == DecisionTechnique.supertrendPlus.id => _supertrendPlusSections(context),
+      _ when technique.id == DecisionTechnique.worm10.id => _worm10Sections(context),
       _ => _fallbackSections(context),
     };
     final scheme = Theme.of(context).colorScheme;
@@ -361,6 +363,137 @@ class TechniqueDetailsScreen extends StatelessWidget {
           'turning it back on starts everything fresh and immediately '
           're-checks every running trade from its own start signal '
           'forward, exactly like the hourly double-check above.',
+    ),
+  ];
+
+  List<Widget> _worm10Sections(BuildContext context) => [
+    const _Section(
+      icon: Icons.visibility_outlined,
+      title: 'What it watches',
+      body:
+          'Two custom indicators on the TradingView chart, set to Heikin '
+          'Ashi candles. The first, "worm_10_26," is one script that '
+          'carries four separate things at once: a Higher-High/Lower-Low '
+          'swing marker (the same kind the first technique uses), a plain '
+          'BUY/SELL tag (also from that same swing logic), and a separate, '
+          'sparser Buy/Sell entry signal from a Supertrend-style '
+          'calculation. The second, "spy_9_26," reads the RSI and sorts it '
+          'into five zones: Blue and Purple (oversold), White (neutral), '
+          'Green and Yellow (overbought) — Blue and Yellow are the '
+          'stronger ends of each pair.',
+    ),
+    const _Section(
+      icon: Icons.alt_route_outlined,
+      title: 'The basic rule',
+      highlight: true,
+      body:
+          'A trade only ever opens on a genuine three-part agreement: the '
+          'Supertrend-style signal pointing one way, a fresh swing low or '
+          'high showing up, and the RSI sitting in the matching zone — '
+          'e.g. a long opens when Supertrend is reading Sell, a fresh Low '
+          'just printed, and RSI is Blue or Purple. That same three-part '
+          'agreement, minus the Supertrend requirement, is enough on its '
+          'own to CLOSE a running trade — a weaker bar for closing than '
+          'for opening.\n\n'
+          'What happens for a pair the app is already managing:\n\n'
+          '•  Nothing running yet → only the full three-part agreement '
+          'opens a trade. A bare BUY/SELL tag by itself never opens '
+          'anything from a standing start.\n'
+          '•  Already running, and that SAME three-part agreement fires '
+          'again → the trade is closed and immediately reopened fresh in '
+          'the same direction, resetting its entry to the new price.\n'
+          '•  Already running, and the weaker two-part version (swing + '
+          'RSI, no Supertrend) fires for the OPPOSITE direction → the '
+          'trade is closed and flipped to the opposite side right away.\n'
+          '•  Already running, and a bare opposite BUY/SELL tag shows up '
+          'with none of the above → that alone is still enough to close '
+          'and flip — just the single tag, no RSI or Supertrend needed.\n'
+          '•  Already running, and a bare SAME-direction BUY/SELL tag '
+          'shows up → nothing happens, just noted as confirmation.',
+    ),
+    const _Section(
+      icon: Icons.verified_outlined,
+      title: 'Before anything is trusted',
+      body:
+          'The same two-step proof every technique here uses:\n\n'
+          '1.  Read three separate times, 10 seconds apart, has to come '
+          'back identical all three times.\n'
+          '2.  Once confirmed, it still has to survive one full extra '
+          'candle before the app finally acts — unlike the Supertrend '
+          'technique, this one does NOT skip that wait for an already-'
+          'running trade; every action goes through the full wait, same '
+          'as the very first technique.',
+    ),
+    const _Section(
+      icon: Icons.fiber_new_outlined,
+      title: 'A brand-new pair',
+      body:
+          'Same as the first technique: nothing opens until a genuine '
+          'three-part agreement happens for that pair. A pair sitting in '
+          'waiting (an order placed but not yet filled, or nothing placed '
+          'at all) stays there until that real signal shows up — a bare '
+          'BUY/SELL tag alone is never enough to open the first trade.',
+    ),
+    const _Section(
+      icon: Icons.history_outlined,
+      title: 'The hourly double-check',
+      body:
+          'Every running trade also gets re-walked once an hour (15 '
+          'minutes before the next hourly candle) and every time the app '
+          'is reopened — starting from whatever actually opened it, '
+          'replaying every relevant event since in order, the same reverse-'
+          'check style the first technique uses.',
+    ),
+    const _Section(
+      icon: Icons.power_settings_new_outlined,
+      title: 'Power switch',
+      body:
+          'Power OFF means the engine itself isn\'t running at all — '
+          'nothing is read from the chart, nothing opens, nothing closes, '
+          'full stop. Power ON starts the engine fresh, and before it '
+          'looks at a single pair it checks, in order: internet '
+          'connection, then MT5, then TradingView, then that both '
+          'worm_10_26 and spy_9_26 are loaded AND the chart is set to '
+          'Heikin Ashi candles. Only once all four pass does it start '
+          'checking pairs, and it immediately runs a reverse-check over '
+          'every pair this technique manages.',
+    ),
+    const _Section(
+      icon: Icons.smart_toy_outlined,
+      title: 'Auto switch',
+      body:
+          'Auto is separate from Power. Turning Auto OFF (the big switch) '
+          'leaves the engine running and still watching its own health, '
+          'but it stops checking any pair for new signals — no new '
+          'trades, and nothing already running gets closed either; it '
+          'just sits as-is until Auto is back on.',
+    ),
+    const _StatusGrid(
+      rows: [
+        ('Waiting', 'No confirmed three-part agreement yet for that pair.', 'Rechecked fresh every 3 minutes.'),
+        (
+          'Not filled',
+          'An order was placed but hasn\'t triggered yet.',
+          'Rechecked every 3 minutes; a stale order (signal moved on) is cancelled and replaced.',
+        ),
+        (
+          'Filled / Running',
+          'A real trade is open under this pair.',
+          'Checked every 3 minutes for a recycle, flip, or update event, plus the hourly full replay as a backup.',
+        ),
+      ],
+    ),
+    const _Section(
+      icon: Icons.exit_to_app_outlined,
+      title: 'Closing the app',
+      body:
+          'Closing the app window stops the engine completely, the same '
+          'as turning Power off — under any circumstance, including a '
+          'crash or the computer restarting. Reopening the app always '
+          'comes back with Power off by default; turning it back on '
+          'starts everything fresh and re-checks every running trade from '
+          'its own start event forward, exactly like the hourly double-'
+          'check above.',
     ),
   ];
 }

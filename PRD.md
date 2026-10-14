@@ -1985,6 +1985,36 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-14** — New feature: a third decision technique, worm_10_26 +
+  spy_9_26 (Heikin Ashi) - built around a custom script the user wrote
+  that merges worm_9_26's own MSB/OB/HH/LL/BUY/SELL plots with Supertrend
+  Plus's discrete Buy/Sell into one script ("worm_10_26"), paired with
+  spy_9_26's RSI zone plots - genuinely read for entry/exit this time
+  (unlike Signal Flip, where spy_9_26 is attached but never used). Open
+  only on a genuine three-part confluence (Supertrend state + a fresh
+  HH/LL + the matching RSI zone); that same confluence minus the
+  Supertrend leg is enough on its own to close; a repeat of the full
+  confluence while already running RECYCLES the same direction fresh
+  instead of just confirming it; a bare opposite zigzag signal alone is
+  still enough to flip. Pure decision logic lives in
+  `lib/data/engine/worm10_decision.dart`, deliberately isolated from
+  `EngineService` so it could be synthetic-tested (9 scenarios) and
+  dry-run verified against real live TradingView data before being wired
+  into any real open/close call - several earlier interpretations of the
+  user's own spec were wrong and explicitly corrected across multiple
+  rounds (see that file's own doc comment for the final, confirmed
+  reasoning). Registered as a selectable technique (`DecisionTechnique.
+  worm10`) with its own "Read more" screen - not set as the default,
+  switching to it is a deliberate choice.
+
+  Same change also extended `BotHistoryEntry`/the History screen with
+  two fields applying to ALL techniques: `realizedProfitPercent` (P&L as
+  a percentage of notional, same formula as the Dashboard's own live
+  P&L% column, shown as "+11.02 (+33.45%)") and `sllAtTermination` (the
+  exact SLL text - "+10%" or "-$5" - active on the position right before
+  it closed), per the user: "include the P&L value in history card once
+  bot terminated" / "include the sll setup at the trade terminal."
+
 - **2026-10-14** — Baseline SL (§10.2) simplified from "-5% or -$5,
   whichever occurs first" to a flat **-$5 only**, no percent leg at all.
   Per the user, working through a concrete example: a small position

@@ -46,6 +46,8 @@ class BotHistoryEntry {
     this.closeSignalAt,
     this.stopReason,
     this.detail,
+    this.realizedProfitPercent,
+    this.sllAtTermination,
   });
 
   final String id;
@@ -96,6 +98,24 @@ class BotHistoryEntry {
   final String? stopReason;
   final String? detail;
 
+  /// [realizedProfit] as a percentage of the position's own notional value
+  /// (2026-10-14, per the user: "include the P&L value in history card
+  /// once bot terminated, +11.02 (+33.45%)") - same formula the Dashboard's
+  /// own live P&L% column uses (`profit / (volume * contractSize *
+  /// priceOpen) * 100`), just snapshotted once at close time instead of
+  /// recomputed live. Null for entries written before this field existed.
+  final double? realizedProfitPercent;
+
+  /// The SLL (SL ratchet/baseline) setup active on this position right
+  /// before it terminated, as the exact same short text the Dashboard's
+  /// own SLL column shows (2026-10-14, per the user: "in history card,
+  /// please include the sll setup at the trade terminal, for example ...
+  /// xrp (opposite signal) sll: -5%/-5$, btc (sl closed) sll: +10%") -
+  /// either the ratchet rung ("+10%") if one had locked, or the flat
+  /// baseline ("-5$") if it never crossed the first rung. Null for entries
+  /// written before this field existed.
+  final String? sllAtTermination;
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'ts': ts.toIso8601String(),
@@ -120,6 +140,8 @@ class BotHistoryEntry {
     if (closeSignalAt != null) 'close_signal_at': closeSignalAt,
     if (stopReason != null) 'stop_reason': stopReason,
     if (detail != null) 'detail': detail,
+    if (realizedProfitPercent != null) 'realized_profit_percent': realizedProfitPercent,
+    if (sllAtTermination != null) 'sll_at_termination': sllAtTermination,
   };
 
   factory BotHistoryEntry.fromJson(Map<String, dynamic> json) => BotHistoryEntry(
@@ -146,5 +168,7 @@ class BotHistoryEntry {
     closeSignalAt: (json['close_signal_at'] as num?)?.toInt(),
     stopReason: json['stop_reason'] as String?,
     detail: json['detail'] as String?,
+    realizedProfitPercent: (json['realized_profit_percent'] as num?)?.toDouble(),
+    sllAtTermination: json['sll_at_termination'] as String?,
   );
 }

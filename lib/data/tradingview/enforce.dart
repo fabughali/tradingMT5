@@ -887,6 +887,147 @@ Future<EnforceResult> enforceSupertrendPlus(String host, int port) async {
   }
 }
 
+// ============================================================================
+// worm_10_26 + spy_9_26 (2026-10-14, per the user's third decision
+// technique) - another parallel set of functions, same reasoning as the
+// Supertrend Plus section above for not merging into the generic
+// worm_9_26/spy_9_26 functions. Also Heikin Ashi, also exactly TWO
+// scripts - the user confirmed directly: "allowed only two indicators. so
+// only open worm 10 and spy 9" - no third script, unlike Supertrend
+// Plus's own worm_9_26-for-range-data dependency (this technique has its
+// own range/MSB data built into worm_10_26 itself, no second script
+// needed for that).
+// ============================================================================
+
+const _worm10Script = EnforceScript(
+  key: 'WORM10',
+  searchTitle: 'worm_10_26',
+  scriptIdPart: 'USER;125eec083a7d45479dac940b5af76dc7',
+);
+
+/// spy_9_26, same scriptIdPart Signal Flip's own [_enforceScripts] entry
+/// uses - needed here for its real RSI zone plots (unlike Signal Flip,
+/// where it's attached but never read).
+const _worm10RsiScript = EnforceScript(
+  key: 'RSI',
+  searchTitle: 'spy_9_26',
+  scriptIdPart: 'USER;f40c0a529f954b648be8f2b530d43d3f',
+);
+
+const _worm10Scripts = [_worm10Script, _worm10RsiScript];
+
+class _Worm10BothOpen {
+  const _Worm10BothOpen(this.worm10, this.rsi);
+  final bool worm10;
+  final bool rsi;
+}
+
+_Worm10BothOpen _worm10BothOpen(_EnforceChartState state) {
+  final all =
+      '${state.sourceScriptIdParts.join(' ')} ${state.legendTitles.join(' ')}';
+  final worm10 =
+      all.contains(_worm10Script.scriptIdPart) ||
+      RegExp(r'\bworm_10_26\b', caseSensitive: false).hasMatch(all);
+  final rsi =
+      all.contains(_worm10RsiScript.scriptIdPart) ||
+      RegExp(r'\bspy_9_26\b', caseSensitive: false).hasMatch(all);
+  return _Worm10BothOpen(worm10, rsi);
+}
+
+/// Read-only check, same shape as [isSupertrendPresent] but for the
+/// worm_10_26 + spy_9_26 combo.
+Future<bool> isWorm10Present(CdpClient cdp) async {
+  final check = _worm10BothOpen(await _getEnforceState(cdp));
+  return check.worm10 && check.rsi;
+}
+
+/// Same end-to-end shape as [enforceSupertrendPlus] but for the
+/// worm_10_26 + spy_9_26 combo.
+Future<EnforceResult> enforceWorm10(String host, int port) async {
+  final cdp = await connectToChart(host, port);
+  try {
+    final apiReady = await waitForChartApiReady(cdp);
+    if (!apiReady) {
+      return const EnforceResult(
+        status: 'blocked',
+        error: 'TradingView chart API did not become ready in time',
+      );
+    }
+
+    await _closeAllDialogs(cdp);
+    await dismissUpgradeDialog(cdp);
+    final removed = await removeAllSources(cdp);
+    await Future<void>.delayed(const Duration(seconds: 2));
+
+    final afterRemoval = await _getEnforceState(cdp);
+    if (afterRemoval.legendTitles.isNotEmpty) {
+      return EnforceResult(status: 'blocked', removed: removed);
+    }
+
+    final addedOk = <String, bool>{};
+    for (final script in _worm10Scripts) {
+      addedOk[script.key] = await _addOneViaMyScripts(cdp, script);
+    }
+
+    var check = const _Worm10BothOpen(false, false);
+    for (var i = 0; i < 20; i++) {
+      await Future<void>.delayed(const Duration(seconds: 3));
+      await dismissUpgradeDialog(cdp);
+      check = _worm10BothOpen(await _getEnforceState(cdp));
+      if (check.worm10 && check.rsi) break;
+    }
+
+    // Cleanup: remove any leftover legend stub that isn't one of the two
+    // required scripts (same free-account-limit reasoning as
+    // enforceCustomScripts).
+    await cdp.evaluate('''(function() {
+      var wv = window.TradingViewApi._activeChartWidgetWV;
+      var widget = wv.value();
+      var appModel = widget._chartWidget.model().model();
+      var keptParts = [${jsonEncode(_worm10Script.scriptIdPart)}, ${jsonEncode(_worm10RsiScript.scriptIdPart)}];
+      var scriptTitles = ['worm_10_26', 'spy_9_26', 'Footprint/VFAS/EMA/HLOTT/MSB/OB/AlphaTrend/ZigZag++/SuperTrend', 'RSI & Vol & Stochastic RSI & VAPI'];
+      var items = document.querySelectorAll('[data-qa-id=legend-source-item]');
+      var legend = [];
+      for (var j = 0; j < items.length; j++) {
+        var el = items[j];
+        var t = el.querySelector('.title-quatTGAC');
+        legend.push({ entity: el.getAttribute('data-entity-id'), title: t ? t.textContent.trim() : '' });
+      }
+      var sources = appModel.dataSources();
+      var byEntity = {};
+      for (var i = 0; i < sources.length; i++) {
+        var s = sources[i];
+        var part = '';
+        var eid = null;
+        try { var m = s.metaInfo(); part = m ? (m.scriptIdPart || '') : ''; } catch(e) {}
+        try { eid = s.entityId ? s.entityId() : null; } catch(e) {}
+        if (eid) byEntity[eid] = part;
+      }
+      for (var k = 0; k < legend.length; k++) {
+        var item = legend[k];
+        var part = byEntity[item.entity] || '';
+        var titleIsScript = scriptTitles.some(function (st) { return item.title.indexOf(st) !== -1; });
+        if (keptParts.indexOf(part) !== -1 || titleIsScript) continue;
+        try { widget.removeEntity(item.entity); } catch(e) {}
+      }
+    })()''');
+
+    final finalCheck = _worm10BothOpen(await _getEnforceState(cdp));
+    return EnforceResult(
+      status: addedOk.values.every((v) => v) ? 'ok' : 'partial',
+      removed: removed,
+      addedOk: addedOk,
+      // Reusing EnforceResult.finalMsb/finalRsi to mean "worm_10_26 is
+      // open" / "spy_9_26 is open" - same reasoning as
+      // [enforceSupertrendPlus]'s own result.
+      finalMsb: finalCheck.worm10,
+      finalRsi: finalCheck.rsi,
+    );
+  } finally {
+    cdp.close();
+  }
+}
+
 /// Candle style codes, confirmed live 2026-10-06 against a real chart:
 /// clicking TradingView's toolbar "Candles"/"Heikin Ashi" buttons set
 /// `mainSeries.properties().childs().style.value()` to 1/8 respectively,

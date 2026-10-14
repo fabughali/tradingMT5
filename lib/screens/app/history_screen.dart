@@ -423,7 +423,15 @@ class _HistoryCard extends StatelessWidget {
                 Expanded(
                   child: _kv(
                     'P&L',
-                    profit == null ? '—' : '${profit >= 0 ? '+' : ''}${profit.toStringAsFixed(2)}',
+                    // 2026-10-14, per the user: "include the P&L value in
+                    // history card once bot terminated, +11.02 (+33.45%)" -
+                    // same value+percent shape as the Auto-Managed Trades
+                    // table's own live P&L column, just snapshotted at
+                    // close instead of recomputed live.
+                    profit == null
+                        ? '—'
+                        : '${profit >= 0 ? '+' : ''}${profit.toStringAsFixed(2)}'
+                              '${entry.realizedProfitPercent != null ? ' (${entry.realizedProfitPercent! >= 0 ? '+' : ''}${entry.realizedProfitPercent!.toStringAsFixed(2)}%)' : ''}',
                     valueColor: cardTint ?? profitColor,
                   ),
                 ),
@@ -498,6 +506,21 @@ class _HistoryCard extends StatelessWidget {
               const SizedBox(height: 2),
               Text(
                 'Close B: confirmed empty @ ${HistoryScreen._fmtTime(entry.endTime)}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+            // 2026-10-14, per the user: "in history card, please include
+            // the sll setup at the trade terminal, for example ... xrp
+            // (opposite signal) sll: -5%/-5$, btc (sl closed) sll: +10%" -
+            // the symbol and close reason are already shown elsewhere on
+            // this same card (the title and the reason chip), so just the
+            // SLL value itself here. Either the ratchet rung that had
+            // locked ("+10%") or the flat baseline ("-$5") if it never
+            // crossed the first rung.
+            if (entry.sllAtTermination != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                'SLL: ${entry.sllAtTermination}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
