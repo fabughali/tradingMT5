@@ -1,14 +1,14 @@
 import '../../core/core_storage.dart';
 
 /// Tracks consecutive baseline-stop-loss terminations per base, so a pair
-/// stops auto-reopening after repeatedly failing at the same -10%/-$10
+/// stops auto-reopening after repeatedly failing at the same flat -$5
 /// baseline on the same signal (2026-10-13, per the user: "if pair beent
 /// terminated two times in same signal, then this pair will not start
 /// over again until signal is flipped"). Keyed by base (tvSymbol), not by
 /// ticket — unlike [SlRatchetStore], this deliberately tracks a streak
 /// ACROSS multiple trades on the same pair, not state for one.
 ///
-/// A "baseline stop" only ever means a close via the flat -10%/-$10 SL
+/// A "baseline stop" only ever means a close via the flat flat -$5 SL
 /// [EngineService._baselineStopLoss] sets at ignition, with the ratchet
 /// never having tightened it first (see the call site's own doc comment
 /// for how that's told apart from a ratchet-protected profit-lock close).

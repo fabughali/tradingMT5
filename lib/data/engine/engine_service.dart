@@ -475,7 +475,7 @@ class EngineService {
       // and waiting pairs" - retroactively tightens any already-open
       // position that's never been ratchet-protected (so it's still
       // sitting at its original open-time SL, typically MUCH wider than
-      // the new baseline) down to the same -10%/-$10-whichever-first
+      // the new baseline) down to the same flat -$5 baseline
       // baseline [_openPosition] now sets at ignition. Never fires for a
       // position the ratchet has already locked (that SL is already
       // tighter by construction - the ratchet only ever engages once P&L
@@ -2665,20 +2665,23 @@ class EngineService {
     );
   }
 
-  /// The tighter of a flat -10% (of notional) or a flat -$10 stop-loss,
-  /// whichever would be reached FIRST as price moves against the position
-  /// (2026-10-13, per the user: "set -10%/or/-10$ (which one occurs
-  /// first) as max stop loss once pair ignited"). Fills in the SL ratchet
-  /// ladder's own "0% or below" row (§10.1) - replaces the 60/40
-  /// liquidation-avoidance model's own [_computeTargetLevels] `sl`
-  /// (confirmed live this is typically MUCH wider than 10%, e.g. entry
+  /// A flat -$5 stop-loss (2026-10-13, per the user, originally "whichever
+  /// occurs first" between -10%/-$10, later tightened to -5%/-$5 the same
+  /// way - simplified 2026-10-14, per the user, to a pure dollar cap: "if
+  /// pair is =0% or less... make it -5$ only sl" / "so the app only
+  /// triggers stop loss if P&L reaches -$5" - dropped the percent
+  /// comparison entirely, since for a large position 5% of notional could
+  /// be far more than $5, which the user confirmed should NOT be allowed
+  /// to run that far ("still stop at -$5 for large positions too"). Fills
+  /// in the SL ratchet ladder's own "0% or below" row (§10.1) - replaces
+  /// the 60/40 liquidation-avoidance model's own [_computeTargetLevels]
+  /// `sl` (confirmed live this is typically MUCH wider, e.g. entry
   /// 1.7784/SL 2.6313 on a real SELL, a ~48% distance) - the ratchet
   /// tightens FROM here the moment P&L turns positive, this is the worst
-  /// case below that. Needs [volume] (bigger volume reaches a flat $10
-  /// loss on a SMALLER price move, so "whichever occurs first" is
-  /// genuinely volume-aware, not just a fixed percent) - called separately
-  /// from [_computeTargetLevels] because the real volume for a fresh open
-  /// isn't known until after the step-down retry ladder picks it.
+  /// case below that. Needs [volume] (bigger volume reaches a flat $5 loss
+  /// on a smaller price move) - called separately from
+  /// [_computeTargetLevels] because the real volume for a fresh open isn't
+  /// known until after the step-down retry ladder picks it.
   double _baselineStopLoss({
     required double entry,
     required TradeDirection direction,
@@ -2686,18 +2689,12 @@ class EngineService {
     required double contractSize,
     required int digits,
   }) {
-    final percentSl = direction == TradeDirection.long ? entry * 0.90 : entry * 1.10;
     final notionalPerUnit = volume * contractSize;
-    final dollarDistance = notionalPerUnit > 0 ? 10 / notionalPerUnit : double.infinity;
-    final dollarSl = direction == TradeDirection.long ? entry - dollarDistance : entry + dollarDistance;
-    // "Whichever occurs first" = whichever price is CLOSER to entry (hit
-    // by a smaller adverse move). Long's SL sits below entry, so the
-    // HIGHER of the two candidates is closer/tighter; short's sits above,
-    // so the LOWER one is.
-    final tighter = direction == TradeDirection.long
-        ? (percentSl > dollarSl ? percentSl : dollarSl)
-        : (percentSl < dollarSl ? percentSl : dollarSl);
-    return _roundToDigits(tighter, digits);
+    final dollarDistance = notionalPerUnit > 0 ? 5 / notionalPerUnit : 0.0;
+    final dollarSl = direction == TradeDirection.long
+        ? entry - dollarDistance
+        : entry + dollarDistance;
+    return _roundToDigits(dollarSl, digits);
   }
 
   /// Returns true only on a genuine success (position opened directly, or

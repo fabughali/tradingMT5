@@ -975,14 +975,19 @@ used to mean "unchanged" — whatever the 60/40 liquidation-avoidance model
 computed, confirmed live this is typically MUCH wider than 10%, e.g. entry
 1.7784/SL 2.6313 on a real SELL — a ~48% distance).
 
-**The baseline SL** (`EngineService._baselineStopLoss`) is the TIGHTER of
-a flat **-10%** (of notional) or a flat **-$10**, whichever price would be
-reached FIRST as the trade moves against the position — per the user's
-own revised spec: "-10%/or/-10$ (which one occurs first)." Needs the
-trade's own volume (a bigger position reaches a flat $10 loss on a
-*smaller* price move, so this genuinely depends on size, not just a fixed
-percent) — computed only once the real volume for an attempt is final
-(the step-down retry ladder, §12, can still shrink it), never inside
+**The baseline SL** (`EngineService._baselineStopLoss`) is a flat
+**-$5** stop-loss — originally the tighter of -10%/-$10 ("whichever
+occurs first"), tightened the same way to -5%/-$5, then simplified
+2026-10-14, per the user, to a pure dollar cap with no percent
+comparison at all: "if pair is =0% or less... make it -5$ only sl" /
+"so the app only triggers stop loss if P&L reaches -$5." The percent leg
+was dropped because for a large position, 5% of notional could be far
+more than $5 — the user confirmed the dollar cap should win for every
+position size, not just small ones ("still stop at -$5 for large
+positions too"). Needs the trade's own volume (a bigger position reaches
+a flat $5 loss on a *smaller* price move, so this genuinely depends on
+size) — computed only once the real volume for an attempt is final (the
+step-down retry ladder, §12, can still shrink it), never inside
 `_computeTargetLevels` itself. Replaces that function's own 60/40-model
 `sl` output entirely for every fresh open and every stale-resting-order
 refresh; TP is untouched.
@@ -992,9 +997,8 @@ also on currently running and waiting pairs"), folded into §10.1's own
 sweep (same bulk position fetch, no extra MT5 calls): any open position
 the ratchet has never touched (`SlRatchetStore.highestThreshold == null`)
 gets tightened down to the baseline if its current SL is wider — verified
-live against this account's real 13 open positions before deploying, all
-13 computed sensible tightenings (a mix of percent-wins and dollar-wins
-cases depending on each symbol's own price and volume). Never loosens,
+live against this account's real open positions before deploying, every
+one computed a sensible tightening. Never loosens,
 and never touches a position the ratchet has already locked (that SL is
 already tighter by construction).
 
@@ -1980,6 +1984,20 @@ This section is intentionally selective — a running record of the real,
 live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
+
+- **2026-10-14** — Baseline SL (§10.2) simplified from "-5% or -$5,
+  whichever occurs first" to a flat **-$5 only**, no percent leg at all.
+  Per the user, working through a concrete example: a small position
+  where 5% of notional was only a ~$0.20 loss used to stop out there
+  instead of being allowed to run to a real -$5 loss - "if xrp is -5%
+  but still 0.2 ... keep it running until it reaches -5$ ... so always
+  the loss not exceeding -5$." Clarified before implementing (a large
+  position has the opposite problem - 5% of ITS notional could be far
+  more than $5) - confirmed the dollar cap should win for every position
+  size, not just small ones, then confirmed again, simpler still: "make
+  it if pair is =0% or less... make it -5$ only sl." `_baselineStopLoss`
+  dropped the percent comparison entirely; the SLL column and its info
+  dialog now both just say `-$5`.
 
 - **2026-10-13** — Dashboard fix: the SLL column (§16.11) showed a bare
   "—" for every position at 0% P&L or below, reading as "nothing is

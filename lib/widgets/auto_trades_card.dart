@@ -150,7 +150,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   /// any guessing about what a given rung actually means.
   void _showSllInfoDialog(BuildContext context) {
     const rows = [
-      ('0% or below', '-10% or -\$10, whichever is tighter'),
+      ('0% or below', '-\$5 flat (no percent)'),
       ('+5%', '+2%'),
       ('+10%', '+5%'),
       ('+15%', '+10%'),
@@ -609,7 +609,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                             // it means the ratchet hasn't crossed its first
                             // rung (+5%) yet, so the SL is still whatever
                             // baseline SL (§10.2) was set at ignition: the
-                            // tighter of -10% or -$10. Showing a bare "—"
+                            // flat -$5 baseline. Showing a bare "—"
                             // there used to read as "nothing is protecting
                             // this trade," which isn't true - per the user:
                             // "i want sll column to reflect exactly sll not
@@ -621,7 +621,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                               row.status != AutoTradeStatus.running
                                   ? '—'
                                   : row.slRatchetThreshold == null
-                                      ? '-10%/\$10'
+                                      ? '-\$5'
                                       : '+${row.slRatchetThreshold}%',
                               style: TextStyle(
                                 color: row.status == AutoTradeStatus.running &&
