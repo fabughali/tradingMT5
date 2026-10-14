@@ -14,6 +14,7 @@ import '../models/decision_technique.dart';
 import '../models/engine_status.dart';
 import '../models/market_watch_snapshot.dart';
 import '../identity/trade_volume_store.dart';
+import '../engine/worm10_decision.dart';
 import '../logging/app_logger.dart';
 import '../models/signal.dart';
 import '../models/watched_symbol.dart';
@@ -296,12 +297,29 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           .toSet();
       final entrySignalsRaw =
           storage.readJsonObject(storage.entrySignalFile) ?? const {};
+      // 2026-10-14, per the user: "keep an eye on currently running
+      // trades. they should have filled up (update) column if there is
+      // any update" - found live right after switching to the Hybrid
+      // Decision technique: that technique keeps its own open/update
+      // snapshot in worm10-entry-signal.json (a six-way event kind, not
+      // the 4-way HH/LL/BUY/SELL tag [entrySignalFile] holds), which this
+      // provider never read, so Open/Update stayed blank for every real
+      // running trade under it. Same fallback order as
+      // [EngineService._recordHistory]'s own: try worm10's store first.
+      final worm10EntrySignalsRaw =
+          storage.readJsonObject(storage.worm10EntrySignalFile) ?? const {};
       final waitingReasonsRaw =
           storage.readJsonObject(storage.waitingReasonsFile) ?? const {};
       final lastCheckedRaw =
           storage.readJsonObject(storage.lastCheckedFile) ?? const {};
       final pendingSignalsRaw =
           storage.readJsonObject(storage.pendingSignalsFile) ?? const {};
+      // Same worm10-specific fallback as [worm10EntrySignalsRaw] above,
+      // for the "Close A" preview - that technique's own survive-one-
+      // candle candidate lives in worm10-pending.json, not
+      // pending-signals.json.
+      final worm10PendingRaw =
+          storage.readJsonObject(storage.worm10PendingFile) ?? const {};
       // 2026-10-13, per the user: "can i have a column in auto table to
       // show current sll set... so user know what is current sll setup
       // without any guessing" - read straight from SlRatchetStore's own
@@ -365,9 +383,12 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
             : tradeVolumes.lastApplied(volKey);
         if (position != null) {
           final ticket = int.tryParse('${position['position_id']}');
-          final entry = ticket != null
-              ? entrySignalsRaw['$ticket'] as Map<String, dynamic>?
+          final worm10Entry = ticket != null
+              ? worm10EntrySignalsRaw['$ticket'] as Map<String, dynamic>?
               : null;
+          final entry = worm10Entry != null
+              ? null
+              : (ticket != null ? entrySignalsRaw['$ticket'] as Map<String, dynamic>? : null);
           final slRatchetThreshold = ticket != null
               ? ((slRatchetRaw['$ticket'] as Map<String, dynamic>?)?['threshold'] as num?)
                     ?.toInt()
@@ -377,18 +398,37 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           // actually disagrees with this row's running direction, i.e. it
           // would close this trade once confirmed. An agreeing candidate
           // isn't a "close" candidate at all (see AutoTradeRow's doc).
-          final pendingEntry =
-              pendingSignalsRaw['${AutoCategory.oneHour.wireValue}|$tvSymbol'] as Map<String, dynamic>?;
+          // Worm10-aware (2026-10-14) - same fallback order as the
+          // Open/Update fields above: that technique's own pending
+          // candidate lives in worm10-pending.json, keyed by a six-way
+          // [Worm10EventKind], not the 4-way [SignalTag] the other two
+          // techniques share.
+          final worm10PendingEntry = worm10PendingRaw['${AutoCategory.oneHour.wireValue}|$tvSymbol']
+              as Map<String, dynamic>?;
+          final pendingEntry = worm10PendingEntry != null
+              ? null
+              : pendingSignalsRaw['${AutoCategory.oneHour.wireValue}|$tvSymbol'] as Map<String, dynamic>?;
           String? closeATag;
           int? closeAAt;
           DateTime? closeBEta;
-          final pendingWireTag = pendingEntry?['tag'] as String?;
-          final pendingBarTime = (pendingEntry?['bar_time'] as num?)?.toInt();
+          final worm10PendingKindWire = worm10PendingEntry?['kind'] as String?;
+          final worm10PendingBarTime = (worm10PendingEntry?['bar_time'] as num?)?.toInt();
+          final pendingWireTag = worm10PendingKindWire ?? pendingEntry?['tag'] as String?;
+          final pendingBarTime = worm10PendingBarTime ?? (pendingEntry?['bar_time'] as num?)?.toInt();
           if (pendingWireTag != null && pendingBarTime != null) {
-            final pendingSide = Signal(
-              tag: signalTagFromWire(pendingWireTag),
-              time: pendingBarTime,
-            ).side;
+            // The direction this candidate points toward - a plain lookup
+            // for worm10's six kinds (buyClose1/sellOpen1/zigzagSell all
+            // point toward short; the mirror three toward long), or the
+            // existing 4-way [Signal.side] lookup for the other two
+            // techniques.
+            final pendingSide = worm10PendingKindWire != null
+                ? switch (worm10EventKindFromWire(worm10PendingKindWire)) {
+                    Worm10EventKind.buyOpen1 || Worm10EventKind.zigzagBuy || Worm10EventKind.sellClose1 =>
+                      SignalSide.buy,
+                    Worm10EventKind.sellOpen1 || Worm10EventKind.zigzagSell || Worm10EventKind.buyClose1 =>
+                      SignalSide.sell,
+                  }
+                : Signal(tag: signalTagFromWire(pendingWireTag), time: pendingBarTime).side;
             final pendingDirection = pendingSide == SignalSide.buy ? 'buy' : 'sell';
             if (pendingDirection != (position['action'] as String?)) {
               closeATag = pendingWireTag;
@@ -431,10 +471,16 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               openedAt: DateTime.tryParse(
                 position['create_time'] as String? ?? '',
               ),
-              startTag: entry?['tag'] as String?,
-              startAt: (entry?['bar_time'] as num?)?.toInt(),
-              updateTag: entry?['update_tag'] as String?,
-              updateAt: (entry?['update_time'] as num?)?.toInt(),
+              startTag: worm10Entry != null ? worm10Entry['kind'] as String? : entry?['tag'] as String?,
+              startAt: worm10Entry != null
+                  ? (worm10Entry['bar_time'] as num?)?.toInt()
+                  : (entry?['bar_time'] as num?)?.toInt(),
+              updateTag: worm10Entry != null
+                  ? worm10Entry['update_kind'] as String?
+                  : entry?['update_tag'] as String?,
+              updateAt: worm10Entry != null
+                  ? (worm10Entry['update_time'] as num?)?.toInt()
+                  : (entry?['update_time'] as num?)?.toInt(),
               lastCheckedAt: DateTime.tryParse(
                 lastCheckedRaw[tvSymbol] as String? ?? '',
               ),

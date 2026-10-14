@@ -1985,6 +1985,24 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-14** — Hybrid Decision follow-ups, found live immediately
+  after the user switched to it on the real account: (1) renamed from
+  "worm_10_26 + spy_9_26 (Heikin Ashi)" to "Hybrid Decision" (id
+  unchanged); (2) each technique now carries its own accent color -
+  blue/deep purple/orange - tinting the Dashboard's Decision Technique
+  card and the dropdown's own items, so which one is active reads at a
+  glance; (3) the Dashboard's Open/Update/Close A columns were blank for
+  every REAL running trade under this technique - `app_providers.dart`
+  only ever read `entry-signal.json`/`pending-signals.json` (Signal
+  Flip's own stores), never this technique's own
+  `worm10-entry-signal.json`/`worm10-pending.json`. Fixed to try the
+  worm10 stores first, same fallback order `_recordHistory` already
+  uses. The technique's own color field is a plain `0xAARRGGBB` int, not
+  a `package:flutter/material.dart` `Color` - that broke `dart compile
+  exe bin/engine.dart` outright on the first attempt (this model is
+  shared with the pure-Dart engine binary) - confirmed live, fixed
+  before it ever reached production.
+
 - **2026-10-14** — New feature: a third decision technique, worm_10_26 +
   spy_9_26 (Heikin Ashi) - built around a custom script the user wrote
   that merges worm_9_26's own MSB/OB/HH/LL/BUY/SELL plots with Supertrend

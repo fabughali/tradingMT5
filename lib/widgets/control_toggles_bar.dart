@@ -145,12 +145,19 @@ class _DecisionTechniquePicker extends ConsumerWidget {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
 
+    // 2026-10-14, per the user: "the technique card in the auto card need
+    // to have different color each time user choose technique ... this
+    // color should match with drop down selected technique" - each
+    // [DecisionTechnique] carries its own [DecisionTechnique.colorValue]; tint
+    // the whole card with it instead of the fixed neutral surface, so
+    // which technique is active reads at a glance.
+    final accent = Color(selected.colorValue);
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 10, 14, 12),
       decoration: BoxDecoration(
-        color: scheme.surfaceContainerHigh,
+        color: accent.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: scheme.outlineVariant),
+        border: Border.all(color: accent.withValues(alpha: 0.45)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -162,7 +169,7 @@ class _DecisionTechniquePicker extends ConsumerWidget {
           Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.psychology_outlined, size: 15, color: scheme.primary),
+              Icon(Icons.psychology_outlined, size: 15, color: accent),
               const SizedBox(width: 6),
               Text(
                 'DECISION TECHNIQUE',
@@ -194,10 +201,23 @@ class _DecisionTechniquePicker extends ConsumerWidget {
                       for (final t in DecisionTechnique.all)
                         DropdownMenuItem(
                           value: t,
-                          child: Text(
-                            t.name,
-                            overflow: TextOverflow.ellipsis,
-                            style: textTheme.bodyMedium,
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration: BoxDecoration(color: Color(t.colorValue), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  t.name,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.bodyMedium,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                     ],
@@ -205,10 +225,26 @@ class _DecisionTechniquePicker extends ConsumerWidget {
                       for (final t in DecisionTechnique.all)
                         Align(
                           alignment: Alignment.centerLeft,
-                          child: Text(
-                            t.name,
-                            overflow: TextOverflow.ellipsis,
-                            style: textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 10,
+                                height: 10,
+                                decoration: BoxDecoration(color: Color(t.colorValue), shape: BoxShape.circle),
+                              ),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  t.name,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: textTheme.bodyMedium?.copyWith(
+                                    fontWeight: FontWeight.w600,
+                                    color: Color(t.colorValue),
+                                  ),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                     ],
