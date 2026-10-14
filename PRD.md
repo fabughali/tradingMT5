@@ -1985,6 +1985,26 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-14** — Two more Hybrid Decision fixes, both found live within
+  minutes of the user watching real running trades under it: (1) a real
+  bug - `worm10EntrySignals`'s Update field got overwritten with an
+  identical copy of the Open field on every single cycle, because
+  [latest] is always the single most-recent event in the FULL signal
+  history, not something newly observed that cycle; re-reading the same
+  bar that originally opened the position (nothing newer has happened
+  yet) was wrongly treated as a fresh re-confirmation. Confirmed live on
+  ticket 1660457325 (`update_kind == kind`, `update_time == bar_time`) -
+  fixed by requiring the event to be newer than BOTH the original open
+  and whatever Update is already recorded; the one affected ticket's bad
+  `update_kind`/`update_time` were cleared directly. (2) Display fix,
+  per the user: the Open/Update/Close A columns now collapse the six
+  internal event kinds down to the 4 labels that actually matter -
+  "LL"/"HH" (which raw swing event fired) and "Buy"/"Sell" (the bare
+  zigzag tag) - instead of the internal wire strings
+  ("BUY_OPEN1"/"ZIGZAG_SELL" etc). Also, per the user, the Auto-Managed
+  Trades table's own direction column now shows "LONG"/"SHORT" instead
+  of "BUY"/"SELL" (display only).
+
 - **2026-10-14** — Hybrid Decision follow-ups, found live immediately
   after the user switched to it on the real account: (1) renamed from
   "worm_10_26 + spy_9_26 (Heikin Ashi)" to "Hybrid Decision" (id

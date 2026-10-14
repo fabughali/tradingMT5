@@ -2552,12 +2552,24 @@ class EngineService {
 
       case Worm10Action.update:
         // Same-direction re-confirmation while already running - log only,
-        // same concept as [_checkOneSymbol]'s own Update tracking.
+        // same concept as [_checkOneSymbol]'s own Update tracking. [latest]
+        // is always the single most-recent event in the FULL signal
+        // history, not something newly observed this cycle - re-reading
+        // the exact same bar that originally opened the position (nothing
+        // newer has happened yet) must NOT count as a fresh Update, or
+        // every single cycle would overwrite Update with an identical
+        // copy of Open (confirmed live, ticket 1660457325: update_kind ==
+        // kind, update_time == bar_time). Only a genuinely newer bar than
+        // BOTH the original open AND whatever Update is already recorded
+        // counts.
         if (existing != null) {
           final ticket = _parseTicket(existing['position_id']);
           if (ticket != null) {
             final current = worm10EntrySignals.peek(ticket);
-            if (current?.updateKind != latest.kind || current?.updateTime != latest.time) {
+            final isGenuinelyNewer = current != null &&
+                latest.time != current.barTime &&
+                latest.time != current.updateTime;
+            if (isGenuinelyNewer) {
               worm10EntrySignals.recordUpdate(ticket, latest.kind, latest.time);
               logger.log('$tvSymbol ($category): worm10 Update - $latestWire@${latest.time}.');
             }

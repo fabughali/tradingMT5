@@ -56,6 +56,38 @@ String worm10EventKindToWire(Worm10EventKind k) => switch (k) {
   Worm10EventKind.zigzagSell => 'ZIGZAG_SELL',
 };
 
+/// The 4-way label the GUI actually shows (2026-10-14, per the user: "in
+/// open column ... there are 4 options to write.. LL or HH or Buy or
+/// Sell, where LL refers to buy signal/long trade, HH refers to sell
+/// signal/short trade, sell refers to zigzag sell signal, buy refers to
+/// zigzag buy signal") - collapses the 6 internal kinds down to which RAW
+/// chart event actually fired, not which internal case/strength it
+/// satisfied: [buyOpen1] and [sellClose1] are both built on the same LL
+/// leg (just with or without the Supertrend requirement), so both show
+/// "LL"; [sellOpen1]/[buyClose1] both show "HH" the same way. The wire
+/// string itself (persisted/used for decision logic) is unchanged - this
+/// is a display-only mapping, applied wherever a worm10 event kind is
+/// shown to the user.
+String worm10EventKindDisplayLabel(Worm10EventKind k) => switch (k) {
+  Worm10EventKind.buyOpen1 || Worm10EventKind.sellClose1 => 'LL',
+  Worm10EventKind.sellOpen1 || Worm10EventKind.buyClose1 => 'HH',
+  Worm10EventKind.zigzagBuy => 'Buy',
+  Worm10EventKind.zigzagSell => 'Sell',
+};
+
+/// Same mapping, but tolerant of a plain string that might not even be a
+/// worm10 wire value - e.g. a Signal Flip tag ("HH"/"LL"/"BUY"/"SELL") or
+/// null. Returns [wire] unchanged in that case, so a single call site can
+/// handle both without knowing which technique wrote it.
+String? worm10DisplayLabelOrRaw(String? wire) {
+  if (wire == null) return null;
+  try {
+    return worm10EventKindDisplayLabel(worm10EventKindFromWire(wire));
+  } catch (_) {
+    return wire;
+  }
+}
+
 /// One worm_10_26/spy_9_26 derived event on one bar - same per-bar shape as
 /// [Signal], six kinds instead of four.
 class Worm10Event {

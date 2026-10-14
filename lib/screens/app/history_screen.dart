@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../data/engine/worm10_decision.dart';
 import '../../data/models/auto_category.dart';
 import '../../data/models/bot_history_entry.dart';
 import '../../data/models/trade_direction.dart';
@@ -476,14 +477,14 @@ class _HistoryCard extends StatelessWidget {
             if (entry.openSignalType != null) ...[
               const Divider(height: 20),
               Text(
-                'Open: ${entry.openSignalType} @ ${HistoryScreen._fmtBarTime(entry.openSignalAt)}',
+                'Open: ${worm10DisplayLabelOrRaw(entry.openSignalType)} @ ${HistoryScreen._fmtBarTime(entry.openSignalAt)}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
             if (entry.updateSignalType != null) ...[
               const SizedBox(height: 2),
               Text(
-                'Update: ${entry.updateSignalType} @ ${HistoryScreen._fmtBarTime(entry.updateSignalAt)}',
+                'Update: ${worm10DisplayLabelOrRaw(entry.updateSignalType)} @ ${HistoryScreen._fmtBarTime(entry.updateSignalAt)}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],
@@ -500,7 +501,7 @@ class _HistoryCard extends StatelessWidget {
             if (entry.closeSignalType != null) ...[
               const SizedBox(height: 4),
               Text(
-                'Close A: ${entry.closeSignalType} @ ${HistoryScreen._fmtBarTime(entry.closeSignalAt)}',
+                'Close A: ${worm10DisplayLabelOrRaw(entry.closeSignalType)} @ ${HistoryScreen._fmtBarTime(entry.closeSignalAt)}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
               const SizedBox(height: 2),

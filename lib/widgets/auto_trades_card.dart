@@ -561,7 +561,17 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                           ),
                           DataCell(
                             Text(
-                              row.direction?.toUpperCase() ?? '—',
+                              // 2026-10-14, per the user: "in side column
+                              // .. replace sell with short, replace buy
+                              // with long" - display only, row.direction
+                              // itself stays 'buy'/'sell' for the color
+                              // check right below and every other call
+                              // site that reads it.
+                              switch (row.direction) {
+                                'sell' => 'SHORT',
+                                'buy' => 'LONG',
+                                _ => '—',
+                              },
                               style: TextStyle(
                                 color: row.direction == 'sell'
                                     ? Colors.red

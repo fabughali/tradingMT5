@@ -471,20 +471,27 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               openedAt: DateTime.tryParse(
                 position['create_time'] as String? ?? '',
               ),
-              startTag: worm10Entry != null ? worm10Entry['kind'] as String? : entry?['tag'] as String?,
+              // Display-only 4-way label (2026-10-14, per the user: "in
+              // open column ... there are 4 options to write.. LL or HH
+              // or Buy or Sell") - collapses worm10's 6 internal kinds
+              // down to the raw chart event; a no-op for Signal Flip's
+              // own tags (already exactly one of those 4 strings).
+              startTag: worm10DisplayLabelOrRaw(
+                worm10Entry != null ? worm10Entry['kind'] as String? : entry?['tag'] as String?,
+              ),
               startAt: worm10Entry != null
                   ? (worm10Entry['bar_time'] as num?)?.toInt()
                   : (entry?['bar_time'] as num?)?.toInt(),
-              updateTag: worm10Entry != null
-                  ? worm10Entry['update_kind'] as String?
-                  : entry?['update_tag'] as String?,
+              updateTag: worm10DisplayLabelOrRaw(
+                worm10Entry != null ? worm10Entry['update_kind'] as String? : entry?['update_tag'] as String?,
+              ),
               updateAt: worm10Entry != null
                   ? (worm10Entry['update_time'] as num?)?.toInt()
                   : (entry?['update_time'] as num?)?.toInt(),
               lastCheckedAt: DateTime.tryParse(
                 lastCheckedRaw[tvSymbol] as String? ?? '',
               ),
-              closeATag: closeATag,
+              closeATag: worm10DisplayLabelOrRaw(closeATag),
               closeAAt: closeAAt,
               closeBEta: closeBEta,
               desiredVolume: desiredVolume,
