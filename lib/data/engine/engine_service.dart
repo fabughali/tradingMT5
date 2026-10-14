@@ -2487,6 +2487,189 @@ class EngineService {
     }
     final latest = events.last;
 
+    // RETROACTIVE AUDIT - full forward replay from Start, same shape and
+    // reasoning as [_checkOneSymbol]'s own block (2026-10-14, added after
+    // the user asked directly "please confirm that app open trades are
+    // updated according to buy/sell HH/LL reverse reading" - found live
+    // this technique had ONLY the real-time single-latest-event check,
+    // never this replay, unlike Signal Flip. Without it, more than one
+    // flip happening between checks (e.g. a long outage) could land on
+    // the wrong direction, since the real-time path only ever compares
+    // the single newest event against whatever's currently running, not
+    // the full chain since Start). Reuses [worm10DecisionFor] directly at
+    // every step - the exact same pure function the real-time path uses,
+    // so the two can never disagree about what a given event does.
+    if (existing != null) {
+      final auditTicket = _parseTicket(existing['position_id']);
+      if (auditTicket != null && !_auditedTickets.contains(auditTicket)) {
+        final openSnapshot = worm10EntrySignals.peek(auditTicket);
+        final runningDirection =
+            (existing['action'] as String?) == 'sell' ? TradeDirection.short : TradeDirection.long;
+
+        // Same bootstrap fallback as [_checkOneSymbol]'s own: if nothing
+        // is recorded yet (very first audit for this ticket), anchor to
+        // the most recent event that's actually capable of OPENING a
+        // position (buyOpen1/sellOpen1/zigzagBuy/zigzagSell) - never a
+        // bare buyClose1/sellClose1, which [worm10DecisionFor] always
+        // treats as a no-op from flat, so one could never genuinely be
+        // this ticket's own Start in the first place.
+        Worm10Event? startEvent;
+        if (openSnapshot != null) {
+          startEvent = Worm10Event(kind: openSnapshot.kind, time: openSnapshot.barTime);
+        } else {
+          final openCapable = events
+              .where((e) => worm10DecisionFor(null, e.kind).action != Worm10Action.none)
+              .toList()
+            ..sort((a, b) => b.time.compareTo(a.time));
+          startEvent = openCapable.isEmpty ? null : openCapable.first;
+        }
+
+        if (startEvent == null) {
+          logger.log(
+            '$mt5Symbol ($category): ticket=$auditTicket has no worm10 event '
+            'loaded far enough back to investigate yet - will retry on a later cycle.',
+            level: 'WARNING',
+          );
+        } else {
+          _auditedTickets.add(auditTicket);
+          final startEventChecked = startEvent;
+          var trueDirection = worm10DecisionFor(null, startEventChecked.kind).resultDirection!;
+          var trueStart = startEventChecked;
+          Worm10Event? updateEvent;
+
+          // Every event STRICTLY after Start, in chronological order - the
+          // full history since Start, not just the single most recent one.
+          final afterStart = events.where((e) => e.time > startEventChecked.time).toList()
+            ..sort((a, b) => a.time.compareTo(b.time));
+          for (final e in afterStart) {
+            final decision = worm10DecisionFor(trueDirection, e.kind);
+            switch (decision.action) {
+              case Worm10Action.none:
+                break;
+              case Worm10Action.update:
+                updateEvent = e;
+              case Worm10Action.recycle:
+                trueStart = e;
+                updateEvent = null;
+              case Worm10Action.flip:
+              case Worm10Action.openFresh:
+                // openFresh can't actually happen here - [trueDirection]
+                // is never null mid-walk - but the switch must be
+                // exhaustive; treated identically to a flip if it somehow
+                // did.
+                trueDirection = decision.resultDirection!;
+                trueStart = e;
+                updateEvent = null;
+            }
+          }
+
+          // Same "survive one full extra candle" gate as [_checkOneSymbol]'s
+          // own audit - the replay's own final verdict must be at least
+          // one candle old before this audit trusts it enough to act.
+          final surviveUntil = trueStart.time + category.candlePeriod.inSeconds * 2;
+          final nowEpoch = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+          final trueStartWire = worm10EventKindToWire(trueStart.kind);
+          if (nowEpoch < surviveUntil) {
+            logger.log(
+              '$mt5Symbol ($category): worm10 audit replay for ticket=$auditTicket '
+              'landed on $trueStartWire@${trueStart.time}, but that bar hasn\'t '
+              'survived one full extra candle yet - deferring, will re-check '
+              'next time this audit re-arms.',
+            );
+          } else if (trueDirection == runningDirection) {
+            final needsWrite = openSnapshot == null ||
+                openSnapshot.kind != trueStart.kind ||
+                openSnapshot.barTime != trueStart.time;
+            if (needsWrite) {
+              worm10EntrySignals.record(
+                auditTicket,
+                Worm10EntrySignalSnapshot(kind: trueStart.kind, barTime: trueStart.time),
+              );
+              logger.log(
+                '$mt5Symbol ($category): ${openSnapshot == null ? "backfilled" : "corrected"} '
+                'worm10 Start for ticket=$auditTicket - $trueStartWire@${trueStart.time}.',
+              );
+            }
+            if (updateEvent != null) {
+              final updateWire = worm10EventKindToWire(updateEvent.kind);
+              final current = worm10EntrySignals.peek(auditTicket);
+              if (current?.updateKind != updateEvent.kind || current?.updateTime != updateEvent.time) {
+                worm10EntrySignals.recordUpdate(auditTicket, updateEvent.kind, updateEvent.time);
+                logger.log(
+                  '$mt5Symbol ($category): backfilled worm10 Update for '
+                  'ticket=$auditTicket - $updateWire@${updateEvent.time}.',
+                );
+              }
+            }
+          } else {
+            // Genuine mismatch - re-confirm the signal is still really
+            // there before acting (chart data can shift), then close and
+            // recycle into the correct direction. Same discipline as
+            // [_checkOneSymbol]'s own audit.
+            logger.log(
+              '$mt5Symbol ($category): WORM10 RETROACTIVE AUDIT - ticket=$auditTicket is '
+              'running ${runningDirection == TradeDirection.short ? "SELL" : "BUY"} but the '
+              'true event chain says ${trueDirection == TradeDirection.short ? "SELL" : "BUY"} '
+              '($trueStartWire@${trueStart.time}) - closing and recycling.',
+              level: 'WARNING',
+            );
+            final recheck = await readWorm10Signals(
+              cdp,
+              tvSymbol,
+              worm10Script.scriptIdPart,
+              customScripts[1].scriptIdPart,
+              onDebugError: (msg) => logger.log('$tvSymbol ($category) worm10 audit recheck: $msg'),
+            );
+            final recheckEvents = deriveWorm10Events(recheck);
+            final stillThere = recheckEvents.any((e) => e.kind == trueStart.kind && e.time == trueStart.time);
+            if (!stillThere) {
+              logger.log(
+                '$tvSymbol ($category): worm10 audit event no longer present '
+                'on re-read - skipping correction.',
+                level: 'WARNING',
+              );
+            } else {
+              await _closePosition(
+                category,
+                tvSymbol,
+                mt5Symbol,
+                existing,
+                stopReason: 'opposite_signal',
+                detail: 'Retroactive audit: the true worm10 event chain disagreed with the running direction.',
+                worm10CloseKindWire: trueStartWire,
+                worm10CloseAt: trueStart.time,
+              );
+              if (!(await _hasPendingAppOrder(mt5Symbol, category))) {
+                final flipGate = risk.gate('open', mt5Symbol, category);
+                if (flipGate.allowed) {
+                  if (await _openPosition(
+                    category,
+                    mapping,
+                    trueDirection,
+                    range.top,
+                    range.bottom,
+                    trueDirection == TradeDirection.long
+                        ? const Signal(tag: SignalTag.buy, time: 0)
+                        : const Signal(tag: SignalTag.sell, time: 0),
+                    worm10OpenKindWire: trueStartWire,
+                    worm10OpenAt: trueStart.time,
+                  )) {
+                    // no-op - real time check below still runs this cycle
+                    // against whatever's now running, same as Signal Flip.
+                  }
+                } else {
+                  logger.log(
+                    '$tvSymbol ($category): worm10 audit-driven risk gate blocked reopen: ${flipGate.reason}',
+                  );
+                }
+              }
+              return;
+            }
+          }
+        }
+      }
+    }
+
     // TRIPLE-read confirmation, same "1 million sure" rule as every other
     // technique's own signal read.
     for (var i = 0; i < 2; i++) {

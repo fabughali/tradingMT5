@@ -1985,6 +1985,22 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-14** — Hybrid Decision: added the retroactive full-chain
+  audit it was missing since launch - per the user asking directly
+  "please confirm that app open trades are updated according to buy/sell
+  HH/LL reverse reading," which surfaced that `_checkOneSymbolWorm10`
+  only ever had the real-time single-latest-event check, never a full
+  replay since each running position's own Start, unlike Signal Flip's
+  own block. Without it, more than one flip happening between checks
+  (e.g. a long outage) could land on the wrong direction, since the
+  real-time path only compares the single newest event against whatever
+  is currently running. Walks every event since Start via
+  [worm10DecisionFor] directly - the exact same pure function the
+  real-time path uses - so the two can never disagree; verified with a
+  synthetic double-flip-nets-back scenario before deploying. Same
+  survive-one-extra-candle gate and re-confirm-before-acting discipline
+  as Signal Flip's own audit.
+
 - **2026-10-14** — Two more Hybrid Decision fixes, both found live within
   minutes of the user watching real running trades under it: (1) a real
   bug - `worm10EntrySignals`'s Update field got overwritten with an
