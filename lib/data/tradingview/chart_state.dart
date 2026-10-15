@@ -339,6 +339,100 @@ Future<SetChartViewResult> setChartView(
   );
 }
 
+/// Requests more backward chart history for whatever symbol/resolution is
+/// currently active, for callers (the worm10 retroactive audit) that found
+/// no genuine case-1 event anywhere in the currently-loaded window and need
+/// to check further back before concluding none exists.
+///
+/// Confirmed live (2026-10-14) that `mainSeries().requestMoreData(n)` alone,
+/// or `chart.model().loadRange(from, to)` with an explicit far-back range,
+/// both do nothing — the loaded window stays exactly where it was. What
+/// actually works mirrors TradingView's own scroll-to-load UX: the series'
+/// own `requestMoreData` only takes effect once the visible viewport is
+/// sitting at the LEFT EDGE of the currently-loaded bars (`timeScale()
+/// .scrollToBarIndex(firstLoadedIndex)`), after which `requestMoreData`
+/// actually pulls in a few thousand further-back bars. This was observed to
+/// be temporary — something (the engine's own next symbol switch) resets
+/// the window back to its default size well within a minute — so callers
+/// must consume the extended window (re-read signals) immediately, in the
+/// same cycle, rather than relying on it to persist.
+///
+/// A single scroll+request round only pulls in one further batch (observed
+/// live: 300 -> ~5300 bars) — the chart's real ceiling can sit well beyond
+/// that (observed: 5300 -> 6885 before a round genuinely added nothing
+/// more). Chains rounds, each scrolling to the new left edge before asking
+/// again, until a round adds nothing - that's the actual, symbol-specific
+/// maximum history TradingView has for this feed, not an arbitrary cap one
+/// round happened to stop at.
+Future<bool> requestMoreChartHistory(
+  CdpClient cdp, {
+  int barsToRequest = 5000,
+  Duration roundTimeout = const Duration(seconds: 20),
+  int maxRounds = 6,
+}) async {
+  const exprState =
+      '''(function() {
+    var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
+    var series = chart.model().mainSeries();
+    var bars = series.bars();
+    return {
+      size: bars.size(),
+      firstIndex: bars.size() > 0 ? bars.firstIndex() : null,
+      isLoading: series.isLoading ? series.isLoading() : false,
+    };
+  })()''';
+
+  var grewAtLeastOnce = false;
+  for (var round = 0; round < maxRounds; round++) {
+    Map<String, dynamic>? before;
+    try {
+      before = await cdp.evaluate(exprState) as Map<String, dynamic>?;
+    } catch (_) {
+      break;
+    }
+    final beforeSize = before?['size'] as int? ?? 0;
+    final firstIndex = before?['firstIndex'] as int?;
+    if (firstIndex == null) break;
+
+    final exprAct =
+        '''(function() {
+      var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
+      var model = chart.model();
+      var series = model.mainSeries();
+      try { model.timeScale().scrollToBarIndex($firstIndex); } catch (e) {}
+      try { series.requestMoreData($barsToRequest); return { ok: true }; }
+      catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+    })()''';
+    try {
+      final res = await cdp.evaluate(exprAct) as Map<String, dynamic>?;
+      if (res?['ok'] != true) break;
+    } catch (_) {
+      break;
+    }
+
+    var grewThisRound = false;
+    final deadline = DateTime.now().add(roundTimeout);
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      Map<String, dynamic>? state;
+      try {
+        state = await cdp.evaluate(exprState) as Map<String, dynamic>?;
+      } catch (_) {
+        continue;
+      }
+      if (state?['isLoading'] == true) continue;
+      final size = state?['size'] as int? ?? 0;
+      if (size > beforeSize) {
+        grewThisRound = true;
+        grewAtLeastOnce = true;
+        break;
+      }
+    }
+    if (!grewThisRound) break;
+  }
+  return grewAtLeastOnce;
+}
+
 /// Lists every TradingView page target currently visible to CDP (not just
 /// the first match) — a diagnostic helper, distinct from getChartTarget()
 /// which is used on the hot path and only needs the one chart page.

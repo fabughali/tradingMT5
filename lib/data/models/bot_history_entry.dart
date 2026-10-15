@@ -48,6 +48,9 @@ class BotHistoryEntry {
     this.detail,
     this.realizedProfitPercent,
     this.sllAtTermination,
+    this.investmentValue,
+    this.extraMargin,
+    this.liquidationPrice,
   });
 
   final String id;
@@ -116,6 +119,33 @@ class BotHistoryEntry {
   /// written before this field existed.
   final String? sllAtTermination;
 
+  /// Notional value at open (2026-10-15, per the user: "all details
+  /// required in history") - `volume * contractSize * entryPrice`, the
+  /// SAME figure the Dashboard's own Investment column shows live, just
+  /// snapshotted once at close time. Static (doesn't depend on live
+  /// account state), so this CAN be computed for a closed trade - unlike
+  /// [extraMargin]/[liquidationPrice] below. Null for entries written
+  /// before this field existed.
+  final double? investmentValue;
+
+  /// The account's free margin (`AccountSnapshot.marginFree`) at the exact
+  /// moment this trade closed - unlike [investmentValue], this genuinely
+  /// depends on the account's LIVE state at close time, which only exists
+  /// going forward from when this field was added; there is no way to
+  /// reconstruct it for a trade that already closed before today. Null for
+  /// every entry written before this field existed, and stays null
+  /// forever for those - not something a later backfill can fix.
+  final double? extraMargin;
+
+  /// Same estimated-liquidation-price formula as the Dashboard's own
+  /// Liquidation column (see `AutoTradeRow.liquidationPrice`'s own doc
+  /// comment for the exact math and the Equiti 30% Stop-Out Level source),
+  /// snapshotted at the moment of close using the account's state at that
+  /// instant. Same "can't be reconstructed for the past" limitation as
+  /// [extraMargin] - null for every entry written before this field
+  /// existed.
+  final double? liquidationPrice;
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'ts': ts.toIso8601String(),
@@ -142,6 +172,9 @@ class BotHistoryEntry {
     if (detail != null) 'detail': detail,
     if (realizedProfitPercent != null) 'realized_profit_percent': realizedProfitPercent,
     if (sllAtTermination != null) 'sll_at_termination': sllAtTermination,
+    if (investmentValue != null) 'investment_value': investmentValue,
+    if (extraMargin != null) 'extra_margin': extraMargin,
+    if (liquidationPrice != null) 'liquidation_price': liquidationPrice,
   };
 
   factory BotHistoryEntry.fromJson(Map<String, dynamic> json) => BotHistoryEntry(
@@ -170,5 +203,8 @@ class BotHistoryEntry {
     detail: json['detail'] as String?,
     realizedProfitPercent: (json['realized_profit_percent'] as num?)?.toDouble(),
     sllAtTermination: json['sll_at_termination'] as String?,
+    investmentValue: (json['investment_value'] as num?)?.toDouble(),
+    extraMargin: (json['extra_margin'] as num?)?.toDouble(),
+    liquidationPrice: (json['liquidation_price'] as num?)?.toDouble(),
   );
 }

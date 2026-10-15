@@ -335,6 +335,17 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
         for (final w in (await client.getWatchedSymbols()).map(WatchedSymbol.fromJson))
           w.symbol.toUpperCase(): w,
       };
+      // Account-wide numbers for the Extra Margin / Liquidation Price
+      // columns (2026-10-15, per the user) - MT5 has no per-position margin
+      // breakdown (same constraint [AutoTradeRow.pnlPercent]'s own doc
+      // comment already documents), so both columns are necessarily derived
+      // from this single account-level snapshot, not anything per-symbol.
+      AccountSnapshot? accountSnapshot;
+      try {
+        accountSnapshot = AccountSnapshot.fromJson(await client.getAccountInfo());
+      } catch (_) {
+        // Transient - rows just show "—" for these two columns this cycle.
+      }
       final raw = await client.getOpenPositions();
       final positions = ((raw['positions'] as List?) ?? const [])
           .cast<Map<String, dynamic>>();
@@ -441,6 +452,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           }
           final positionProfit = (position['profit'] as num?)?.toDouble();
           final positionPriceOpen = (position['price_open'] as num?)?.toDouble();
+          final positionCurrentPrice = (position['price_last'] as num?)?.toDouble();
           final positionVolume = (position['volume'] as num?)?.toDouble();
           // Notional value = volume * contract size * entry price - the
           // ONLY percentage basis computable from data this app actually
@@ -452,6 +464,34 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           final pnlPercentForRow = (positionProfit != null && notional != null && notional != 0)
               ? positionProfit / notional * 100
               : null;
+          // Liquidation Price estimate (2026-10-15, per the user) - the
+          // price at which THIS position's own P&L alone, holding every
+          // other position's current P&L and the account balance fixed,
+          // would drag the account's equity down to Equiti Seychelles'
+          // published Stop-Out Level (30% of used margin). Solved from:
+          // equity_at_stop_out = 0.30 * margin
+          // other_equity = equity_now - this_position's_profit_now
+          // target_profit = equity_at_stop_out - other_equity
+          // target_profit = (liq_price - open_price) * volume * contractSize   (buy)
+          // target_profit = (open_price - liq_price) * volume * contractSize   (sell)
+          double? liquidationPriceForRow;
+          const stopOutLevel = 0.30;
+          if (accountSnapshot != null &&
+              accountSnapshot.margin > 0 &&
+              positionProfit != null &&
+              positionVolume != null &&
+              positionVolume != 0 &&
+              positionPriceOpen != null &&
+              watched != null &&
+              watched.contractSize != 0) {
+            final otherEquity = accountSnapshot.equity - positionProfit;
+            final targetProfit = stopOutLevel * accountSnapshot.margin - otherEquity;
+            final denom = positionVolume * watched.contractSize;
+            final priceDelta = targetProfit / denom;
+            liquidationPriceForRow = (position['action'] as String?) == 'sell'
+                ? positionPriceOpen - priceDelta
+                : positionPriceOpen + priceDelta;
+          }
           rows.add(
             AutoTradeRow(
               tvSymbol: tvSymbol,
@@ -462,6 +502,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               isLastTagged: isLastTagged,
               direction: position['action'] as String?,
               price: positionPriceOpen,
+              currentPrice: positionCurrentPrice,
               stopLoss: (position['stop_loss'] as num?)?.toDouble(),
               takeProfit: (position['take_profit'] as num?)?.toDouble(),
               profit: positionProfit,
@@ -499,6 +540,9 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               volumeMin: volumeMinForRow,
               volumeStep: volumeStepForRow,
               volumeMax: volumeMaxForRow,
+              investmentValue: notional,
+              extraMargin: accountSnapshot?.marginFree,
+              liquidationPrice: liquidationPriceForRow,
             ),
           );
         } else if (order != null) {

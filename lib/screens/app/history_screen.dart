@@ -72,6 +72,13 @@ class HistoryScreen extends ConsumerWidget {
     'opposite_signal' => 'Opposite signal',
     'take_profit' => 'Take profit',
     'stop_loss' => 'Stop loss',
+    // 2026-10-15, per the user - added when the reconciliation mislabeling
+    // bug was fixed (see engine_service.dart's own doc comment on this
+    // exact stop reason): a genuine broker-forced margin stop-out is a
+    // materially more serious event than a normal SL hit or a manual
+    // close, so it gets its own distinct label here too, not folded into
+    // either.
+    'margin_stop_out' => 'Margin stop-out',
     'closed_by_user' => 'Closed by user',
     'closed_by_app' => 'Closed by app',
     _ => 'Unknown',
@@ -81,10 +88,22 @@ class HistoryScreen extends ConsumerWidget {
     'opposite_signal' => Colors.blue,
     'take_profit' => Colors.green,
     'stop_loss' => Colors.red,
+    'margin_stop_out' => Colors.deepOrange,
     'closed_by_user' => Colors.orange,
     'closed_by_app' => Colors.purple,
     _ => scheme.outline,
   };
+
+  /// Same digit-count-by-magnitude logic as the Dashboard's own
+  /// `_fmtPrice` (auto_trades_card.dart), kept separate per-file rather
+  /// than shared since both are tiny, display-only formatters.
+  static String _fmtPrice(double? v) {
+    if (v == null) return '—';
+    if (v == 0) return '0';
+    if (v.abs() < 0.001) return v.toStringAsFixed(8);
+    if (v.abs() < 1) return v.toStringAsFixed(5);
+    return v.toStringAsFixed(v.abs() < 100 ? 4 : 2);
+  }
 
   static String _fmtTime(DateTime? dt) {
     if (dt == null) return '—';
@@ -522,6 +541,23 @@ class _HistoryCard extends StatelessWidget {
               const SizedBox(height: 4),
               Text(
                 'SLL: ${entry.sllAtTermination}',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+            // Leverage/Investment/Extra Margin/Liquidation Price
+            // (2026-10-15, per the user: "all details required in
+            // history"). Leverage is the same flat broker constant the
+            // Dashboard shows, never computed. [extraMargin]/
+            // [liquidationPrice] are null for every entry closed before
+            // these fields existed and stay null forever for those - see
+            // [BotHistoryEntry.extraMargin]'s own doc comment for why that
+            // can't be backfilled.
+            if (entry.investmentValue != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                'Leverage: 1:2000 · Investment: \$${entry.investmentValue!.toStringAsFixed(2)}'
+                '${entry.extraMargin != null ? ' · Extra margin: \$${entry.extraMargin!.toStringAsFixed(2)}' : ''}'
+                '${entry.liquidationPrice != null ? ' · Liquidation: ${HistoryScreen._fmtPrice(entry.liquidationPrice)}' : ''}',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ],

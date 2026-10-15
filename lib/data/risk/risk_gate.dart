@@ -50,6 +50,36 @@ class RiskGate {
 
   double? get marginLevel => _marginLevel;
 
+  /// Margin-level-tiered concurrent-position cap (2026-10-15, per the
+  /// user, after a real margin stop-out: "what if there is good margin
+  /// level... why you need to setup a fixed max positions?" - correctly
+  /// pointing out a FLAT cap is a blunt proxy for risk, when the real
+  /// thing that matters (margin level) is already tracked live. Null
+  /// means "no cap at all" - the user's own "if margin is more than
+  /// 300%... max position is open" (i.e. unrestricted). Below
+  /// [marginGateThresholdPct] this is moot anyway - [gate] already blocks
+  /// every open outright at that point, position count or not.
+  static int? positionCapFor(double? marginLevel) {
+    if (marginLevel == null || marginLevel > 300) return null;
+    if (marginLevel > 200) return 6;
+    if (marginLevel > marginGateThresholdPct) return 3;
+    return 0;
+  }
+
+  /// Same margin tiers as [positionCapFor], but scaling the SIZE of the
+  /// next trade instead of how many can run at once (2026-10-15, per the
+  /// user - the companion half of the same idea: shrink new exposure as
+  /// real risk rises, not just count it). 1.0 = full size (margin > 300%,
+  /// or no live reading yet - never shrinks a trade before the first real
+  /// margin snapshot arrives). Below [marginGateThresholdPct] is moot for
+  /// the same reason as [positionCapFor] - nothing opens there regardless.
+  static double marginSizeScaleFor(double? marginLevel) {
+    if (marginLevel == null || marginLevel > 300) return 1.0;
+    if (marginLevel > 200) return 0.6;
+    if (marginLevel > marginGateThresholdPct) return 0.3;
+    return 0.0;
+  }
+
   void updateMarginLevel(double? marginLevel) {
     _marginLevel = marginLevel;
   }
@@ -110,6 +140,24 @@ class RiskGate {
       return GateResult.blocked(
         'Daily loss limit hit: ${_state.dayPnlPct}% <= -${_config.dailyLossLimitPct}%',
       );
+    }
+    // Margin-level-tiered concurrent-position cap (2026-10-15, per the
+    // user, after a real margin stop-out) - see [positionCapFor]'s own
+    // doc comment for the full reasoning and exact tiers. A flat count
+    // cap would have been a blunt proxy for risk; this ties the limit to
+    // the actual thing that matters (live margin level), tightening as
+    // real risk rises and getting out of the way entirely above 300%.
+    // Checked BEFORE the per-symbol cap so the more general limit is what
+    // the user sees in the block reason when both would apply.
+    final cap = positionCapFor(_marginLevel);
+    if (cap != null) {
+      final totalOpen = _state.openPositions.values.fold(0, (a, b) => a + b);
+      if (totalOpen >= cap) {
+        return GateResult.blocked(
+          'Margin-tiered position cap: $totalOpen/$cap open '
+          '(margin level ${_marginLevel!.toStringAsFixed(1)}%)',
+        );
+      }
     }
     final perSymbol = _state.openPositions[key] ?? 0;
     if (perSymbol >= _config.maxPerSymbol) {

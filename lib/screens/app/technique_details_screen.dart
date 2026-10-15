@@ -106,6 +106,34 @@ class TechniqueDetailsScreen extends StatelessWidget {
     const Text('No details written for this technique yet.'),
   ];
 
+  /// Margin-tiered risk controls (2026-10-15, per the user: "how it works
+  /// screen" - after a real Equiti margin stop-out forced BNBUSD.lv closed
+  /// and the app's own global position cap turned out to have been set
+  /// but never actually enforced, see RiskGate.positionCapFor's own doc
+  /// comment). Applies the SAME regardless of which technique is active,
+  /// so it's one shared section included in every technique's own list
+  /// rather than three separately-maintained copies that could drift.
+  static const _Section _marginRiskSection = _Section(
+    icon: Icons.shield_outlined,
+    title: 'Margin protection',
+    body:
+        'This applies no matter which technique is active. The app '
+        'watches the account\'s live margin level and automatically '
+        'pulls back on NEW trades as it tightens - it never closes a '
+        'trade that\'s already running just because margin got tight. '
+        'Above 300% margin, nothing changes at all. Between 200-300%, '
+        'at most 6 trades can be running at once and any new one opens '
+        'at 60% of its normal size. Between 150-200%, that drops to at '
+        'most 3 trades at 30% size. At 150% or below, no new trade can '
+        'open at all until margin recovers. Even with all of this, the '
+        'broker\'s own hard stop-out (forced closure of the worst-losing '
+        'trade) still exists underneath as a last resort if margin ever '
+        'falls all the way to 30% - these rules make that far less '
+        'likely, not impossible, since trades already running can still '
+        'move against the account regardless of what new trades are '
+        'allowed.',
+  );
+
   List<Widget> _supertrendPlusSections(BuildContext context) => [
     const _Section(
       icon: Icons.visibility_outlined,
@@ -227,6 +255,7 @@ class TechniqueDetailsScreen extends StatelessWidget {
         ),
       ],
     ),
+    _marginRiskSection,
     const _Section(
       icon: Icons.exit_to_app_outlined,
       title: 'Closing the app',
@@ -352,6 +381,7 @@ class TechniqueDetailsScreen extends StatelessWidget {
         ),
       ],
     ),
+    _marginRiskSection,
     const _Section(
       icon: Icons.exit_to_app_outlined,
       title: 'Closing the app',
@@ -483,6 +513,7 @@ class TechniqueDetailsScreen extends StatelessWidget {
         ),
       ],
     ),
+    _marginRiskSection,
     const _Section(
       icon: Icons.exit_to_app_outlined,
       title: 'Closing the app',

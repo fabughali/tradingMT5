@@ -26,6 +26,7 @@ class AutoTradeRow {
     required this.isLastTagged,
     this.direction,
     this.price,
+    this.currentPrice,
     this.stopLoss,
     this.takeProfit,
     this.profit,
@@ -50,6 +51,9 @@ class AutoTradeRow {
     this.startCandidateTag,
     this.startCandidateAt,
     this.startCandidateEta,
+    this.investmentValue,
+    this.extraMargin,
+    this.liquidationPrice,
   });
 
   final String tvSymbol;
@@ -63,6 +67,15 @@ class AutoTradeRow {
   /// Entry price if running, trigger price if a pending order. Null for
   /// [AutoTradeStatus.waitingNoSignal].
   final double? price;
+
+  /// The LIVE market price (MT5's own `price_last`), separate from
+  /// [price] above which is fixed at entry and never moves (2026-10-15,
+  /// per the user: coloring Price/Liquidation yellow once the live price
+  /// is within 20% of the estimated liquidation price needs an actual
+  /// moving number to compare against - [price] alone can't do that,
+  /// it's a snapshot of where the trade opened, not where it is now).
+  /// Only set for [AutoTradeStatus.running].
+  final double? currentPrice;
   final double? stopLoss;
   final double? takeProfit;
 
@@ -196,4 +209,33 @@ class AutoTradeRow {
   final String? startCandidateTag;
   final int? startCandidateAt;
   final DateTime? startCandidateEta;
+
+  /// Notional value of this position in dollars (2026-10-15, per the user)
+  /// - `volume * contractSize * openPrice`, the SAME figure [pnlPercent]'s
+  /// own denominator already is, just surfaced directly rather than only
+  /// used internally. Only set for [AutoTradeStatus.running].
+  final double? investmentValue;
+
+  /// The account's overall free margin (`AccountSnapshot.marginFree`), per
+  /// the user's "extra margin in dollars" column - MT5 only tracks margin
+  /// at the ACCOUNT level, not per position (confirmed live, same
+  /// constraint [pnlPercent]'s own doc comment already documents), so this
+  /// is deliberately the SAME single number on every running row, not a
+  /// per-position breakdown MT5 has no way to give.
+  final double? extraMargin;
+
+  /// Estimated price at which THIS position alone, if it kept moving
+  /// against its own direction while every other position's P&L and the
+  /// account balance stayed exactly as they are right now, would drag the
+  /// account's margin level down to Equiti Seychelles' own published
+  /// Stop-Out Level (30% of used margin - confirmed directly from Equiti's
+  /// own Support Center FAQ, 2026-10-15: "If your Equity falls to less
+  /// than 30% of the required margin, your trade(s) will be closed out by
+  /// our Automated Risk Management System"). This is a real, grounded
+  /// estimate, not a guess - but it is still an ESTIMATE, not a fixed
+  /// per-symbol number the way a crypto-exchange liquidation price is:
+  /// MT5's stop-out is a single ACCOUNT-WIDE margin-level trigger, not
+  /// resolvable into a true independent-per-position price the way this
+  /// column necessarily implies. Only set for [AutoTradeStatus.running].
+  final double? liquidationPrice;
 }

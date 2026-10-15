@@ -1985,6 +1985,127 @@ live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;
 this section captures the larger inflection points.
 
+- **2026-10-15** — Margin-level-tiered risk controls, after a real
+  Equiti margin stop-out (ticket 1660564764, BNBUSD.lv, -$3.07) exposed
+  that [RiskConfig.maxPositions] had existed in config.json this whole
+  time (set to 3) but was NEVER actually checked by [RiskGate.gate] -
+  only `maxPerSymbol` was. The account had 11-13+ positions running
+  simultaneously despite a configured global cap of 3. Per the user's
+  own correction of the first fix attempt ("what if there is good margin
+  level... why you need to setup a fixed max positions?"), the real
+  design ties BOTH the position-count cap and a new trade's own size to
+  the account's LIVE margin level instead of a flat number:
+  margin > 300% → unrestricted; 200-300% → max 6 positions, 60% size;
+  150-200% → max 3 positions, 30% size; <= 150% → already fully blocked
+  by the existing gate regardless (`RiskGate.positionCapFor`/
+  `marginSizeScaleFor`). Deliberately does NOT auto-close any existing
+  position - per the user: "what if i dont need to close any most
+  losing open positions???? ... i want the app prevent raching margin
+  closing" - purely shrinks/withholds NEW exposure as real risk rises,
+  which cannot guarantee immunity (existing positions' own floating
+  losses are what actually drives margin down) but meaningfully reduces
+  how often and how severely it happens. A full source backup was taken
+  (`backups/app-2026-10-15_17-28-40/`) before this round of changes,
+  per the user's own request, ahead of any further modification.
+
+- **2026-10-15** — Reconciliation close-reason mislabeling fix: the
+  passive reconciliation loop (`_reconcileClosedPositions`) only ever
+  guessed the close reason from price proximity to the position's own
+  SL/TP, defaulting to `'closed_by_user'` whenever that guess failed -
+  silently wrong for BOTH a genuine SL hit whose fill slipped past the
+  0.1% tolerance AND a genuine broker-forced margin stop-out (which
+  closes at whatever the market price is, nowhere near the position's
+  own SL/TP, since it's driven by the ACCOUNT's overall margin level,
+  not this position's own exit level). Found live after the user said
+  "i did not close any... it was all closed by mt5 itself reaching
+  liquidation price" - confirmed directly against MT5's own
+  `close_reason` field on two real historical tickets (one genuinely
+  "Stop loss", one genuinely "Stop out"). Fixed to read MT5's own
+  `close_reason` directly (`stop_reason: 'margin_stop_out'`, its own
+  distinct category, deliberately not folded into `stop_loss` or
+  `closed_by_user` - a forced liquidation is materially more serious
+  than either), with the old price-proximity guess surviving only as a
+  fallback for the rare case `close_reason` itself is missing.
+  Confirmed Equiti Seychelles' real Stop-Out Level (30% of margin, per
+  Equiti's own Support Center FAQ, independently verified twice) via
+  live web research, after the account's own Terms & Conditions turned
+  out to deliberately NOT publish a fixed number ("the percentage of
+  the Margin prescribed by us from time to time").
+
+- **2026-10-15** — Four new Dashboard/History columns, per the user
+  ("all details required in history"): Leverage (flat "1:2000" display
+  constant, never computed), Investment Value (`volume * contractSize *
+  price`, fully computable even for history), Extra Margin
+  (`AccountSnapshot.marginFree`, account-wide - MT5 has no per-position
+  margin breakdown), and Liquidation Price (a real, grounded ESTIMATE:
+  the price at which THIS position alone, holding every other
+  position's current P&L and the account balance fixed, would drag
+  account equity down to Equiti's 30% Stop-Out Level - explicitly
+  labeled an estimate, not a fixed per-symbol number the way a
+  crypto-exchange liquidation price is, since MT5's stop-out is a
+  single account-wide trigger). Extra Margin/Liquidation Price can only
+  ever be set GOING FORWARD from this deploy - both require a live
+  account snapshot taken at the moment of close, which doesn't exist
+  for any trade that closed before this feature shipped, and can never
+  be reconstructed after the fact (confirmed live: ticket 1660564764
+  closed ~18 minutes before this deploy, genuinely has no recoverable
+  liquidation price).
+
+- **2026-10-14** — Hybrid Decision critical fix: every RSI zone read
+  (blue/purple/white/green/yellow) was silently wrong since this
+  technique launched - the zone check read a "line" plot that always
+  carries the SAME raw RSI value regardless of which zone is actually
+  active (TradingView's own conditional-coloring construct: one shared
+  value plot paired with a separate, untitled "colorer" plot
+  immediately after it in the indicator's own plot list), so the first
+  zone checked in the if/else chain (blue) matched on EVERY bar. Found
+  live after the user spotted a real LL+RSI-purple+Supertrend-sell
+  confluence on ATOM's chart (2026-10-14 18:00) that the app's audit
+  had missed entirely, and after independently cross-checking that
+  every OTHER worm_10_26 signal (Supertrend, trend-start markers, the
+  bare zigzag BUY/SELL tags) read correctly via the exact same
+  column-mapping approach - isolating the bug to RSI zones
+  specifically. Confirmed live via `metaInfo().plots`: each zone's
+  titled "line" plot (e.g. plot_8, "RSI <= 20% (Blue)") is immediately
+  followed by an untitled "colorer" plot (plot_9) that's `null` when
+  that zone is inactive and a small zone-index number (0 for Yellow,
+  confirmed live) when active - the fix reads `lineCol + 1` instead of
+  `lineCol`, and does not exclude 0 (unlike the existing `isNum` used
+  for the worm10 markers, since 0 is a genuine "active" value here).
+  Verified against the live chart after the fix: ATOM's latest
+  `buyOpen1` landed at exactly 2026-10-14T18:00:00Z - an exact match to
+  the user's own manual chart observation. Because this corrupted which
+  events ever qualified as case-1 (`buyOpen1`/`sellOpen1`) and case-1-
+  weak (`buyClose1`/`sellClose1`) since launch, it had been producing
+  false confluence signals across the whole auto-managed portfolio,
+  causing a real cascading wave of opens/closes/recycles across nearly
+  every pair before the engine was powered off to stop it.
+
+- **2026-10-14** — Hybrid Decision audit: the app now asks TradingView
+  for more backward chart history itself when the retroactive audit
+  can't find any case-1 (buyOpen1/sellOpen1) event anywhere in the
+  currently-loaded window, instead of deferring forever on whatever
+  happened to already be loaded - per the user's direct instruction
+  ("again ... app not you... app pulls the data from there") after they
+  challenged the earlier deferral behavior ("this scenario is not
+  possible.... if app pull more date backwords .. there should be
+  LL/HH singal open case 1"). Root cause confirmed live via CDP: the
+  chart's loaded window was capped at exactly 300 bars (1H ≈ 12.5
+  days), and `requestMoreData()` alone - or an explicit `loadRange()`
+  call - silently did nothing, reloading the same 300 bars. What
+  actually works mirrors TradingView's own scroll-to-load UX: the
+  series' `requestMoreData` only takes effect once the chart's own
+  visible viewport is first moved to the LEFT EDGE of the currently
+  loaded bars (`timeScale().scrollToBarIndex(firstLoadedIndex)`) -
+  after that, `requestMoreData(5000)` genuinely pulled in ~2,800 more
+  bars. This was also confirmed to be temporary (something - almost
+  certainly the engine's own next symbol switch - reset the window
+  back to 300 bars within about 10 seconds), so the new
+  `requestMoreChartHistory()` helper (chart_state.dart) and the audit's
+  use of it re-read worm10 signals and retry the case-1 search
+  immediately, in the same cycle, rather than relying on the wider
+  window to persist.
+
 - **2026-10-14** — Hybrid Decision audit correction: the replay's own
   Start anchor was wrong on the first attempt - it used the ticket's own
   recorded open snapshot (whatever literally triggered that specific

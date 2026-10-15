@@ -277,6 +277,26 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     return v.toStringAsFixed(v.abs() < 100 ? 4 : 2);
   }
 
+  /// True once the LIVE price is within 20% of the estimated liquidation
+  /// price, measured against the trade's own TP-to-SL distance as the
+  /// 100% reference range (2026-10-15, per the user: "from tp price to
+  /// sl price .. this is 100% price range. so if current price is 20%
+  /// close to liquidation price ... then color the current price +
+  /// liquidation price in yellow" - corrected from an earlier entry-to-
+  /// liquidation range, which isn't what the user meant).
+  static bool _isNearLiquidation(AutoTradeRow row) {
+    if (row.liquidationPrice == null ||
+        row.currentPrice == null ||
+        row.takeProfit == null ||
+        row.stopLoss == null) {
+      return false;
+    }
+    final fullRange = (row.takeProfit! - row.stopLoss!).abs();
+    if (fullRange == 0) return false;
+    final remainingBuffer = (row.currentPrice! - row.liquidationPrice!).abs();
+    return remainingBuffer / fullRange * 100 <= 20;
+  }
+
   static String _fmtTag(String? tag) => tag == null ? '—' : tag.toUpperCase();
 
   /// Trims trailing zeros rather than a fixed decimal count, since volume
@@ -470,6 +490,19 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                     const DataColumn(label: Text('SL')),
                     const DataColumn(label: Text('TP')),
                     const DataColumn(label: Text('P&L')),
+                    // Leverage/Investment/Extra Margin/Liquidation Price
+                    // (2026-10-15, per the user). Leverage is a flat
+                    // broker-set constant (Equiti Seychelles: 1:2000),
+                    // never computed. Investment Value and Extra Margin
+                    // come straight from real MT5 numbers (notional value,
+                    // account free margin). Liquidation Price is a real,
+                    // grounded ESTIMATE - see [AutoTradeRow.liquidationPrice]'s
+                    // own doc comment for the exact formula and why it's an
+                    // estimate rather than a fixed per-symbol number.
+                    const DataColumn(label: Text('Leverage')),
+                    const DataColumn(label: Text('Investment')),
+                    const DataColumn(label: Text('Extra Margin')),
+                    const DataColumn(label: Text('Liquidation')),
                     DataColumn(
                       label: Row(
                         mainAxisSize: MainAxisSize.min,
@@ -582,7 +615,15 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                               ),
                             ),
                           ),
-                          DataCell(Text(_fmtPrice(row.price))),
+                          DataCell(
+                            Text(
+                              _fmtPrice(row.price),
+                              style: TextStyle(
+                                color: _isNearLiquidation(row) ? Colors.yellow.shade800 : null,
+                                fontWeight: _isNearLiquidation(row) ? FontWeight.w700 : null,
+                              ),
+                            ),
+                          ),
                           DataCell(Text(_fmtPrice(row.stopLoss))),
                           DataCell(Text(_fmtPrice(row.takeProfit))),
                           DataCell(
@@ -605,6 +646,49 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                                     ? Colors.green
                                     : Colors.red,
                                 fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                          DataCell(
+                            Text(
+                              row.status == AutoTradeStatus.running ? '1:2000' : '—',
+                              style: TextStyle(color: scheme.onSurfaceVariant),
+                            ),
+                          ),
+                          DataCell(
+                            Text(
+                              row.investmentValue == null
+                                  ? '—'
+                                  : '\$${row.investmentValue!.toStringAsFixed(2)}',
+                            ),
+                          ),
+                          DataCell(
+                            Text(
+                              row.extraMargin == null
+                                  ? '—'
+                                  : '\$${row.extraMargin!.toStringAsFixed(2)}',
+                              style: TextStyle(
+                                color: row.extraMargin == null ? scheme.onSurfaceVariant : null,
+                              ),
+                            ),
+                          ),
+                          DataCell(
+                            Tooltip(
+                              message: row.liquidationPrice == null
+                                  ? ''
+                                  : 'Estimate: price at which this position alone would reach '
+                                      "Equiti's 30% stop-out level, if every other position "
+                                      'stayed exactly as it is right now.',
+                              child: Text(
+                                row.liquidationPrice == null ? '—' : _fmtPrice(row.liquidationPrice),
+                                style: TextStyle(
+                                  color: row.liquidationPrice == null
+                                      ? scheme.onSurfaceVariant
+                                      : _isNearLiquidation(row)
+                                      ? Colors.yellow.shade800
+                                      : null,
+                                  fontWeight: _isNearLiquidation(row) ? FontWeight.w700 : null,
+                                ),
                               ),
                             ),
                           ),

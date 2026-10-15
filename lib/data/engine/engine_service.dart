@@ -26,6 +26,7 @@ import '../identity/widen_applied_store.dart';
 import '../identity/worm10_entry_signal_store.dart';
 import '../identity/worm10_pending_signal_store.dart';
 import '../logging/app_logger.dart';
+import '../models/account_snapshot.dart';
 import '../models/app_config.dart';
 import '../models/auto_category.dart';
 import '../models/bot_history_entry.dart';
@@ -1018,13 +1019,41 @@ class EngineService {
       final closePrice = (record['close_price'] as num?)?.toDouble();
       final stopLoss = (record['stop_loss'] as num?)?.toDouble();
       final takeProfit = (record['take_profit'] as num?)?.toDouble();
-      // Within 0.1% counts as "hit that level" — MT5 fills at/through the
-      // exact SL/TP price, not necessarily to the last decimal.
-      bool near(double? a, double? b) =>
-          a != null && b != null && b != 0 && (a - b).abs() / b.abs() < 0.001;
+      // MT5's own `close_reason` field on the history record is the real,
+      // authoritative answer - prefer it directly over guessing from price
+      // proximity. Confirmed live, 2026-10-15, per the user ("i did not
+      // close any... it was all closed by mt5 itself reaching liquidation
+      // price"): the OLD price-proximity-only guess mislabeled two real
+      // cases as "closed_by_user" - a genuine SL hit whose fill slipped
+      // past the 0.1% tolerance (close_reason: "Stop loss", but close
+      // price ~0.33% from the recorded SL), and a genuine broker-forced
+      // margin stop-out (close_reason: "Stop out", closed nowhere near
+      // either SL or TP - the account's overall margin level dropped
+      // below the broker's stop-out threshold, not this position's own
+      // exit level). "Stop out" gets its own distinct label - a forced
+      // liquidation is a materially different, more serious event than a
+      // normal SL hit or an intentional manual close, and conflating it
+      // with either would hide real account-risk signal. The old
+      // price-proximity check survives only as a fallback for the rare
+      // case `close_reason` itself is missing/unrecognized.
+      final mt5CloseReason = (record['close_reason'] as String?)?.trim().toLowerCase();
       final String stopReason;
       final String detail;
-      if (near(closePrice, stopLoss)) {
+      bool near(double? a, double? b) =>
+          a != null && b != null && b != 0 && (a - b).abs() / b.abs() < 0.001;
+      if (mt5CloseReason == 'stop loss') {
+        stopReason = 'stop_loss';
+        detail = 'Closed by MT5 hitting its own stop-loss price.';
+      } else if (mt5CloseReason == 'take profit') {
+        stopReason = 'take_profit';
+        detail = 'Closed by MT5 hitting its own take-profit price.';
+      } else if (mt5CloseReason == 'stop out') {
+        stopReason = 'margin_stop_out';
+        detail = 'Force-closed by the broker\'s own margin stop-out - account margin level dropped too low, not a normal SL/TP or a manual close.';
+      } else if (mt5CloseReason != null) {
+        stopReason = 'closed_by_user';
+        detail = 'Closed directly in MT5 (reason: "${record['close_reason']}"), not by this app.';
+      } else if (near(closePrice, stopLoss)) {
         stopReason = 'stop_loss';
         detail = 'Closed by MT5 hitting its own stop-loss price.';
       } else if (near(closePrice, takeProfit)) {
@@ -1102,6 +1131,7 @@ class EngineService {
           detail: detail,
           realizedProfitPercent: realizedProfitPercent,
           sllAtTermination: sllAtTermination,
+          investmentValue: notionalForPct,
         ).toJson(),
       );
       logger.log('$mt5Symbol ($category): reconciled ticket=$ticket as $stopReason.');
@@ -2517,16 +2547,58 @@ class EngineService {
         // must still anchor to the latest real case-1 event regardless of
         // what literally opened this ticket, per the user's own spec:
         // "look backwards at latest open signal case 1."
-        final case1Events = events
+        var auditEvents = events;
+        var case1Events = auditEvents
             .where((e) => e.kind == Worm10EventKind.buyOpen1 || e.kind == Worm10EventKind.sellOpen1)
             .toList()
           ..sort((a, b) => b.time.compareTo(a.time));
-        final startEvent = case1Events.isEmpty ? null : case1Events.first;
+        var startEvent = case1Events.isEmpty ? null : case1Events.first;
+
+        // No case-1 confluence anywhere in the currently-loaded window - per
+        // the user ("app pulls the data from there", 2026-10-14), the app
+        // itself must ask TradingView for more backward history and look
+        // again before giving up, not just defer forever on whatever happens
+        // to already be loaded.
+        if (startEvent == null) {
+          final eventsBefore = auditEvents.length;
+          final extended = await requestMoreChartHistory(cdp);
+          logger.log(
+            '$mt5Symbol ($category): worm10 history-extend for ticket=$auditTicket '
+            'returned extended=$extended (had $eventsBefore events loaded before).',
+          );
+          if (extended) {
+            final reread = await readWorm10Signals(
+              cdp,
+              tvSymbol,
+              worm10Script.scriptIdPart,
+              customScripts[1].scriptIdPart,
+              onDebugError: (msg) => logger.log('$tvSymbol ($category) worm10 extended-history read: $msg'),
+            );
+            auditEvents = deriveWorm10Events(reread);
+            case1Events = auditEvents
+                .where((e) => e.kind == Worm10EventKind.buyOpen1 || e.kind == Worm10EventKind.sellOpen1)
+                .toList()
+              ..sort((a, b) => b.time.compareTo(a.time));
+            startEvent = case1Events.isEmpty ? null : case1Events.first;
+            logger.log(
+              '$mt5Symbol ($category): worm10 history-extend for ticket=$auditTicket '
+              're-read ${auditEvents.length} events after extension (was $eventsBefore), '
+              'found ${case1Events.length} case-1 events in the extended window.',
+            );
+            if (startEvent != null) {
+              logger.log(
+                '$mt5Symbol ($category): pulled more chart history for ticket=$auditTicket '
+                'and found a case-1 event further back - continuing audit.',
+              );
+            }
+          }
+        }
 
         if (startEvent == null) {
           logger.log(
             '$mt5Symbol ($category): ticket=$auditTicket has no worm10 event '
-            'loaded far enough back to investigate yet - will retry on a later cycle.',
+            'loaded far enough back to investigate yet, even after requesting '
+            'more chart history - will retry on a later cycle.',
             level: 'WARNING',
           );
         } else {
@@ -2538,7 +2610,7 @@ class EngineService {
 
           // Every event STRICTLY after Start, in chronological order - the
           // full history since Start, not just the single most recent one.
-          final afterStart = events.where((e) => e.time > startEventChecked.time).toList()
+          final afterStart = auditEvents.where((e) => e.time > startEventChecked.time).toList()
             ..sort((a, b) => a.time.compareTo(b.time));
           for (final e in afterStart) {
             final decision = worm10DecisionFor(trueDirection, e.kind);
@@ -2564,11 +2636,30 @@ class EngineService {
 
           // Same "survive one full extra candle" gate as [_checkOneSymbol]'s
           // own audit - the replay's own final verdict must be at least
-          // one candle old before this audit trusts it enough to act.
+          // one candle old before this audit trusts it enough to ACT (i.e.
+          // close and recycle/flip a real position). But a brand new
+          // ticket that has NEVER had any Open recorded at all
+          // (openSnapshot == null) isn't an action this gate needs to
+          // protect - the position is already open and running regardless
+          // of whether this bar has "survived" yet; withholding the
+          // Open-column backfill in that case was pure display lag with no
+          // safety benefit (confirmed live, 2026-10-14, per the user: a
+          // freshly-opened ticket's own triggering bar is always recent,
+          // so this gate was leaving Open blank for up to 2 full candles
+          // on every single new position - "since trade is running it
+          // means OPEN signal is detected... record that signal"). Only
+          // the real mismatch/close-and-recycle action below, and
+          // CORRECTING an already-recorded Start, still wait for the gate.
           final surviveUntil = trueStart.time + category.candlePeriod.inSeconds * 2;
           final nowEpoch = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
           final trueStartWire = worm10EventKindToWire(trueStart.kind);
-          if (nowEpoch < surviveUntil) {
+          final barHasSurvived = nowEpoch >= surviveUntil;
+          // Only a brand-new ticket (nothing recorded yet) whose computed
+          // direction already MATCHES what's running is pure bookkeeping -
+          // every other case (a mismatch needing a real close+recycle, or
+          // correcting an existing record) still waits for the gate below.
+          final isBrandNewBookkeepingOnly = openSnapshot == null && trueDirection == runningDirection;
+          if (!barHasSurvived && !isBrandNewBookkeepingOnly) {
             logger.log(
               '$mt5Symbol ($category): worm10 audit replay for ticket=$auditTicket '
               'landed on $trueStartWire@${trueStart.time}, but that bar hasn\'t '
@@ -2785,6 +2876,33 @@ class EngineService {
 
       case Worm10Action.recycle:
       case Worm10Action.flip:
+        // A recycle must be a GENUINELY NEW case-1 occurrence of the same
+        // direction ("if current trade is buy and a NEW buy open case1
+        // appears" - the user's own wording) - [worm10DecisionFor] is a
+        // pure function of (currentDirection, kind) and can't tell a fresh
+        // occurrence from a stale re-read of the exact event that already
+        // opened this very ticket, same reasoning as the Update branch's
+        // own "genuinely newer" guard above. Without this, a slow-filling
+        // pending order that only registers minutes after [latest] became
+        // the pending signal would see that SAME already-acted-upon bar
+        // as "the latest event" on its own very first audit pass, and
+        // recycle again immediately - confirmed live, 2026-10-14: ATOM/BNB
+        // both closed-and-reopened repeatedly onto the identical
+        // BUY_OPEN1 bar, each cycle a real, unnecessary loss. A flip is
+        // NEVER skipped by this guard - a direction change is always
+        // meaningful, never a stale repeat of what's already running.
+        if (decision.action == Worm10Action.recycle && existing != null) {
+          final ticket = _parseTicket(existing['position_id']);
+          final snapshot = ticket == null ? null : worm10EntrySignals.peek(ticket);
+          if (snapshot != null && snapshot.kind == latest.kind && snapshot.barTime == latest.time) {
+            logger.log(
+              '$tvSymbol ($category): worm10 recycle signal $latestWire@${latest.time} is '
+              'the same event that already opened this ticket - not a fresh occurrence, skipping.',
+            );
+            worm10Pending.clear(barKey);
+            return;
+          }
+        }
         if (existing == null) {
           // Nothing actually running (e.g. a resting-but-unfilled order) -
           // recycle/flip only make sense against a real running position;
@@ -3300,7 +3418,17 @@ class EngineService {
     // succeeds or bottoms out at the floor.
     final volumeStep = (info['volume_step'] as num?)?.toDouble() ?? volumeMin;
     final volKey = '${category.wireValue}|${mapping.tradingViewSymbol}';
-    final desiredVolume = tradeVolumes.desired(volKey) ?? volumeMin;
+    // Margin-level-tiered size scaling (2026-10-15, per the user - the
+    // companion half of [RiskGate.positionCapFor]'s own cap: shrink new
+    // exposure as real risk rises, not just count it). Applied to the
+    // DESIRED volume, not the final try - [tryVolume] below is already
+    // clamped to never exceed [desiredVolume] AND never drop below
+    // [floorVolume] (the last size that actually worked for this pair),
+    // so scaling down here naturally respects both existing rules rather
+    // than introducing a new, separate clamp.
+    final marginScale = RiskGate.marginSizeScaleFor(risk.marginLevel);
+    final desiredVolumeRaw = tradeVolumes.desired(volKey) ?? volumeMin;
+    final desiredVolume = marginScale >= 1.0 ? desiredVolumeRaw : desiredVolumeRaw * marginScale;
     final floorVolume = tradeVolumes.lastApplied(volKey) ?? volumeMin;
     var tryVolume = tradeVolumes.attempt(volKey) ?? desiredVolume;
     if (tryVolume > desiredVolume) tryVolume = desiredVolume;
@@ -3324,7 +3452,8 @@ class EngineService {
       '$mt5Symbol ($category): opening ${direction == TradeDirection.long ? 'BUY' : 'SELL'} '
       'vol=$tryVolume entry=$entry sl=$sl tp=$tp '
       '(range ${rangeBottom.toStringAsFixed(digits)}-${rangeTop.toStringAsFixed(digits)}'
-      '${target.widenApplied ? ", widened" : ""})',
+      '${target.widenApplied ? ", widened" : ""})'
+      '${marginScale < 1.0 ? " [size scaled to ${(marginScale * 100).toStringAsFixed(0)}% - margin level ${risk.marginLevel?.toStringAsFixed(1)}%]" : ""}',
     );
 
     var result = await mt5.sendMarketOrder(
@@ -3528,6 +3657,18 @@ class EngineService {
   }) async {
     final ticket = _parseTicket(position['position_id'])!;
     logger.log('$mt5Symbol ($category): closing ticket=$ticket ($stopReason).');
+    // Account snapshot taken BEFORE the close, while this position was
+    // still genuinely running (2026-10-15, per the user: "all details
+    // required in history") - same semantics as the Dashboard's own live
+    // Extra Margin/Liquidation columns, which are always computed against
+    // a currently-running trade's own numbers, not after it's already
+    // gone.
+    AccountSnapshot? accountSnapshotBeforeClose;
+    try {
+      accountSnapshotBeforeClose = AccountSnapshot.fromJson(await mt5.getAccountInfo());
+    } catch (_) {
+      // History just gets "—" for these two columns this time.
+    }
     await mt5.closePosition(symbol: mt5Symbol, positionTicket: ticket);
     // 2026-10-14, per the user: "include the P&L value in history card ...
     // +11.02 (+33.45%)" / "include the sll setup at the trade terminal" -
@@ -3548,6 +3689,31 @@ class EngineService {
     }
     final ratchetThreshold = slRatchet.highestThreshold(ticket);
     final sllAtTermination = ratchetThreshold != null ? '+$ratchetThreshold%' : '-\$5';
+    // Same Equiti-30%-Stop-Out-Level estimate as the Dashboard's own live
+    // Liquidation column (see [AutoTradeRow.liquidationPrice]'s doc
+    // comment for the exact formula) - computed here from
+    // [accountSnapshotBeforeClose] + this position's own last-known
+    // numbers, since both are only meaningful relative to a genuinely
+    // running trade's state right before it closed.
+    double? liquidationPriceForHistory;
+    const stopOutLevel = 0.30;
+    final positionProfitBeforeClose = (position['profit'] as num?)?.toDouble();
+    final positionVolumeBeforeClose = (position['volume'] as num?)?.toDouble();
+    final positionPriceOpenBeforeClose = (position['price_open'] as num?)?.toDouble();
+    if (accountSnapshotBeforeClose != null &&
+        accountSnapshotBeforeClose.margin > 0 &&
+        positionProfitBeforeClose != null &&
+        positionVolumeBeforeClose != null &&
+        positionVolumeBeforeClose != 0 &&
+        positionPriceOpenBeforeClose != null &&
+        contractSize != 0) {
+      final otherEquity = accountSnapshotBeforeClose.equity - positionProfitBeforeClose;
+      final targetProfit = stopOutLevel * accountSnapshotBeforeClose.margin - otherEquity;
+      final priceDelta = targetProfit / (positionVolumeBeforeClose * contractSize);
+      liquidationPriceForHistory = (position['action'] as String?) == 'sell'
+          ? positionPriceOpenBeforeClose - priceDelta
+          : positionPriceOpenBeforeClose + priceDelta;
+    }
     _recordHistory(
       category: category,
       tvSymbol: tvSymbol,
@@ -3564,6 +3730,8 @@ class EngineService {
       worm10CloseAt: worm10CloseAt,
       contractSize: contractSize,
       sllAtTermination: sllAtTermination,
+      extraMargin: accountSnapshotBeforeClose?.marginFree,
+      liquidationPrice: liquidationPriceForHistory,
     );
     openPositions.forgetPosition(ticket);
     botCategories.forget(ticket);
@@ -3767,8 +3935,8 @@ class EngineService {
   /// Builds and appends one [BotHistoryEntry] for a position that just
   /// closed (or was found already gone — see the reconciliation loop in
   /// [_runCycle]) — the single write point for every close reason
-  /// ('opposite_signal' here; 'take_profit'/'stop_loss'/'closed_by_user'
-  /// from reconciliation). Reads back [entrySignals]' snapshot taken at
+  /// ('opposite_signal' here; 'take_profit'/'stop_loss'/'margin_stop_out'/
+  /// 'closed_by_user' from reconciliation). Reads back [entrySignals]' snapshot taken at
   /// open time (forgetting it) to fill the open_signal_* fields; [position]
   /// (the last known live snapshot before closing) supplies entry/exit
   /// price and realized profit.
@@ -3788,6 +3956,12 @@ class EngineService {
     // [_closePosition]'s own doc comment on where these come from.
     double contractSize = 1.0,
     String? sllAtTermination,
+    // 2026-10-15, per the user ("all details required in history") - see
+    // [BotHistoryEntry.extraMargin]/[liquidationPrice]'s own doc comments
+    // for why these two (unlike [investmentValue] below) can only ever be
+    // set going forward, never backfilled for a past close.
+    double? extraMargin,
+    double? liquidationPrice,
   }) {
     // The worm_10_26 technique keeps its own open/update snapshot in
     // [worm10EntrySignals] (a six-way [Worm10EventKind], not the 4-way
@@ -3845,6 +4019,9 @@ class EngineService {
         detail: detail,
         realizedProfitPercent: realizedProfitPercent,
         sllAtTermination: sllAtTermination,
+        investmentValue: notional,
+        extraMargin: extraMargin,
+        liquidationPrice: liquidationPrice,
       ).toJson(),
     );
   }

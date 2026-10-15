@@ -693,17 +693,35 @@ Future<Worm10Check> readWorm10Signals(
       zigzagSignals.sort(function (a, b) { return (a.time || 0) - (b.time || 0); });
       supertrendSignals.sort(function (a, b) { return (a.time || 0) - (b.time || 0); });
 
+      // Each RSI zone title resolves to a shared "line" plot that always
+      // carries the SAME raw RSI value regardless of which zone is active
+      // (TradingView's own conditional-coloring construct: one value plot
+      // paired with a separate, untitled "colorer" plot immediately after
+      // it in the plot list - confirmed live, 2026-10-14, via
+      // metaInfo().plots: plot_0 "line" (Yellow) + plot_1 "colorer", plot_2
+      // "line" (Green) + plot_3 "colorer", etc.). The colorer is `null`
+      // when that zone is NOT active for the bar and a small zone-index
+      // number (0 for Yellow, seen live) when it IS - so the zone check
+      // must read `lineCol + 1`, not the line column itself, and must NOT
+      // exclude 0 (unlike [isNum] above, since 0 is a genuine "active"
+      // value here) - reading the line column directly, as before,
+      // silently misclassified every single bar as "blue" (checked first)
+      // since that raw value is virtually never exactly zero.
+      function isActiveColorer(v) {
+        return typeof v === 'number' && !isNaN(v);
+      }
+
       var rsiZones = [];
       var rsiRows = rowsOf(rsiSrc);
       for (var rr = 0; rr < rsiRows.length; rr++) {
         var rrow = rsiRows[rr];
         var rt = rrow[0];
         if (typeof rt !== 'number') continue;
-        if (isNum(rrow[rsiBlueCol])) rsiZones.push({ time: rt, zone: 'blue' });
-        else if (isNum(rrow[rsiPurpleCol])) rsiZones.push({ time: rt, zone: 'purple' });
-        else if (isNum(rrow[rsiWhiteCol])) rsiZones.push({ time: rt, zone: 'white' });
-        else if (isNum(rrow[rsiGreenCol])) rsiZones.push({ time: rt, zone: 'green' });
-        else if (isNum(rrow[rsiYellowCol])) rsiZones.push({ time: rt, zone: 'yellow' });
+        if (isActiveColorer(rrow[rsiBlueCol + 1])) rsiZones.push({ time: rt, zone: 'blue' });
+        else if (isActiveColorer(rrow[rsiPurpleCol + 1])) rsiZones.push({ time: rt, zone: 'purple' });
+        else if (isActiveColorer(rrow[rsiWhiteCol + 1])) rsiZones.push({ time: rt, zone: 'white' });
+        else if (isActiveColorer(rrow[rsiGreenCol + 1])) rsiZones.push({ time: rt, zone: 'green' });
+        else if (isActiveColorer(rrow[rsiYellowCol + 1])) rsiZones.push({ time: rt, zone: 'yellow' });
       }
       rsiZones.sort(function (a, b) { return (a.time || 0) - (b.time || 0); });
 
