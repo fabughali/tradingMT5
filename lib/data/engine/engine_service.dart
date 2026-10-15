@@ -4037,12 +4037,33 @@ class EngineService {
     var viaPendingFallback = false;
     if (retcode != null && retcode != 10009) {
       if (retcode == 10030) {
-        // Same "Invalid fill" fallback as a normal open - see
-        // [_openPosition]'s own doc comment on why this class of symbol
-        // categorically can't fill via a bare market order.
+        // Same "Invalid fill" fallback as a normal open, but with the
+        // TIGHTEST distance MT5 will actually accept rather than
+        // [_openPosition]'s own `(stopsLevelPoints + 2) * point` safety
+        // buffer (2026-10-15, per the user: "i asked you to make the copy
+        // run instantly but according to app setting the instant run
+        // cant be placed... make the trigger price +1 value" - fire on
+        // the very next tick rather than waiting for price to clear a
+        // multi-point margin). First attempt was a flat one price unit
+        // (e.g. 3.01 -> 3.02) with no floor at all - confirmed live this
+        // broke placement outright (retcode=10015 "Invalid price") for
+        // LTCUSD.lv/ATOMUSD.lv, whose real `trade_stops_level` is 5
+        // points (0.005), not 1. MT5's minimum distance is a hard broker
+        // rule, not a buffer this app can shrink past - so this still
+        // respects it, just drops the "+2" extra padding on top of it
+        // that a normal open uses, giving the tightest distance that
+        // will genuinely be accepted (falling back to one unit only for
+        // a symbol with no stated minimum at all).
         final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
         final point = (info['point'] as num?)?.toDouble() ?? 0.0;
-        final minDistance = point > 0 ? (stopsLevelPoints + 2) * point : entry * 0.0005;
+        var unitMult = 1.0;
+        for (var i = 0; i < digits; i++) {
+          unitMult *= 10;
+        }
+        final oneUnit = 1 / unitMult;
+        final minDistance = point > 0 && stopsLevelPoints > 0
+            ? stopsLevelPoints * point
+            : oneUnit;
         final triggerPrice = _roundToDigits(
           direction == TradeDirection.long ? ask + minDistance : bid - minDistance,
           digits,
