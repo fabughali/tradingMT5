@@ -176,6 +176,21 @@ final engineStatusProvider = StreamProvider.autoDispose<EngineStatus>((
   }
 });
 
+/// Polls for the engine's answer to any manual Multiplier "+" click, every
+/// 2s (2026-10-15, per the user, after a manual copy's pending order was
+/// silently rejected by MT5 for insufficient margin with nothing shown in
+/// the GUI beyond engine.log - see [AddCopyResultStore]'s own doc comment).
+/// The Dashboard listens to this and turns each entry into a SnackBar, then
+/// clears it so it only ever fires once.
+final addCopyResultsProvider =
+    StreamProvider.autoDispose<Map<String, Map<String, dynamic>>>((ref) async* {
+      final repo = ref.watch(controlRepositoryProvider);
+      while (true) {
+        yield repo.addCopyResultsSnapshot();
+        await Future<void>.delayed(const Duration(seconds: 2));
+      }
+    });
+
 /// Mirrors MT5's own Market Watch, live. Per the user (2026-09-17): the
 /// app's symbol list is never separately maintained — whatever is currently
 /// visible in MT5's Market Watch IS the app's list. Add a symbol in MT5 and
@@ -215,14 +230,13 @@ final watchedSymbolsProvider =
                 p['symbol'] as String: OpenPositionInfo(
                   side: p['action'] as String,
                   volume: (p['volume'] as num).toDouble(),
-                  // Confirmed live 2026-09-17 that the position object omits
-                  // these fields entirely when unset (rather than 0) — field
-                  // NAMES (sl/tp) follow MT5's universal convention but
-                  // haven't been confirmed against a position that actually
-                  // has them set. Verify once a real SL/TP-bearing position
-                  // exists.
-                  sl: (p['sl'] as num?)?.toDouble(),
-                  tp: (p['tp'] as num?)?.toDouble(),
+                  // Confirmed live 2026-10-15 against a real SL/TP-bearing
+                  // position: the real field names are 'stop_loss'/
+                  // 'take_profit', not the 'sl'/'tp' this originally
+                  // guessed (MT5's own order-placement parameters use
+                  // sl/tp, but the POSITION object read back doesn't)."
+                  sl: (p['stop_loss'] as num?)?.toDouble(),
+                  tp: (p['take_profit'] as num?)?.toDouble(),
                 ),
             },
           );
@@ -351,10 +365,16 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           .cast<Map<String, dynamic>>();
       final orders = ((raw['orders'] as List?) ?? const [])
           .cast<Map<String, dynamic>>();
-      final positionByMt5Symbol = {
-        for (final p in positions)
-          if (p['comment'] == tag) (p['symbol'] as String).toUpperCase(): p,
-      };
+      // One symbol can now map to MULTIPLE running positions - the
+      // Multiplier column's copy trades (2026-10-15, per the user: "it
+      // shows how many trade copies has been made") - so this groups
+      // every matching position per symbol instead of collapsing to one.
+      final positionsByMt5Symbol = <String, List<Map<String, dynamic>>>{};
+      for (final p in positions) {
+        if (p['comment'] != tag) continue;
+        final key = (p['symbol'] as String).toUpperCase();
+        (positionsByMt5Symbol[key] ??= []).add(p);
+      }
       final orderByMt5Symbol = {
         for (final o in orders)
           if (o['comment'] == tag && o['state'] == 'placed')
@@ -377,7 +397,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
         final mt5Symbol = mapping.mt5Symbol;
         final isLastTagged = lastTaggedBases.contains(tvSymbol);
         final isPaused = pausedBases.contains(tvSymbol);
-        final position = positionByMt5Symbol[mt5Symbol.toUpperCase()];
+        final symbolPositions = positionsByMt5Symbol[mt5Symbol.toUpperCase()] ?? const [];
         final order = orderByMt5Symbol[mt5Symbol.toUpperCase()];
         // Trade-size override (2026-10-03, per the user). `watched` carries
         // this symbol's broker-reported volume bounds/step; falls back to
@@ -389,10 +409,12 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
         final volumeMaxForRow = watched?.volumeMax ?? 100;
         final volKey = '${AutoCategory.oneHour.wireValue}|$tvSymbol';
         final desiredVolume = tradeVolumes.desired(volKey);
-        final currentVolume = position != null
-            ? (position['volume'] as num?)?.toDouble()
-            : tradeVolumes.lastApplied(volKey);
-        if (position != null) {
+        // Multiple positions can now share one symbol (the Multiplier
+        // column's copy trades) - one row per position, all carrying the
+        // SAME [copyCount] so the Dashboard can group/color them together.
+        if (symbolPositions.isNotEmpty) {
+        for (final position in symbolPositions) {
+          final copyCount = symbolPositions.length;
           final ticket = int.tryParse('${position['position_id']}');
           final worm10Entry = ticket != null
               ? worm10EntrySignalsRaw['$ticket'] as Map<String, dynamic>?
@@ -536,15 +558,17 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               closeAAt: closeAAt,
               closeBEta: closeBEta,
               desiredVolume: desiredVolume,
-              currentVolume: currentVolume,
+              currentVolume: positionVolume,
               volumeMin: volumeMinForRow,
               volumeStep: volumeStepForRow,
               volumeMax: volumeMaxForRow,
               investmentValue: notional,
               extraMargin: accountSnapshot?.marginFree,
               liquidationPrice: liquidationPriceForRow,
+              copyCount: copyCount,
             ),
           );
+        }
         } else if (order != null) {
           rows.add(
             AutoTradeRow(
@@ -555,7 +579,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               isPaused: isPaused,
               isLastTagged: isLastTagged,
               desiredVolume: desiredVolume,
-              currentVolume: currentVolume,
+              currentVolume: tradeVolumes.lastApplied(volKey),
               volumeMin: volumeMinForRow,
               volumeStep: volumeStepForRow,
               volumeMax: volumeMaxForRow,
@@ -590,7 +614,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               isLastTagged: isLastTagged,
               waitingReason: reasonEntry?['reason'] as String?,
               desiredVolume: desiredVolume,
-              currentVolume: currentVolume,
+              currentVolume: tradeVolumes.lastApplied(volKey),
               volumeMin: volumeMinForRow,
               volumeStep: volumeStepForRow,
               volumeMax: volumeMaxForRow,

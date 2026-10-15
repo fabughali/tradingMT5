@@ -15,9 +15,13 @@ import '../identity/open_position_store.dart';
 import '../identity/paused_pair_store.dart';
 import '../identity/pending_signal_store.dart';
 import '../identity/retired_store.dart';
+import '../identity/auto_copy_milestone_store.dart';
 import '../identity/sl_ratchet_store.dart';
 import '../identity/supertrend_pending_store.dart';
 import '../identity/symbol_resolve_store.dart';
+import '../identity/add_copy_request_store.dart';
+import '../identity/add_copy_result_store.dart';
+import '../identity/manual_copy_pending_order_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
 import '../identity/unpause_check_request_store.dart';
@@ -118,6 +122,9 @@ class EngineService {
     retired = RetiredStore(storage);
     lastTag = LastTagStore(storage);
     terminateRequests = TerminateRequestStore(storage);
+    addCopyRequests = AddCopyRequestStore(storage);
+    addCopyResults = AddCopyResultStore(storage);
+    manualCopyPendingOrders = ManualCopyPendingOrderStore(storage);
     waitingReasons = WaitingReasonStore(storage);
     lastCheckedStore = LastCheckedStore(storage);
     pendingSignals = PendingSignalStore(storage);
@@ -130,6 +137,7 @@ class EngineService {
     unpauseRequests = UnpauseCheckRequestStore(storage);
     symbolResolve = SymbolResolveStore(storage);
     slRatchet = SlRatchetStore(storage);
+    autoCopyMilestones = AutoCopyMilestoneStore(storage);
     baselineStopStrikes = BaselineStopStrikeStore(storage);
     worm10Pending = Worm10PendingSignalStore(storage);
     worm10EntrySignals = Worm10EntrySignalStore(storage);
@@ -205,6 +213,9 @@ class EngineService {
   late final RetiredStore retired;
   late final LastTagStore lastTag;
   late final TerminateRequestStore terminateRequests;
+  late final AddCopyRequestStore addCopyRequests;
+  late final AddCopyResultStore addCopyResults;
+  late final ManualCopyPendingOrderStore manualCopyPendingOrders;
   late final WaitingReasonStore waitingReasons;
   late final LastCheckedStore lastCheckedStore;
   late final PendingSignalStore pendingSignals;
@@ -216,6 +227,7 @@ class EngineService {
   late final UnpauseCheckRequestStore unpauseRequests;
   late final SymbolResolveStore symbolResolve;
   late final SlRatchetStore slRatchet;
+  late final AutoCopyMilestoneStore autoCopyMilestones;
   late final BaselineStopStrikeStore baselineStopStrikes;
   late final Worm10PendingSignalStore worm10Pending;
   late final Worm10EntrySignalStore worm10EntrySignals;
@@ -614,6 +626,9 @@ class EngineService {
   /// touches an already-triggered, genuinely open POSITION - this gate
   /// stops NEW exposure from being added, it never closes anything live.
   Future<void> _cancelAllRestingPendingOrders() async {
+    // Keep this store from growing unbounded (2026-10-15) - see
+    // [ManualCopyPendingOrderStore.pruneOlderThan]'s own doc comment.
+    manualCopyPendingOrders.pruneOlderThan(const Duration(minutes: 10));
     final result = await mt5.getOpenPositions();
     final orders = ((result['orders'] as List?) ?? const [])
         .cast<Map<String, dynamic>>();
@@ -624,6 +639,19 @@ class EngineService {
         final symbol = order['symbol'] as String?;
         final orderTicket = _parseTicket(order['order_id']);
         if (symbol == null || orderTicket == null) continue;
+        // 2026-10-15, per the user: "manual copies done by user: has
+        // nothing to do with margin level" - a manual copy's own pending
+        // fallback order is exempt from this sweep for as long as it's
+        // genuinely still pending (confirmed live: ticket 1660701907 on
+        // LTCUSD.lv was cancelled this exact way at 92.9% margin before
+        // this exemption existed).
+        if (manualCopyPendingOrders.isPending(orderTicket)) {
+          logger.log(
+            'MARGIN GATE: leaving resting pending order $orderTicket ($symbol) alone - '
+            'it\'s a manual copy, exempt from margin-level cancellation.',
+          );
+          continue;
+        }
         try {
           final deleteResult = await mt5.deleteOrder(symbol: symbol, orderTicket: orderTicket);
           final retcode = (deleteResult['retcode'] as num?)?.toInt();
@@ -1217,6 +1245,17 @@ class EngineService {
     // used to add/re-check pairs there has been removed entirely, not just
     // disabled, so it can never run again even by accident.
     await _processAllPendingTerminateRequests();
+    await _processAllPendingAddCopyRequests();
+    // Periodic scan, not a one-shot queued request like the two calls
+    // above - re-evaluates every running original's own P&L against its
+    // $5 ladder once per full cycle pass (2026-10-15, per the user's
+    // auto-copy spec). Doesn't need the sweep-interior responsiveness
+    // those two have, since profit moves gradually, not in one click.
+    try {
+      await _processAutoCopyMilestones(AutoCategory.oneHour);
+    } catch (e, st) {
+      logger.log('Auto-copy milestone scan error: $e\n$st', level: 'ERROR');
+    }
 
     // 2026-10-06, per the user's second decision technique - read once per
     // sweep (all pairs use whichever technique is active right now; it
@@ -1265,6 +1304,14 @@ class EngineService {
         // on that given the risk of running two overlapping sessions
         // against a live account without more testing.
         await _processAllPendingTerminateRequests();
+        // Same "don't wait out the whole sweep" reasoning as the terminate
+        // drain immediately above, for the Multiplier column's "add a copy
+        // trade" click (2026-10-15, per the user: found live a click sat
+        // unprocessed for minutes because the only earlier drain call was
+        // at the very top of [_runCycle], never reached again until this
+        // sweep finished - the exact same starvation shape terminate
+        // requests were already fixed for).
+        await _processAllPendingAddCopyRequests();
         // Same "don't wait out the whole sweep" reasoning as the terminate
         // drain immediately above, for an unpause-triggered instant check
         // (2026-10-09).
@@ -1628,6 +1675,11 @@ class EngineService {
         // [_processAllPendingUnpauseChecks]), not before.
         if (paused.isPaused(tvSymbol)) continue;
         await _processAllPendingTerminateRequests();
+        // Same "don't wait out the whole sweep" reasoning as the terminate
+        // drain immediately above - this is the exact sweep ("Power on...
+        // immediate reverse-check sweep") a real Multiplier click got
+        // stuck behind for minutes before this was added (2026-10-15).
+        await _processAllPendingAddCopyRequests();
         try {
           final currentSymbols = _loadSymbolsFresh();
           final mapping = currentSymbols.firstWhere(
@@ -3336,9 +3388,14 @@ class EngineService {
     required double volume,
     required double contractSize,
     required int digits,
+    // 2026-10-15, per the user's Multiplier-column spec: a copy trade
+    // (only ever opened while the original is already profitable) gets a
+    // tighter -$1 cap instead of the normal -$5 - every existing call
+    // site keeps the original -$5 behavior unchanged by not passing this.
+    double dollarCap = 5,
   }) {
     final notionalPerUnit = volume * contractSize;
-    final dollarDistance = notionalPerUnit > 0 ? 5 / notionalPerUnit : 0.0;
+    final dollarDistance = notionalPerUnit > 0 ? dollarCap / notionalPerUnit : 0.0;
     final dollarSl = direction == TradeDirection.long
         ? entry - dollarDistance
         : entry + dollarDistance;
@@ -3803,6 +3860,423 @@ class EngineService {
     }
   }
 
+  /// Drains every currently-pending "add a copy trade" request from the
+  /// Dashboard's Multiplier column (2026-10-15, per the user: "once user
+  /// click on it ... a new trade opens with same tp/sl open signal"). Same
+  /// one-shot per-cycle drain pattern as [_processAllPendingTerminateRequests].
+  Future<void> _processAllPendingAddCopyRequests() async {
+    for (final base in addCopyRequests.loadPending()) {
+      final matches = _loadSymbolsFresh().where((m) => m.tradingViewSymbol.toUpperCase() == base);
+      final mapping = matches.isEmpty ? null : matches.first;
+      if (mapping == null) {
+        logger.log(
+          '$base: pending add-copy request but no SymbolMapping in config.json - '
+          'clearing the stale request.',
+          level: 'WARNING',
+        );
+        addCopyRequests.clear(base);
+        continue;
+      }
+      try {
+        await _processAddCopyRequest(AutoCategory.oneHour, mapping);
+      } catch (e, st) {
+        logger.log('Add-copy request error for $base: $e\n$st', level: 'ERROR');
+      }
+    }
+  }
+
+  /// One click of the Multiplier column's "+" control - opens ONE
+  /// additional real position on the same pair/category, mirroring
+  /// whatever's already running's own direction, TP, and volume exactly
+  /// (2026-10-15, per the user: "same tp/sl open signal. no need for
+  /// recalculations" - TP and volume are copied verbatim, SL is the one
+  /// deliberate exception, tightened to -$1 instead of the normal -$5
+  /// baseline, per the user: "sll -1 for copied trades" - since a copy is
+  /// only ever opened while the original is already winning, it doesn't
+  /// need the same room). Deliberately bypasses [RiskGate.gate]'s own
+  /// per-symbol cap (currently 1) - that cap exists to stop the automated
+  /// signal logic from piling up duplicate SAME-signal positions by
+  /// accident, not to block this explicit, manual, profit-gated action -
+  /// but still fully respects the kill switch and the margin-tiered
+  /// position cap (§ margin protection), since a copy is still a real
+  /// position consuming a real slot.
+  Future<void> _processAddCopyRequest(AutoCategory category, SymbolMapping mapping) async {
+    final tvSymbol = mapping.tradingViewSymbol;
+    final mt5Symbol = mapping.mt5Symbol;
+    // Cleared up FRONT, not at the end (2026-10-15) - confirmed live that
+    // clearing only after the whole attempt finishes (which can take up
+    // to ~30s between the 20s trigger-poll and the history-lookup retries)
+    // silently swallowed every extra "+" click that landed WHILE a
+    // previous attempt for the same symbol was still in flight: a repeat
+    // click just re-adds the same already-present Set entry (a no-op),
+    // then gets wiped out by the FIRST attempt's own clear() the moment it
+    // finishes, with that click never getting its own processing or
+    // result at all. Clearing immediately means a click during an
+    // in-flight attempt re-queues a genuinely fresh request, picked up on
+    // the next drain pass once the current one is done, instead of
+    // vanishing with zero feedback.
+    addCopyRequests.clear(tvSymbol);
+    final existing = await _findAppPosition(mt5Symbol, category, tvSymbol);
+    if (existing == null) {
+      logger.log(
+        '$mt5Symbol ($category): add-copy requested but no running position found - ignoring.',
+        level: 'WARNING',
+      );
+      return;
+    }
+    final profit = (existing['profit'] as num?)?.toDouble() ?? 0;
+    if (profit <= 0) {
+      logger.log(
+        '$mt5Symbol ($category): add-copy requested but P&L is not positive '
+        '(${profit.toStringAsFixed(2)}) - refusing.',
+        level: 'WARNING',
+      );
+      return;
+    }
+    if (risk.killSwitchTripped) {
+      logger.log('$mt5Symbol ($category): add-copy blocked - KILL SWITCH: STOP file present.', level: 'WARNING');
+      return;
+    }
+    // Deliberately NOT margin-cap gated (2026-10-15, per the user: "manual
+    // copies done by user: has nothing to do with margin level") - unlike
+    // the automated milestone path below, a manual click is a one-shot,
+    // explicit, already-profit-gated human decision.
+    final result = await _openCopyPosition(category, mapping, existing, reasonLabel: 'manual');
+    // Surface the outcome back to the Dashboard as a SnackBar (2026-10-15,
+    // per the user, after a real copy's pending fallback order was REJECTED
+    // by MT5 itself for insufficient margin ("no money") while this app's
+    // own margin-tiered gate sat at a perfectly healthy level for the
+    // manual path - the click succeeded at bypassing OUR gate, but MT5's
+    // own broker-side margin check can't be bypassed by anything this app
+    // does, and silently logging that to engine.log alone left the user
+    // with "nothing happend" and no idea why). Only a genuinely KNOWN
+    // failure reason gets recorded - the ambiguous "still resting, might
+    // still trigger" case deliberately records nothing, see
+    // [_openCopyPosition]'s own doc comment.
+    if (result.success) {
+      addCopyResults.recordSuccess(tvSymbol);
+    } else if (result.failureReason != null) {
+      addCopyResults.recordFailure(tvSymbol, result.failureReason!);
+    }
+  }
+
+  /// The real order-placement core shared by [_processAddCopyRequest]
+  /// (manual "+" click) and [_processAutoCopyMilestones] (automated +\$5
+  /// milestone copies) - mirrors [existing]'s own direction/TP exactly
+  /// ("same tp/sl open signal. no need for recalculations"), fixed at 1
+  /// lot regardless of the original's own size ("it has to be v=1 fixed
+  /// and if user want to add more volum then he has to increase number of
+  /// copies"), with a tightened -\$1 SL instead of the normal -\$5
+  /// baseline (only ever opened while already winning, doesn't need the
+  /// same room). Returns a record rather than a plain bool (2026-10-15) -
+  /// `success` is true only on genuine success (filled, or a pending
+  /// fallback that triggered within the poll window); `failureReason` is
+  /// set ONLY for a genuinely known failure worth telling the user about
+  /// (MT5 itself rejecting the order, e.g. "no money") - it's deliberately
+  /// left null for the ambiguous "pending order still resting, might yet
+  /// trigger on its own" case, since that one isn't a failure the user
+  /// needs to react to.
+  Future<({bool success, String? failureReason})> _openCopyPosition(
+    AutoCategory category,
+    SymbolMapping mapping,
+    Map<String, dynamic> existing, {
+    required String reasonLabel,
+  }) async {
+    final mt5Symbol = mapping.mt5Symbol;
+    final direction = (existing['action'] as String?) == 'sell' ? TradeDirection.short : TradeDirection.long;
+    final existingTp = (existing['take_profit'] as num?)?.toDouble();
+    if (existingTp == null) {
+      logger.log(
+        '$mt5Symbol ($category): $reasonLabel copy blocked - running position is missing its TP, '
+        'nothing to copy.',
+        level: 'ERROR',
+      );
+      return (success: false, failureReason: 'Running position has no TP to copy.');
+    }
+    const copyVolume = 1.0;
+
+    final symbolInfoResult = await mt5.getMarketWatchSymbol(mt5Symbol);
+    final symbols = (symbolInfoResult['symbols'] as List?) ?? const [];
+    if (symbols.isEmpty) {
+      logger.log('$mt5Symbol ($category): $reasonLabel copy blocked - not found in Market Watch.', level: 'ERROR');
+      return (success: false, failureReason: '$mt5Symbol not found in MT5 Market Watch.');
+    }
+    final info = symbols.first as Map<String, dynamic>;
+    final digits = (info['digits'] as num?)?.toInt() ?? 5;
+    final contractSize = (info['contract_size'] as num?)?.toDouble() ?? 1.0;
+    final bid = (info['bid'] as num).toDouble();
+    final ask = (info['ask'] as num).toDouble();
+    final entry = direction == TradeDirection.long ? ask : bid;
+
+    final copySl = _baselineStopLoss(
+      entry: entry,
+      direction: direction,
+      volume: copyVolume,
+      contractSize: contractSize,
+      digits: digits,
+      dollarCap: 1,
+    );
+    final copyTp = _roundToDigits(existingTp, digits);
+    final profit = (existing['profit'] as num?)?.toDouble() ?? 0;
+
+    logger.log(
+      '$mt5Symbol ($category): opening $reasonLabel COPY ${direction == TradeDirection.long ? 'BUY' : 'SELL'} '
+      'vol=$copyVolume entry=$entry sl=$copySl (-\$1) tp=$copyTp (copied from running '
+      'ticket=${existing['position_id']}, profit was +${profit.toStringAsFixed(2)}).',
+    );
+    var result = await mt5.sendMarketOrder(
+      symbol: mt5Symbol,
+      side: direction == TradeDirection.long ? 'buy' : 'sell',
+      volume: copyVolume,
+      sl: copySl,
+      tp: copyTp,
+      comment: 'trading_mt5 ${category.wireValue}',
+    );
+
+    var retcode = (result['retcode'] as num?)?.toInt();
+    var viaPendingFallback = false;
+    if (retcode != null && retcode != 10009) {
+      if (retcode == 10030) {
+        // Same "Invalid fill" fallback as a normal open - see
+        // [_openPosition]'s own doc comment on why this class of symbol
+        // categorically can't fill via a bare market order.
+        final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
+        final point = (info['point'] as num?)?.toDouble() ?? 0.0;
+        final minDistance = point > 0 ? (stopsLevelPoints + 2) * point : entry * 0.0005;
+        final triggerPrice = _roundToDigits(
+          direction == TradeDirection.long ? ask + minDistance : bid - minDistance,
+          digits,
+        );
+        logger.log(
+          '$mt5Symbol ($category): $reasonLabel copy market order rejected (Invalid fill) — '
+          'retrying as an immediate-trigger pending order.',
+        );
+        result = await mt5.sendPendingOrder(
+          symbol: mt5Symbol,
+          type: direction == TradeDirection.long ? 'buy_stop' : 'sell_stop',
+          volume: copyVolume,
+          price: triggerPrice,
+          sl: copySl,
+          tp: copyTp,
+          fillingType: 'ioc',
+          comment: 'trading_mt5 ${category.wireValue}',
+        );
+        retcode = (result['retcode'] as num?)?.toInt();
+        viaPendingFallback = true;
+      }
+      if (retcode != null && retcode != 10009) {
+        logger.log(
+          '$mt5Symbol ($category): $reasonLabel copy order rejected: retcode=$retcode '
+          '${result['retcode_details'] ?? ''}'.trim(),
+          level: 'ERROR',
+        );
+        return (
+          success: false,
+          failureReason: 'MT5 rejected the order (retcode=$retcode).',
+        );
+      }
+    }
+
+    final ticket = _firstIntField(result, const ['ticket', 'position_ticket', 'position', 'order', 'deal']);
+    if (ticket == null) {
+      logger.log(
+        '$reasonLabel copy order for $mt5Symbol appears to have been SENT but no ticket field '
+        'was recognized in the response: $result — NOT tracked.',
+        level: 'CRITICAL',
+      );
+      return (
+        success: false,
+        failureReason: 'Order was sent but MT5\'s response had no ticket - check MT5 manually.',
+      );
+    }
+
+    // Same open signal as the original (2026-10-15, per the user: "same
+    // tp/sl open signal") - copied verbatim, not a fresh lookup, so the
+    // Dashboard's Open column reads identically for every row in this
+    // pair's group.
+    void copyOpenSignalOnto(int newTicket) {
+      final existingTicket = _parseTicket(existing['position_id']);
+      final worm10Snapshot = existingTicket == null ? null : worm10EntrySignals.peek(existingTicket);
+      if (worm10Snapshot != null) {
+        worm10EntrySignals.record(newTicket, worm10Snapshot);
+        return;
+      }
+      final regularSnapshot = existingTicket == null ? null : entrySignals.peek(existingTicket);
+      if (regularSnapshot != null) entrySignals.record(newTicket, regularSnapshot);
+    }
+
+    if (!viaPendingFallback) {
+      openPositions.rememberPosition(ticket);
+      botCategories.setCategory(ticket, category);
+      risk.openPosition(mt5Symbol, category);
+      copyOpenSignalOnto(ticket);
+      logger.log('$mt5Symbol ($category): $reasonLabel copy opened, ticket=$ticket.');
+      return (success: true, failureReason: null);
+    }
+
+    // Exempt a MANUAL copy's own resting pending order from the margin
+    // gate's cancellation sweep for as long as it's genuinely still
+    // pending (2026-10-15, per the user: "manual copies done by user: has
+    // nothing to do with margin level" - confirmed live that
+    // [_cancelAllRestingPendingOrders] otherwise cancels this within
+    // seconds, since it shares the same comment tag as any other pending
+    // order). Deliberately NOT done for the auto +$5 milestone path - that
+    // one is supposed to respect the margin gate throughout.
+    if (reasonLabel == 'manual') manualCopyPendingOrders.markPending(ticket);
+
+    // Same ticket-vs-order-id distinction as a normal open's own pending
+    // fallback - poll briefly for the triggered position.
+    final deadline = DateTime.now().add(const Duration(seconds: 20));
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      final positionsResult = await mt5.getOpenPositions(symbol: mt5Symbol);
+      final positions = (positionsResult['positions'] as List?) ?? const [];
+      for (final p in positions) {
+        final map = p as Map<String, dynamic>;
+        final positionTicket = _parseTicket(map['position_id']);
+        if (positionTicket == null || openPositions.isAppOpened(positionTicket)) continue;
+        openPositions.rememberPosition(positionTicket);
+        botCategories.setCategory(positionTicket, category);
+        risk.openPosition(mt5Symbol, category);
+        copyOpenSignalOnto(positionTicket);
+        manualCopyPendingOrders.clear(ticket);
+        logger.log(
+          '$mt5Symbol ($category): $reasonLabel copy pending order $ticket triggered, opened ticket=$positionTicket.',
+        );
+        return (success: true, failureReason: null);
+      }
+    }
+    logger.log(
+      '$mt5Symbol ($category): $reasonLabel copy pending order $ticket placed but did not trigger within '
+      '20s — still resting in MT5, not yet tracked. Will be picked up once it triggers and '
+      'the next cycle sees it, or check MT5 manually.',
+      level: 'ERROR',
+    );
+    // Same "check history orders for the real reason" pattern as
+    // [_openPosition]'s own doc comment (2026-09-29) - a "did not trigger"
+    // timeout is NOT necessarily still-resting-and-fine; MT5 itself can
+    // silently reject/delete the order (e.g. `comment: "deleted [no
+    // money]"` - insufficient free margin), invisible from
+    // [getOpenPositions] alone once the order is gone. Confirmed live
+    // 2026-10-15: a manual copy's fallback order (ticket 1660700117,
+    // LTCUSD.lv) vanished this exact way while account margin sat at
+    // ~95-97% - the app's OWN margin gate was correctly bypassed for the
+    // manual click, but MT5's broker-side margin check can't be bypassed
+    // by anything this app does, and that distinction was invisible to the
+    // user until this lookup was added.
+    // Retried, not a single shot (2026-10-15) - confirmed live that MT5
+    // doesn't always reflect a rejection in its own history INSTANTLY at
+    // the 20s mark: ticket 1660704726 showed up rejected within ~10ms of
+    // the timeout, but a later attempt (1660706623) found nothing on the
+    // first check and would have silently given up with no reason at all,
+    // reproducing the exact "nothing happend" report this whole lookup was
+    // built to fix. A few seconds' slack covers that lag.
+    for (var attempt = 0; attempt < 4; attempt++) {
+      if (attempt > 0) await Future<void>.delayed(const Duration(seconds: 3));
+      try {
+        final history = await mt5.getHistoryOrders(symbol: mt5Symbol);
+        final orders = (history['orders'] as List?) ?? const [];
+        for (final o in orders) {
+          final map = o as Map<String, dynamic>;
+          if (_parseTicket(map['order_id']) == ticket && map['state'] != 'placed') {
+            final comment = map['comment'] as String? ?? map['state'] as String? ?? 'rejected';
+            logger.log(
+              '$mt5Symbol ($category): $reasonLabel copy pending order $ticket was REJECTED by '
+              'MT5: "$comment".',
+              level: 'ERROR',
+            );
+            manualCopyPendingOrders.clear(ticket);
+            return (
+              success: false,
+              failureReason: 'MT5 rejected the order: $comment',
+            );
+          }
+        }
+      } catch (e) {
+        logger.log('$mt5Symbol ($category): could not check $reasonLabel copy order $ticket\'s history: $e', level: 'ERROR');
+      }
+    }
+    // Still genuinely ambiguous after retrying (order not found as
+    // rejected in history either) - leave failureReason null so no
+    // SnackBar fires for what may yet resolve itself on a later cycle.
+    logger.log(
+      '$mt5Symbol ($category): $reasonLabel copy pending order $ticket still not resolved in '
+      'MT5 history after retrying - leaving it be, not reporting a failure yet.',
+      level: 'WARNING',
+    );
+    return (success: false, failureReason: null);
+  }
+
+  /// Automated +\$5 milestone copying (2026-10-15, per the user: "auto
+  /// copy, this will be applied each time P&L has +5$ more... if btcusd
+  /// is 5.5$, an auto copy will be created... applied again if it becomes
+  /// +10$... i am speaking here about the parent not the copy"). Tracks
+  /// each ORIGINAL (lowest-ticket) position's highest $5 milestone
+  /// already consumed in [autoCopyMilestones], so a position sitting at
+  /// +\$5 forever only ever triggers ONE copy, not one per cycle. Unlike
+  /// the manual path, THIS one fully respects the margin-tiered position
+  /// cap ("if margin level is more than +150% or whatever margin rules
+  /// applies") - a milestone that's blocked by margin is simply left
+  /// un-consumed and retried next cycle, never skipped.
+  Future<void> _processAutoCopyMilestones(AutoCategory category) async {
+    final cap = RiskGate.positionCapFor(risk.marginLevel);
+    if (cap == 0) return;
+    if (risk.killSwitchTripped) return;
+
+    final openResult = await mt5.getOpenPositions();
+    final positions = ((openResult['positions'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .where((p) => p['comment'] == 'trading_mt5 ${category.wireValue}');
+    // The ORIGINAL per symbol is whichever ticket is lowest - same
+    // derivation as the Dashboard's own darker-shade-for-the-original
+    // coloring, no separate original/copy tracking needed.
+    final bySymbol = <String, List<Map<String, dynamic>>>{};
+    for (final p in positions) {
+      final symbol = (p['symbol'] as String).toUpperCase();
+      (bySymbol[symbol] ??= []).add(p);
+    }
+    for (final entry in bySymbol.entries) {
+      final group = entry.value;
+      Map<String, dynamic>? original;
+      int? lowestTicket;
+      for (final p in group) {
+        final t = _parseTicket(p['position_id']);
+        if (t == null) continue;
+        if (lowestTicket == null || t < lowestTicket) {
+          lowestTicket = t;
+          original = p;
+        }
+      }
+      if (original == null || lowestTicket == null) continue;
+
+      final profit = (original['profit'] as num?)?.toDouble() ?? 0;
+      final targetMilestone = profit > 0 ? (profit / 5).floor() : 0;
+      var consumed = autoCopyMilestones.get(lowestTicket);
+      if (targetMilestone <= consumed) continue;
+
+      final matches = _loadSymbolsFresh().where((m) => m.mt5Symbol.toUpperCase() == entry.key);
+      if (matches.isEmpty) continue;
+      final mapping = matches.first;
+
+      // Catch up every crossed milestone in one pass (e.g. a sudden jump
+      // from +\$3 to +\$12 crosses both the +\$5 and +\$10 rungs at once) -
+      // stop and leave the rest for next cycle the moment one is blocked,
+      // rather than skipping ahead and losing track of it.
+      while (consumed < targetMilestone) {
+        final freshCap = RiskGate.positionCapFor(risk.marginLevel);
+        if (freshCap == 0) break;
+        final result = await _openCopyPosition(category, mapping, original, reasonLabel: 'auto +\$5 milestone');
+        if (!result.success) break;
+        consumed++;
+        autoCopyMilestones.set(lowestTicket, consumed);
+        logger.log(
+          '${mapping.mt5Symbol} ($category): auto-copy milestone ${consumed * 5} reached '
+          '(ticket=$lowestTicket profit was +${profit.toStringAsFixed(2)}) - copy opened.',
+        );
+      }
+    }
+  }
+
   /// Drains every currently-pending unpause-checkup request (2026-10-09, per
   /// the user: "if running paused pair un-paused: then a reverse checkup
   /// will occur on this pair instantly and then action according to this
@@ -3977,8 +4451,15 @@ class EngineService {
     final entryPrice = (position['price_open'] as num?)?.toDouble() ?? 0.0;
     final exitPrice = (position['price_last'] as num?)?.toDouble();
     final volume = (position['volume'] as num?)?.toDouble();
-    final stopLoss = (position['sl'] as num?)?.toDouble();
-    final takeProfit = (position['tp'] as num?)?.toDouble();
+    // 2026-10-15, per the user's Multiplier-column work, found live: this
+    // read the wrong field names ('sl'/'tp') this whole time - the real
+    // open-position field names confirmed live are 'stop_loss'/
+    // 'take_profit' (see RiskGate... no, see the Dashboard's own existing,
+    // already-correct app_providers.dart read of the same shape). History
+    // entries for an ACTIVE app-initiated close have always recorded a
+    // null stopLoss/takeProfit because of this - fixed.
+    final stopLoss = (position['stop_loss'] as num?)?.toDouble();
+    final takeProfit = (position['take_profit'] as num?)?.toDouble();
     final profit = (position['profit'] as num?)?.toDouble();
     final startTime = DateTime.tryParse(
       (position['create_time'] as String?) ?? '',

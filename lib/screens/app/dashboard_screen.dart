@@ -31,6 +31,12 @@ class DashboardScreen extends ConsumerWidget {
     final historyPnlSince = ref.watch(historyPnlSinceProvider);
     final decisionTechnique = ref.watch(decisionTechniqueProvider);
 
+    // 2026-10-15 - the add-copy result SnackBar moved to [ReuseNavShell]
+    // (the persistent, always-on-top shell Scaffold) - see its own doc
+    // comment for why registering it here, on this tab's own nested
+    // Scaffold, is unreliable once go_router's StatefulShellRoute keeps
+    // multiple tabs' Scaffolds simultaneously mounted.
+
     return Scaffold(
       appBar: AppBar(title: const Text('Dashboard')),
       body: ListView(
@@ -109,6 +115,10 @@ class DashboardScreen extends ConsumerWidget {
               },
               onChangeVolume: (tvSymbol, volume) {
                 ref.read(controlRepositoryProvider).setDesiredVolume(tvSymbol, volume);
+                ref.invalidate(autoTradesProvider);
+              },
+              onAddCopy: (tvSymbol) {
+                ref.read(controlRepositoryProvider).requestAddCopy(tvSymbol);
                 ref.invalidate(autoTradesProvider);
               },
               historyPnlSince: historyPnlSince,

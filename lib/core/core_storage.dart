@@ -143,6 +143,11 @@ class CoreStorage {
   /// [SlRatchetStore]'s own doc comment for the full spec.
   String get slRatchetStateFile => p.join(logsDir, 'sl-ratchet-state.json');
 
+  /// Per-ticket auto-copy +$5 milestone counter (2026-10-15, per the
+  /// user's Multiplier-column auto-copy spec) - see
+  /// [AutoCopyMilestoneStore]'s own doc comment.
+  String get autoCopyMilestonesFile => p.join(logsDir, 'auto-copy-milestones.json');
+
   /// Per-base "consecutive baseline stop-loss terminations" streak
   /// (2026-10-13, per the user: "if pair beent terminated two times in
   /// same signal, then this pair will not start over again until signal
@@ -232,6 +237,21 @@ class CoreStorage {
   /// TradingView chart access, so read early in [EngineService._checkOneSymbol]
   /// before any expensive chart work.
   String get terminateRequestsFile => p.join(logsDir, 'terminate-requests.json');
+
+  /// Mirror of [terminateRequestsFile] for the Multiplier column's "add a
+  /// copy trade" click (2026-10-15, per the user) - same one-shot queue
+  /// shape, see [AddCopyRequestStore]'s own doc comment.
+  String get addCopyRequestsFile => p.join(logsDir, 'add-copy-requests.json');
+
+  /// The engine's answer to a manual add-copy click, once known (2026-10-15,
+  /// per the user) - see [AddCopyResultStore]'s own doc comment.
+  String get addCopyResultsFile => p.join(logsDir, 'add-copy-results.json');
+
+  /// Manual copy pending-order tickets currently exempted from the margin
+  /// gate's own cancellation sweep (2026-10-15, per the user) - see
+  /// [ManualCopyPendingOrderStore]'s own doc comment.
+  String get manualCopyPendingOrdersFile =>
+      p.join(logsDir, 'manual-copy-pending-orders.json');
 
   /// Per `${category.wireValue}|$tvSymbol` manual trade-size override +
   /// step-down retry state (2026-10-03, per the user: "add one more column

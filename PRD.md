@@ -1980,6 +1980,66 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-15** — Multiplier manual copy: fixed a real "+ click did
+  nothing" report down to its actual root cause, which turned out to be
+  TWO independent failure modes, both confirmed live at ~92-93% account
+  margin: (1) MT5's own broker-side margin check can outright REJECT a
+  copy's pending fallback order with `comment: "deleted [no money]"`
+  (confirmed via `get_trading_history_orders` with
+  `include_orders_canceled: true` on ticket 1660700117, LTCUSD.lv) - this
+  app's own margin gate has no power to see this coming or bypass it, so
+  [EngineService._openCopyPosition] now does the same history-order
+  lookup [EngineService._openPosition] already did for this exact reason
+  (2026-09-29), and surfaces a genuinely-known failure back to the
+  Dashboard via a new [AddCopyResultStore]/`addCopyResultsProvider`
+  poll loop, shown as a SnackBar - the ambiguous "still resting, might
+  yet trigger" case deliberately shows nothing, since it isn't a failure
+  yet. (2) Separately, even when MT5 DOES accept the pending fallback
+  order, this app's OWN margin-gate sweep
+  ([EngineService._cancelAllRestingPendingOrders]) could still cancel it
+  within seconds, because a copy's pending order shared the exact same
+  comment tag as any other pending order with no way to single it out -
+  confirmed live, a second LTCUSD.lv attempt (ticket 1660701907) was
+  cancelled this exact way. This directly contradicted the user's own
+  spec for the manual path ("manual copies done by user: has nothing to
+  do with margin level") - the click itself correctly bypassed the app's
+  margin cap, but its own fallback order was still exposed to the same
+  gate's sweep. Fixed with a new, narrowly-scoped
+  [ManualCopyPendingOrderStore]: a manual copy's pending order ticket is
+  marked exempt the moment it's placed and only un-marked once genuinely
+  resolved (triggered or confirmed rejected by MT5) - the sweep now skips
+  any ticket still marked exempt. Deliberately NOT applied to the
+  automated +$5 milestone path, which is supposed to respect the margin
+  gate throughout by design.
+
+- **2026-10-15** — Multiplier column: a manual, profit-gated "add a copy
+  trade" control (2026-10-15, per the user's own loud-thinking design
+  session: start every pair at a small volume, only pyramid into a
+  position once it's already winning, never add to a loser). Clicking
+  the "+" (only enabled while the row's live P&L is positive) opens one
+  additional real position on the same pair - same direction, same TP,
+  same volume as what's already running, copied verbatim ("no need for
+  recalculations") - with ONE deliberate exception: a tighter -$1 SL
+  instead of the normal -$5 baseline, since a copy only ever opens
+  already in profit and doesn't need the same room. Deliberately
+  bypasses the per-symbol position cap (that exists to stop the
+  AUTOMATED signal logic from accidentally duplicating positions, not to
+  block this explicit manual action) while still fully respecting the
+  kill switch and the margin-tiered position cap, since a copy is a
+  real position consuming a real slot. The Auto-Managed Trades table now
+  shows one row PER TICKET instead of collapsing a pair to one row,
+  with a Multiplier count ("×N") and a shared background tint per pair
+  group - the original (lowest ticket number, since MT5 assigns them
+  sequentially and a copy can only open after its original exists) gets
+  a visibly darker shade than its copies, so which is which is obvious
+  without any separate original/copy tracking. Found and fixed a
+  related pre-existing bug while building this: three separate places
+  (two in engine_service.dart, one in app_providers.dart) read an open
+  position's SL/TP via the wrong field names (`sl`/`tp` instead of the
+  real `stop_loss`/`take_profit`, confirmed live) - History's SL/TP
+  columns for an actively-closed trade, and the Market Watch screen's
+  own SL/TP display, had likely been silently blank this whole time.
+
 This section is intentionally selective — a running record of the real,
 live-incident-driven decisions that shaped the app's current behavior,
 newest first. Many smaller fixes are referenced inline throughout §9–§19;

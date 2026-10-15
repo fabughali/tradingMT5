@@ -10,6 +10,8 @@ import '../identity/pending_signal_store.dart';
 import '../identity/retired_store.dart';
 import '../identity/supertrend_pending_store.dart';
 import '../identity/symbol_resolve_store.dart';
+import '../identity/add_copy_request_store.dart';
+import '../identity/add_copy_result_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
 import '../identity/unpause_check_request_store.dart';
@@ -35,6 +37,8 @@ class EngineControlRepository {
     : _autoManaged = AutoManagedStore(_storage),
       _lastTag = LastTagStore(_storage),
       _terminateRequests = TerminateRequestStore(_storage),
+      _addCopyRequests = AddCopyRequestStore(_storage),
+      _addCopyResults = AddCopyResultStore(_storage),
       _tradeVolumes = TradeVolumeStore(_storage),
       _retired = RetiredStore(_storage),
       _pendingSignals = PendingSignalStore(_storage),
@@ -48,6 +52,8 @@ class EngineControlRepository {
   final AutoManagedStore _autoManaged;
   final LastTagStore _lastTag;
   final TerminateRequestStore _terminateRequests;
+  final AddCopyRequestStore _addCopyRequests;
+  final AddCopyResultStore _addCopyResults;
   final TradeVolumeStore _tradeVolumes;
   final RetiredStore _retired;
   final PendingSignalStore _pendingSignals;
@@ -232,6 +238,35 @@ class EngineControlRepository {
     _terminateRequests.request(tvSymbol);
     _logUserAction('Terminate pressed for $tvSymbol (Dashboard power icon).');
   }
+
+  /// Dashboard Multiplier column's "+" control (2026-10-15, per the user) —
+  /// asks the engine to open one additional copy position on [tvSymbol]'s
+  /// next cycle, mirroring the running trade's own direction/TP/volume with
+  /// a tighter -$1 SL. Same fire-and-forget shape as [requestTerminate] -
+  /// the engine clears the request once handled (opened, or refused with a
+  /// logged reason, e.g. P&L not yet positive).
+  void requestAddCopy(String tvSymbol) {
+    _addCopyRequests.request(tvSymbol);
+    _logUserAction('Add-copy pressed for $tvSymbol (Dashboard Multiplier column).');
+  }
+
+  /// Dashboard Multiplier column polls this after every [requestAddCopy] -
+  /// non-null once the engine has a genuinely known outcome to report
+  /// (2026-10-15, per the user, after a manual copy's pending order was
+  /// rejected by MT5 itself for "no money" with nothing shown in the GUI
+  /// beyond engine.log). `status` is `'opened'` or `'failed'`; `reason` is
+  /// only present when `'failed'`. Null means nothing to show yet (or
+  /// already shown/cleared) - this deliberately never fires for the
+  /// ambiguous "still resting, might yet trigger" case, see
+  /// [AddCopyResultStore]'s own doc comment.
+  Map<String, dynamic>? peekAddCopyResult(String tvSymbol) => _addCopyResults.peek(tvSymbol);
+
+  /// Dismisses a result once shown as a SnackBar.
+  void clearAddCopyResult(String tvSymbol) => _addCopyResults.clear(tvSymbol);
+
+  /// Polled by [addCopyResultsProvider] - every outcome currently sitting
+  /// in the store, across all symbols, in one file read.
+  Map<String, Map<String, dynamic>> addCopyResultsSnapshot() => _addCopyResults.peekAll();
 
   /// Dashboard volume +/- (2026-10-03, per the user) — sets the target
   /// volume for [tvSymbol]'s NEXT open (fresh or recycled). Never touches a

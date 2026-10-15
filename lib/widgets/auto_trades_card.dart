@@ -19,6 +19,7 @@ class AutoTradesCard extends StatefulWidget {
     required this.onToggleLast,
     required this.onTerminate,
     required this.onChangeVolume,
+    required this.onAddCopy,
     required this.historyPnlSince,
     required this.pnlSinceTimestamp,
     required this.onResetPnlSince,
@@ -60,6 +61,12 @@ class AutoTradesCard extends StatefulWidget {
   /// size for this pair's NEXT open. Never touches a currently-running
   /// trade's own size.
   final void Function(String, double) onChangeVolume;
+
+  /// tvSymbol — Multiplier column's "+" control (2026-10-15, per the
+  /// user): request one additional copy trade on this pair, same
+  /// direction/TP/volume as what's already running, tighter -$1 SL. Only
+  /// enabled in the UI while the row's live P&L is positive.
+  final void Function(String) onAddCopy;
 
   /// Realized (history-based, NOT live) P&L summed since [pnlSinceTimestamp]
   /// (2026-09-30, per the user). Null timestamp means "since the
@@ -297,6 +304,24 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     return remainingBuffer / fullRange * 100 <= 20;
   }
 
+  /// A deterministic background tint shared by every row for the same
+  /// pair, so a pair's original trade and its Multiplier copies visually
+  /// group together (2026-10-15, per the user: "same trades (same pair)
+  /// should have same row color"). Null (no tint - the table's normal
+  /// default) whenever a pair has no copies, so an ordinary single-row
+  /// pair looks exactly as it always has. Hashing [mt5Symbol] (rather
+  /// than a counter) means the same pair gets the same color across
+  /// refreshes without needing to track group identity anywhere.
+  static Color? _copyGroupColor(AutoTradeRow row, {required bool isOriginal}) {
+    if (row.copyCount <= 1) return null;
+    const palette = [Colors.amber, Colors.cyan, Colors.purple, Colors.teal, Colors.pink, Colors.indigo];
+    final color = palette[row.mt5Symbol.hashCode.abs() % palette.length];
+    // Original noticeably darker than its copies, so which row is which
+    // is obvious at a glance, not just "these rows are related" (2026-10-15,
+    // per the user).
+    return color.withValues(alpha: isOriginal ? 0.30 : 0.12);
+  }
+
   static String _fmtTag(String? tag) => tag == null ? '—' : tag.toUpperCase();
 
   /// Trims trailing zeros rather than a fixed decimal count, since volume
@@ -350,6 +375,19 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final rows = _sorted(widget.rows);
+    // The original trade in a copy group is whichever ticket is LOWEST -
+    // MT5 assigns tickets sequentially as trades open, and a copy can only
+    // ever be opened AFTER its original already exists (2026-10-15, per
+    // the user: "the parent/original trade color should be darker than
+    // the copied"). No separate original/copy tracking needed - this
+    // derives it purely from data already on hand.
+    final minTicketBySymbol = <String, int>{};
+    for (final r in rows) {
+      final t = r.ticket;
+      if (t == null) continue;
+      final current = minTicketBySymbol[r.mt5Symbol];
+      if (current == null || t < current) minTicketBySymbol[r.mt5Symbol] = t;
+    }
     final running = rows.where((r) => r.status == AutoTradeStatus.running).length;
     final pending = rows.where((r) => r.status == AutoTradeStatus.waitingPending).length;
     final noSignal = rows.where((r) => r.status == AutoTradeStatus.waitingNoSignal).length;
@@ -530,6 +568,11 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                       ),
                     ),
                     const DataColumn(label: Center(child: Text('Volume'))),
+                    // Multiplier (2026-10-15, per the user): "+" opens one
+                    // more copy trade on this pair - same direction/TP/
+                    // volume, tighter -$1 SL - only while P&L is positive.
+                    // Shows how many copies currently exist for this pair.
+                    const DataColumn(label: Center(child: Text('Multiplier'))),
                     const DataColumn(label: Text('Open')),
                     if (!widget.hideUpdateCloseColumns) ...[
                       const DataColumn(label: Text('Update')),
@@ -546,6 +589,9 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                   rows: [
                     for (final row in rows)
                       DataRow(
+                        color: WidgetStateProperty.all(
+                          _copyGroupColor(row, isOriginal: row.ticket == minTicketBySymbol[row.mt5Symbol]),
+                        ),
                         cells: [
                           DataCell(Text(row.mt5Symbol)),
                           // 2026-09-30, per the user: "add one column in
@@ -815,6 +861,44 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                             ),
                           ),
                           DataCell(
+                            // Blank for a non-running (waiting/not yet
+                            // filled) row (2026-10-15, per the user) - the
+                            // Multiplier only ever makes sense for an
+                            // actual running position to copy.
+                            row.status != AutoTradeStatus.running
+                                ? const Text('—')
+                                : Builder(
+                                    builder: (context) {
+                                      final canAddCopy =
+                                          row.profit != null && row.profit! > 0;
+                                      return Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                          Text(
+                                            '×${row.copyCount}',
+                                            style: TextStyle(
+                                              fontWeight: FontWeight.w600,
+                                              color: row.copyCount > 1 ? Colors.amber.shade800 : null,
+                                            ),
+                                          ),
+                                          IconButton(
+                                            icon: const Icon(Icons.add_circle_outline, size: 16),
+                                            visualDensity: VisualDensity.compact,
+                                            padding: EdgeInsets.zero,
+                                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                                            color: canAddCopy ? scheme.primary : scheme.onSurfaceVariant.withValues(alpha: 0.3),
+                                            tooltip: canAddCopy
+                                                ? 'Open a copy trade (same direction/TP/volume, -\$1 SL)'
+                                                : 'Only available while this trade\'s P&L is positive',
+                                            onPressed: canAddCopy ? () => widget.onAddCopy(row.tvSymbol) : null,
+                                          ),
+                                        ],
+                                      );
+                                    },
+                                  ),
+                          ),
+                          DataCell(
                             row.startTag == null && row.startCandidateTag != null
                                 // "Start candidate" (2026-10-03, per the
                                 // user: a waiting row with a real
@@ -896,7 +980,17 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                             ),
                           ],
                           DataCell(Text(_fmtDuration(row.openedAt))),
-                          DataCell(Text(AutoCategory.oneHour.label)),
+                          // Blank for a non-running row (2026-10-15, per
+                          // the user) - the interval/timeframe label only
+                          // means something once a trade is actually
+                          // running on it.
+                          DataCell(
+                            Text(
+                              row.status == AutoTradeStatus.running
+                                  ? AutoCategory.oneHour.label
+                                  : '—',
+                            ),
+                          ),
                           DataCell(
                             Builder(
                               builder: (context) {

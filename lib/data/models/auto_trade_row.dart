@@ -54,6 +54,7 @@ class AutoTradeRow {
     this.investmentValue,
     this.extraMargin,
     this.liquidationPrice,
+    this.copyCount = 1,
   });
 
   final String tvSymbol;
@@ -238,4 +239,14 @@ class AutoTradeRow {
   /// resolvable into a true independent-per-position price the way this
   /// column necessarily implies. Only set for [AutoTradeStatus.running].
   final double? liquidationPrice;
+
+  /// How many running positions currently share this row's [mt5Symbol]
+  /// (2026-10-15, per the user's Multiplier column: "it shows how many
+  /// trade copies has been made"). 1 for a normal, uncopied trade; 2+
+  /// once one or more copies exist via the Multiplier "+" control. Every
+  /// row for the same symbol carries the SAME count, since the table now
+  /// shows one row per ticket rather than collapsing a pair down to one
+  /// row - see [AutoTradeRow]'s own provider for why that changed. Only
+  /// meaningful for [AutoTradeStatus.running]; always 1 otherwise.
+  final int copyCount;
 }
