@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
 
 import '../core/app_version.dart';
 import '../core/core_constants.dart';
@@ -622,12 +623,25 @@ class _BackupRestoreCardState extends ConsumerState<BackupRestoreCard> {
     });
     try {
       final version = await readAppVersion();
+      // Re-stamped fresh HERE, not just inside [_browseExportLocation]
+      // (2026-10-15, per the user: "the file time stamp is not updated") -
+      // confirmed live that pressing Export more than once without
+      // re-clicking Browse in between just wrote to whatever path was
+      // already sitting in the field, silently overwriting the same file
+      // under its original, now-stale timestamp every time. Keeping the
+      // directory the user picked but always regenerating the filename at
+      // the actual moment of export means every real export is
+      // guaranteed fresh, matching the same "never reused" intent the
+      // Browse dialog's own 2026-10-11 fix already established.
+      final chosenPath = _exportPathCtrl.text.trim();
+      final outputPath = p.join(p.dirname(chosenPath), _defaultExportName(version));
       await BackupService(
         ref.read(storageProvider),
-      ).exportTo(_exportPathCtrl.text.trim(), password, appVersion: version);
+      ).exportTo(outputPath, password, appVersion: version);
       if (!mounted) return;
       setState(() {
-        _exportMessage = 'Exported to ${_exportPathCtrl.text.trim()}';
+        _exportPathCtrl.text = outputPath;
+        _exportMessage = 'Exported to $outputPath';
         _exportMessageColor = Colors.green;
       });
     } catch (e) {

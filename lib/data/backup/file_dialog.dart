@@ -49,11 +49,37 @@ Future<String?> _zenityDialog({
   required String suggestedDir,
 }) async {
   final dir = suggestedDir.endsWith('/') ? suggestedDir : '$suggestedDir/';
+  final suggestedPath = '$dir$suggestedName';
+  // zenity/GTK's `--filename` only pre-fills the "Name:" field when that
+  // exact path already EXISTS on disk - a long-standing GTK file-chooser
+  // limitation (`gtk_file_chooser_set_filename` requires existence;
+  // suggesting a NEW, not-yet-created name needs the separate
+  // `set_current_name` API, which zenity's CLI flag doesn't expose at
+  // all) - confirmed live 2026-10-15, per the user: "once user click on
+  // icon folder for export and navigate, the name is blank" - the folder
+  // opened correctly, only the suggested name was missing, since every
+  // suggested export name is for a file that has never existed yet.
+  // Touching an empty placeholder at that exact path first makes zenity
+  // treat it as existing and pre-fill the name as expected; it's deleted
+  // again right after (whether confirmed or cancelled) - the real export
+  // write happens later, independently, via [BackupService.exportTo].
+  var createdPlaceholder = false;
+  if (save && suggestedName.isNotEmpty) {
+    final placeholder = File(suggestedPath);
+    if (!await placeholder.exists()) {
+      try {
+        await placeholder.create(recursive: true);
+        createdPlaceholder = true;
+      } catch (_) {
+        // Best-effort only - the dialog still works, just without the
+        // pre-filled name, exactly like before this fix.
+      }
+    }
+  }
   final args = [
     '--file-selection',
     if (save) '--save',
-    if (save) '--confirm-overwrite',
-    '--filename=$dir$suggestedName',
+    '--filename=$suggestedPath',
     '--file-filter=TradingMT5 Backup (*.tmt5) | *.tmt5',
     '--file-filter=All files | *',
   ];
@@ -65,6 +91,17 @@ Future<String?> _zenityDialog({
     return path.isEmpty ? null : path;
   } catch (_) {
     return null; // zenity not installed - caller falls back to manual entry.
+  } finally {
+    if (createdPlaceholder) {
+      try {
+        final placeholder = File(suggestedPath);
+        // Only remove it if still empty/untouched - never delete real
+        // content zenity or anything else may have written to that path.
+        if (await placeholder.exists() && await placeholder.length() == 0) {
+          await placeholder.delete();
+        }
+      } catch (_) {}
+    }
   }
 }
 
