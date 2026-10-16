@@ -1419,8 +1419,23 @@ class EngineService {
     try {
       final binaryPath = (await _tradingViewLaunchConfig(home)).binaryPath;
       if (Platform.isWindows) {
-        final imageName = binaryPath.split(RegExp(r'[\\/]')).last;
-        await Process.run('taskkill', ['/F', '/IM', imageName]);
+        // Verified + retried, not a single unchecked Process.run (2026-10-16,
+        // per the user, after a real ~10-hour Windows stall: confirmed live
+        // this exact watchdog kill's result was never checked at all - if
+        // `taskkill` silently failed (e.g. "Access is denied" against a
+        // Store/MSIX-packaged TradingView), the counter above still reset to
+        // 0 and this whole mechanism would just quietly repeat the identical
+        // failed kill every 3 attempts forever, with nothing ever surfacing
+        // that the "fix" was never actually taking effect. See
+        // [taskkillByBinaryPath]'s own doc comment.
+        final killed = await taskkillByBinaryPath(binaryPath, onLog: logger.log);
+        if (!killed) {
+          logger.log(
+            'TRADINGVIEW WATCHDOG: could not actually kill TradingView - it '
+            'will keep failing the same way until it\'s closed manually.',
+            level: 'CRITICAL',
+          );
+        }
       } else {
         await Process.run('pkill', ['-9', '-f', binaryPath]);
       }
@@ -1553,6 +1568,7 @@ class EngineService {
         port,
         tvLaunchConfig,
         remoteSession: config.remoteSession,
+        onLog: logger.log,
       );
       if (!launched) {
         throw StateError('TradingView Desktop did not come up on $host:$port');

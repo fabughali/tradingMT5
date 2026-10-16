@@ -197,9 +197,10 @@ Future<bool> launchTradingView(
   // genuinely local/direct session where that risk doesn't apply and the
   // user actually wants to see the chart.
   bool remoteSession = true,
+  void Function(String message, {String? level})? onLog,
 }) async {
   if (Platform.isWindows) {
-    return _launchTradingViewWindows(host, port, config, timeout: timeout);
+    return _launchTradingViewWindows(host, port, config, timeout: timeout, onLog: onLog);
   }
 
   try {
@@ -302,8 +303,14 @@ Future<bool> _launchTradingViewWindows(
   int port,
   LaunchConfig config, {
   required Duration timeout,
+  void Function(String message, {String? level})? onLog,
 }) async {
-  await _taskkillByBinaryPath(config.binaryPath);
+  // Verified, not fire-and-forget (2026-10-16) - see
+  // [taskkillByBinaryPath]'s own doc comment: launching a fresh instance
+  // right after a kill that silently failed just adds a SECOND process
+  // fighting the first one for the same port, which looks identical to
+  // "TradingView won't come up" from the caller's side.
+  await taskkillByBinaryPath(config.binaryPath, onLog: onLog);
   await Future<void>.delayed(const Duration(seconds: 2));
 
   await Process.start(
@@ -320,13 +327,74 @@ Future<bool> _launchTradingViewWindows(
   return false;
 }
 
+/// Asks `tasklist` directly whether [imageName] is still actually running -
+/// used to VERIFY a `taskkill` call really took effect rather than trusting
+/// its exit code blindly (2026-10-16, per the user, after a real Windows
+/// stall: the engine's "TradingView not ready" check failed in a loop for
+/// roughly 10 hours straight with no recovery, matching exactly what
+/// happens if `taskkill` silently fails - e.g. "Access is denied" against a
+/// Microsoft Store/MSIX-packaged app, which can resist a plain non-elevated
+/// kill - and nothing ever notices, so every subsequent attempt just
+/// reconnects to the SAME stuck process and fails the same way forever).
+Future<bool> isWindowsImageRunning(String imageName) async {
+  try {
+    final result = await Process.run('tasklist', [
+      '/FI',
+      'IMAGENAME eq $imageName',
+      '/NH',
+    ]);
+    return (result.stdout as String).toUpperCase().contains(
+      imageName.toUpperCase(),
+    );
+  } catch (_) {
+    // Can't verify - assume it's NOT confirmed-gone, so the caller treats
+    // this the same as "kill may not have worked" rather than silently
+    // moving on.
+    return true;
+  }
+}
+
 /// `taskkill /IM` wants just the executable's filename, not a full path -
 /// unlike Linux's `pkill -f`, which matches anywhere in the command line.
-Future<void> _taskkillByBinaryPath(String binaryPath) async {
+/// Unlike the original version of this function, this one VERIFIES the
+/// process is actually gone afterward (via [isWindowsImageRunning]) and
+/// retries a few times before giving up - see that function's own doc
+/// comment for exactly why that verification matters. Returns true only
+/// once the image is confirmed no longer running.
+Future<bool> taskkillByBinaryPath(
+  String binaryPath, {
+  void Function(String message, {String? level})? onLog,
+}) async {
   final imageName = binaryPath.split(RegExp(r'[\\/]')).last;
-  try {
-    await Process.run('taskkill', ['/F', '/IM', imageName]);
-  } catch (_) {}
+  for (var attempt = 1; attempt <= 3; attempt++) {
+    try {
+      final result = await Process.run('taskkill', ['/F', '/IM', imageName]);
+      if (result.exitCode != 0) {
+        onLog?.call(
+          'taskkill /IM $imageName exited ${result.exitCode} (attempt '
+          '$attempt/3): ${(result.stderr as String).trim()}',
+          level: 'WARNING',
+        );
+      }
+    } catch (e) {
+      onLog?.call(
+        'taskkill /IM $imageName threw (attempt $attempt/3): $e',
+        level: 'WARNING',
+      );
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    if (!await isWindowsImageRunning(imageName)) return true;
+    onLog?.call(
+      'taskkill /IM $imageName did not actually stop it (attempt $attempt/3) - retrying.',
+      level: 'WARNING',
+    );
+  }
+  onLog?.call(
+    'taskkill /IM $imageName could not terminate it after 3 attempts - it '
+    'may need admin rights or manual intervention (check Task Manager).',
+    level: 'CRITICAL',
+  );
+  return false;
 }
 
 /// Kills TradingView Desktop if it's running, and waits until CDP stops
@@ -337,9 +405,10 @@ Future<bool> stopTradingView(
   int port,
   LaunchConfig config, {
   Duration timeout = const Duration(seconds: 15),
+  void Function(String message, {String? level})? onLog,
 }) async {
   if (Platform.isWindows) {
-    await _taskkillByBinaryPath(config.binaryPath);
+    await taskkillByBinaryPath(config.binaryPath, onLog: onLog);
   } else {
     try {
       await Process.run('pkill', ['-9', '-f', config.binaryPath]);
