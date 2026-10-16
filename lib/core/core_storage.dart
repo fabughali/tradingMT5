@@ -253,6 +253,11 @@ class CoreStorage {
   String get manualCopyPendingOrdersFile =>
       p.join(logsDir, 'manual-copy-pending-orders.json');
 
+  /// Which currently-tracked ticket numbers are Multiplier copies
+  /// (2026-10-16, per the user) - see [CopyPositionStore]'s own doc
+  /// comment.
+  String get copyPositionsFile => p.join(logsDir, 'copy-positions.json');
+
   /// Per `${category.wireValue}|$tvSymbol` manual trade-size override +
   /// step-down retry state (2026-10-03, per the user: "add one more column
   /// about current trade volume ... with plus minus icons"). See

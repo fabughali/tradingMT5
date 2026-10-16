@@ -55,6 +55,7 @@ class AutoTradeRow {
     this.extraMargin,
     this.liquidationPrice,
     this.copyCount = 1,
+    this.isCopy = false,
   });
 
   final String tvSymbol;
@@ -249,4 +250,16 @@ class AutoTradeRow {
   /// row - see [AutoTradeRow]'s own provider for why that changed. Only
   /// meaningful for [AutoTradeStatus.running]; always 1 otherwise.
   final int copyCount;
+
+  /// True when THIS specific ticket is itself a Multiplier copy (manual or
+  /// auto-milestone), not the parent/original trade (2026-10-16, per the
+  /// user: "volum cant be adjusted" for a copy - its volume is always
+  /// fixed at 1 lot by design, so the Volume +/- stepper is locked on a
+  /// copy's own row instead of silently adjusting the SYMBOL's shared
+  /// next-open volume from a row where that control doesn't apply).
+  /// Sourced straight from [CopyPositionStore], the same authoritative
+  /// per-ticket flag the engine itself uses - not re-derived from
+  /// "lowest ticket in this symbol group", since that heuristic only
+  /// reflects whichever tickets happen to be open AT THIS INSTANT.
+  final bool isCopy;
 }

@@ -341,6 +341,20 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
       // every other identity store here already uses).
       final slRatchetRaw =
           storage.readJsonObject(storage.slRatchetStateFile) ?? const {};
+      // 2026-10-16, per the user: "volum cant be adjusted" for a copy -
+      // read straight from CopyPositionStore's own file (same
+      // authoritative per-ticket flag the engine itself uses) so the
+      // Volume stepper can be locked on a copy's own row.
+      final copyPositionTickets = <int>{
+        for (final e in (() {
+          try {
+            return storage.readJsonArrayStrict(storage.copyPositionsFile);
+          } catch (_) {
+            return const <dynamic>[];
+          }
+        })())
+          if (int.tryParse(e.toString()) != null) int.parse(e.toString()),
+      };
       final tradeVolumes = TradeVolumeStore(storage);
       // One bulk call covers every symbol's volume_min/step/max (2026-10-03)
       // - same data [WatchedSymbol] already parses for the New Order
@@ -566,6 +580,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               extraMargin: accountSnapshot?.marginFree,
               liquidationPrice: liquidationPriceForRow,
               copyCount: copyCount,
+              isCopy: ticket != null && copyPositionTickets.contains(ticket),
             ),
           );
         }

@@ -789,6 +789,31 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                                 // pinned in the same x-position on every
                                 // row regardless of digit count or whether
                                 // a pending line is showing.
+                                // A Multiplier copy's own volume is always
+                                // fixed at 1 lot by design (2026-10-16, per
+                                // the user: "volum cant be adjusted" - a
+                                // copy's row previously still showed the
+                                // normal +/- stepper, which silently
+                                // adjusted the SYMBOL's shared next-open
+                                // volume from a row where that doesn't even
+                                // apply, since a copy's own size can never
+                                // actually change). Locked, no stepper.
+                                if (row.isCopy) {
+                                  return SizedBox(
+                                    width: 120,
+                                    child: Tooltip(
+                                      message: 'Copy volume is fixed at 1 lot',
+                                      child: Text(
+                                        _fmtVolume(row.currentVolume ?? 1),
+                                        textAlign: TextAlign.center,
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w600,
+                                          color: scheme.onSurfaceVariant,
+                                        ),
+                                      ),
+                                    ),
+                                  );
+                                }
                                 final effective = row.desiredVolume ?? row.currentVolume ?? row.volumeMin;
                                 final hasCurrent = row.currentVolume != null;
                                 final current = row.currentVolume ?? effective;

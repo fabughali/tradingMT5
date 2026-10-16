@@ -22,6 +22,7 @@ import '../identity/symbol_resolve_store.dart';
 import '../identity/add_copy_request_store.dart';
 import '../identity/add_copy_result_store.dart';
 import '../identity/manual_copy_pending_order_store.dart';
+import '../identity/copy_position_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
 import '../identity/unpause_check_request_store.dart';
@@ -125,6 +126,7 @@ class EngineService {
     addCopyRequests = AddCopyRequestStore(storage);
     addCopyResults = AddCopyResultStore(storage);
     manualCopyPendingOrders = ManualCopyPendingOrderStore(storage);
+    copyPositions = CopyPositionStore(storage);
     waitingReasons = WaitingReasonStore(storage);
     lastCheckedStore = LastCheckedStore(storage);
     pendingSignals = PendingSignalStore(storage);
@@ -216,6 +218,7 @@ class EngineService {
   late final AddCopyRequestStore addCopyRequests;
   late final AddCopyResultStore addCopyResults;
   late final ManualCopyPendingOrderStore manualCopyPendingOrders;
+  late final CopyPositionStore copyPositions;
   late final WaitingReasonStore waitingReasons;
   late final LastCheckedStore lastCheckedStore;
   late final PendingSignalStore pendingSignals;
@@ -1034,6 +1037,7 @@ class EngineService {
         widenApplied.forget(ticket);
         entrySignals.forget(ticket);
         worm10EntrySignals.forget(ticket);
+        copyPositions.forget(ticket);
         continue;
       }
 
@@ -1108,16 +1112,27 @@ class EngineService {
       // one, and shouldn't count toward the block. Any other close
       // (take-profit, a ratchet-protected SL, closed outside the app)
       // breaks whatever streak was building.
-      if (stopReason == 'stop_loss' && slRatchet.highestThreshold(ticket) == null) {
-        final directionStr = direction == TradeDirection.long ? 'long' : 'short';
-        baselineStopStrikes.recordBaselineStop(tvSymbol, directionStr);
-        logger.log(
-          'BASELINE STOP: $mt5Symbol ($category) hit the baseline SL as '
-          '$directionStr (strike ${baselineStopStrikes.strikes(tvSymbol)}/2 '
-          'before this pair is blocked until the signal flips).',
-        );
-      } else {
-        baselineStopStrikes.clear(tvSymbol);
+      //
+      // Skipped entirely for a Multiplier copy's own ticket (2026-10-16,
+      // per the user: "once copied trade is terminated... it is not
+      // repeated == no auto listed anymore... that's applied for copied
+      // only not for parent/original") - a copy's own tight -$1 SL is a
+      // deliberate, routine profit-lock exit on an already-winning leg,
+      // not a "this pair keeps failing at the baseline" signal, and this
+      // whole mechanism is about the PARENT's own lifecycle only. See
+      // [CopyPositionStore]'s own doc comment.
+      if (!copyPositions.isCopy(ticket)) {
+        if (stopReason == 'stop_loss' && slRatchet.highestThreshold(ticket) == null) {
+          final directionStr = direction == TradeDirection.long ? 'long' : 'short';
+          baselineStopStrikes.recordBaselineStop(tvSymbol, directionStr);
+          logger.log(
+            'BASELINE STOP: $mt5Symbol ($category) hit the baseline SL as '
+            '$directionStr (strike ${baselineStopStrikes.strikes(tvSymbol)}/2 '
+            'before this pair is blocked until the signal flips).',
+          );
+        } else {
+          baselineStopStrikes.clear(tvSymbol);
+        }
       }
 
       final entryPriceForPct = (record['open_price'] as num?)?.toDouble() ?? 0.0;
@@ -1163,11 +1178,16 @@ class EngineService {
         ).toJson(),
       );
       logger.log('$mt5Symbol ($category): reconciled ticket=$ticket as $stopReason.');
+      final wasCopy = copyPositions.isCopy(ticket);
       openPositions.forgetPosition(ticket);
       botCategories.forget(ticket);
       widenApplied.forget(ticket);
       risk.closePosition(mt5Symbol, category);
-      _finalizeLastTagOnClose(category, tvSymbol);
+      copyPositions.forget(ticket);
+      // Skipped for a copy's own close, same reasoning as the
+      // baseline-stop-strike block above - "Last" retirement is a
+      // decision about the PARENT's own lifecycle, never a copy's.
+      if (!wasCopy) _finalizeLastTagOnClose(category, tvSymbol);
     }
   }
 
@@ -3279,6 +3299,16 @@ class EngineService {
     final tag = 'trading_mt5 ${category.wireValue}';
     final result = await mt5.getOpenPositions(symbol: mt5Symbol);
     final positions = (result['positions'] as List?) ?? const [];
+    // Prefer the ORIGINAL over a copy when both exist (2026-10-16, per the
+    // user: a copy's own termination must never drive the pair-level
+    // logic meant for the parent trade's own lifecycle - see
+    // [CopyPositionStore]'s own doc comment). Every app-owned match gets
+    // registered the same as before; a copy is only ever RETURNED here
+    // if no original match exists for this symbol (shouldn't normally
+    // happen, since a copy can only open alongside an already-running
+    // original - defensive, not expected in practice).
+    Map<String, dynamic>? originalMatch;
+    Map<String, dynamic>? copyMatch;
     for (final p in positions) {
       final map = p as Map<String, dynamic>;
       final ticket = _parseTicket(map['position_id']);
@@ -3295,14 +3325,21 @@ class EngineService {
         );
       }
       if (openPositions.isAppOpened(ticket)) {
-        // A real, app-owned position exists for this symbol/category no
-        // matter how we got here - always seasoned from this point on,
-        // see [FirstOpenStore]'s own doc comment for why this matters.
-        firstOpen.markOpened('${category.wireValue}|$tvSymbol');
-        return map;
+        if (copyPositions.isCopy(ticket)) {
+          copyMatch ??= map;
+        } else {
+          originalMatch ??= map;
+        }
       }
     }
-    return null;
+    final chosen = originalMatch ?? copyMatch;
+    if (chosen != null) {
+      // A real, app-owned position exists for this symbol/category no
+      // matter how we got here - always seasoned from this point on, see
+      // [FirstOpenStore]'s own doc comment for why this matters.
+      firstOpen.markOpened('${category.wireValue}|$tvSymbol');
+    }
+    return chosen;
   }
 
   double _roundToDigits(double v, int digits) {
@@ -4147,6 +4184,7 @@ class EngineService {
       botCategories.setCategory(ticket, category);
       risk.openPosition(mt5Symbol, category);
       copyOpenSignalOnto(ticket);
+      copyPositions.markCopy(ticket);
       logger.log('$mt5Symbol ($category): $reasonLabel copy opened, ticket=$ticket.');
       return (success: true, failureReason: null);
     }
@@ -4176,6 +4214,7 @@ class EngineService {
         botCategories.setCategory(positionTicket, category);
         risk.openPosition(mt5Symbol, category);
         copyOpenSignalOnto(positionTicket);
+        copyPositions.markCopy(positionTicket);
         manualCopyPendingOrders.clear(ticket);
         logger.log(
           '$mt5Symbol ($category): $reasonLabel copy pending order $ticket triggered, opened ticket=$positionTicket.',
