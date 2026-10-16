@@ -426,16 +426,40 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
         // Multiple positions can now share one symbol (the Multiplier
         // column's copy trades) - one row per position, all carrying the
         // SAME [copyCount] so the Dashboard can group/color them together.
+        // Open/Update always read from the ORIGINAL's own ticket (lowest
+        // in the group), never each row's own (2026-10-16, per the user:
+        // "open/update/close a/close b should be same as parent. no
+        // single change... engine does not require to check any copy
+        // trade" - a copy's own entry was only ever a one-time snapshot
+        // taken at the moment it opened, so its Update column froze there
+        // while the parent's kept evolving as new confirming signals
+        // arrived. Reading the ORIGINAL's entry for every row in the
+        // group means they can never diverge, with no per-copy signal
+        // tracking needed at all. Falls back to the row's OWN ticket if
+        // the original's entry is ever missing (e.g. the parent itself
+        // already closed while a copy, with its own farther TP, is still
+        // running) - that own-ticket entry still exists purely because
+        // [EngineService._openCopyPosition] seeds it once at open time as
+        // exactly this safety net.
+        final originalTicketForGroup = symbolPositions
+            .map((p) => int.tryParse('${p['position_id']}'))
+            .whereType<int>()
+            .fold<int?>(null, (min, t) => min == null || t < min ? t : min);
         if (symbolPositions.isNotEmpty) {
         for (final position in symbolPositions) {
           final copyCount = symbolPositions.length;
           final ticket = int.tryParse('${position['position_id']}');
-          final worm10Entry = ticket != null
-              ? worm10EntrySignalsRaw['$ticket'] as Map<String, dynamic>?
-              : null;
+          final worm10Entry =
+              (originalTicketForGroup != null
+                  ? worm10EntrySignalsRaw['$originalTicketForGroup'] as Map<String, dynamic>?
+                  : null) ??
+              (ticket != null ? worm10EntrySignalsRaw['$ticket'] as Map<String, dynamic>? : null);
           final entry = worm10Entry != null
               ? null
-              : (ticket != null ? entrySignalsRaw['$ticket'] as Map<String, dynamic>? : null);
+              : (originalTicketForGroup != null
+                        ? entrySignalsRaw['$originalTicketForGroup'] as Map<String, dynamic>?
+                        : null) ??
+                    (ticket != null ? entrySignalsRaw['$ticket'] as Map<String, dynamic>? : null);
           final slRatchetThreshold = ticket != null
               ? ((slRatchetRaw['$ticket'] as Map<String, dynamic>?)?['threshold'] as num?)
                     ?.toInt()

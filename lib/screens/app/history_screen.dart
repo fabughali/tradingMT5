@@ -81,6 +81,11 @@ class HistoryScreen extends ConsumerWidget {
     'margin_stop_out' => 'Margin stop-out',
     'closed_by_user' => 'Closed by user',
     'closed_by_app' => 'Closed by app',
+    // 2026-10-16, per the user: "if parent is triggered close... all copy
+    // trades should be close" - a copy closed this way gets its own
+    // distinct label so it's clear in History why it ended, not confused
+    // with its own SL/TP hitting on its own.
+    'parent_closed' => 'Closed with parent',
     _ => 'Unknown',
   };
 
@@ -91,6 +96,7 @@ class HistoryScreen extends ConsumerWidget {
     'margin_stop_out' => Colors.deepOrange,
     'closed_by_user' => Colors.orange,
     'closed_by_app' => Colors.purple,
+    'parent_closed' => Colors.indigo,
     _ => scheme.outline,
   };
 

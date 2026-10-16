@@ -478,6 +478,12 @@ class EngineService {
       if (!autoManaged.isAutoManaged(tvSymbol)) continue;
       if (retired.isRetiredBase(tvSymbol)) continue;
       if (paused.isPaused(tvSymbol)) continue;
+      // 2026-10-16, per the user: "engine does not require to check any
+      // copy trade" - this ratchet progression (+5%/+10%/...) is about
+      // the PARENT's own profit-lock journey; applying it to a copy as
+      // well would tighten/override a copy's own deliberately fixed -$1
+      // SL for no reason, since a copy is never meant to ratchet at all.
+      if (copyPositions.isCopy(ticket)) continue;
 
       final profit = (position['profit'] as num?)?.toDouble();
       final priceOpen = (position['price_open'] as num?)?.toDouble();
@@ -3943,6 +3949,103 @@ class EngineService {
     // building for this base.
     baselineStopStrikes.clear(tvSymbol);
     _finalizeLastTagOnClose(category, tvSymbol);
+    // 2026-10-16, per the user: "if parent is triggered close (signal
+    // close case 1,2,3) not close by margin level... all copy trades
+    // should be close" - every call into THIS function is already exactly
+    // that "active, signal/user-driven close" case (opposite-signal
+    // confirmed, or a manual terminate via the power icon) - margin level
+    // never actively closes a running position anywhere in this app, it
+    // only ever blocks NEW opens or cancels a resting pending order, so
+    // there's no separate "was this a margin close" branch to check here.
+    // A copy's own SL/TP hit, or the parent's own baseline-SL hit, are
+    // the passive exception the user carved out - those are caught
+    // independently by [_reconcileClosedPositions], never through here.
+    await _closeCopiesOf(category, tvSymbol, mt5Symbol, excludeTicket: ticket);
+  }
+
+  /// Cascades a PARENT's own active close onto every one of its still-open
+  /// copies - see [_closePosition]'s own call site for the full reasoning.
+  /// A copy exists purely to ride the SAME trade idea as its parent; once
+  /// the signal (or the user) says that idea is over, every copy riding
+  /// it closes too, not just the parent.
+  Future<void> _closeCopiesOf(
+    AutoCategory category,
+    String tvSymbol,
+    String mt5Symbol, {
+    required int excludeTicket,
+  }) async {
+    final result = await mt5.getOpenPositions(symbol: mt5Symbol);
+    final positions = (result['positions'] as List?) ?? const [];
+    final copyTickets = <int, Map<String, dynamic>>{
+      for (final p in positions)
+        if (_parseTicket((p as Map<String, dynamic>)['position_id']) != null)
+          _parseTicket(p['position_id'])!: p,
+    }..removeWhere((t, _) => t == excludeTicket || !openPositions.isAppOpened(t) || !copyPositions.isCopy(t));
+    if (copyTickets.isEmpty) return;
+
+    AccountSnapshot? accountSnapshotBeforeClose;
+    try {
+      accountSnapshotBeforeClose = AccountSnapshot.fromJson(await mt5.getAccountInfo());
+    } catch (_) {}
+    double contractSize = 1.0;
+    try {
+      final info = await mt5.getMarketWatchSymbol(mt5Symbol);
+      final symbols = (info['symbols'] as List?) ?? const [];
+      if (symbols.isNotEmpty) {
+        contractSize = ((symbols.first as Map<String, dynamic>)['contract_size'] as num?)?.toDouble() ?? 1.0;
+      }
+    } catch (_) {}
+
+    for (final entry in copyTickets.entries) {
+      final copyTicket = entry.key;
+      final copyPosition = entry.value;
+      logger.log(
+        '$mt5Symbol ($category): closing copy ticket=$copyTicket - its parent trade just closed.',
+      );
+      try {
+        await mt5.closePosition(symbol: mt5Symbol, positionTicket: copyTicket);
+      } catch (e) {
+        logger.log('$mt5Symbol ($category): failed to close copy ticket=$copyTicket: $e', level: 'ERROR');
+        continue;
+      }
+      double? liquidationPriceForHistory;
+      const stopOutLevel = 0.30;
+      final profit = (copyPosition['profit'] as num?)?.toDouble();
+      final volume = (copyPosition['volume'] as num?)?.toDouble();
+      final priceOpen = (copyPosition['price_open'] as num?)?.toDouble();
+      if (accountSnapshotBeforeClose != null &&
+          accountSnapshotBeforeClose.margin > 0 &&
+          profit != null &&
+          volume != null &&
+          volume != 0 &&
+          priceOpen != null &&
+          contractSize != 0) {
+        final otherEquity = accountSnapshotBeforeClose.equity - profit;
+        final targetProfit = stopOutLevel * accountSnapshotBeforeClose.margin - otherEquity;
+        final priceDelta = targetProfit / (volume * contractSize);
+        liquidationPriceForHistory = (copyPosition['action'] as String?) == 'sell'
+            ? priceOpen - priceDelta
+            : priceOpen + priceDelta;
+      }
+      _recordHistory(
+        category: category,
+        tvSymbol: tvSymbol,
+        mt5Symbol: mt5Symbol,
+        ticket: copyTicket,
+        position: copyPosition,
+        stopReason: 'parent_closed',
+        detail: 'Closed because its parent trade closed.',
+        contractSize: contractSize,
+        sllAtTermination: '-\$1',
+        extraMargin: accountSnapshotBeforeClose?.marginFree,
+        liquidationPrice: liquidationPriceForHistory,
+      );
+      openPositions.forgetPosition(copyTicket);
+      botCategories.forget(copyTicket);
+      widenApplied.forget(copyTicket);
+      risk.closePosition(mt5Symbol, category);
+      copyPositions.forget(copyTicket);
+    }
   }
 
   /// Per the user's Dashboard-table "Last" toggle spec: "once this trade is
