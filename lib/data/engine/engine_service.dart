@@ -941,15 +941,47 @@ class EngineService {
   Future<void> _reconcileClosedPositions() async {
     if (DateTime.now().difference(_startedAt) < _reconcileGracePeriod) return;
 
-    final tracked = openPositions.listAppPositions();
-    if (tracked.isEmpty) return;
-
     final openResult = await mt5.getOpenPositions();
     final livePositions = (openResult['positions'] as List?) ?? const [];
     final stillOpen = livePositions
         .map((p) => _parseTicket((p as Map<String, dynamic>)['position_id']))
         .whereType<int>()
         .toSet();
+
+    // Self-register any LIVE position carrying our own comment tag that
+    // isn't tracked AT ALL yet (2026-10-16 - found live: NEARUSD.lv's
+    // genuine app-opened copy, ticket 1660893666, was never registered in
+    // [openPositions] - the normal self-heal for this lives in
+    // [_findAppPosition], but that only runs per-symbol as part of the
+    // regular check loop, so a straggler could sit unregistered for a
+    // while depending on that symbol's own timing. Doing it here too,
+    // unconditionally every cycle across every symbol, closes that gap
+    // immediately rather than waiting on it.
+    for (final p in livePositions.cast<Map<String, dynamic>>()) {
+      final ticket = _parseTicket(p['position_id']);
+      final mt5Symbol = p['symbol'] as String?;
+      final comment = p['comment'] as String?;
+      if (ticket == null || mt5Symbol == null || comment == null) continue;
+      if (openPositions.isAppOpened(ticket)) continue;
+      AutoCategory? category;
+      for (final c in allAutoCategories) {
+        if (comment == 'trading_mt5 ${c.wireValue}') {
+          category = c;
+          break;
+        }
+      }
+      if (category == null) continue;
+      openPositions.rememberPosition(ticket);
+      botCategories.setCategory(ticket, category);
+      risk.openPosition(mt5Symbol, category);
+      logger.log(
+        '$mt5Symbol ($category): found untracked position ticket=$ticket with our '
+        'own comment tag during reconciliation - registering it now.',
+      );
+    }
+
+    final tracked = openPositions.listAppPositions();
+    if (tracked.isEmpty) return;
 
     // Rebuild RiskGate's open-position counts from live reality every
     // cycle, using [RiskGate.resetTo] - a self-heal method that already
@@ -983,6 +1015,33 @@ class EngineService {
       liveRiskCounts[key] = (liveRiskCounts[key] ?? 0) + 1;
     }
     risk.resetTo(liveRiskCounts);
+
+    // Backfill copy-tracking for a position that was already open BEFORE
+    // [CopyPositionStore] existed (2026-10-16, per the user: "still sll
+    // for copied trades -5$???" - a pre-existing copy never went through
+    // [_openCopyPosition]'s own markCopy call, so it had no entry at all,
+    // and the SLL/color fixes had nothing to go on for it). Same "lowest
+    // ticket per symbol+category group = original" heuristic already
+    // used for the Dashboard's own grouping/coloring - safe here
+    // specifically because this only ever marks a ticket copy that isn't
+    // ALREADY tracked, never un-marks anything, so it can't undo
+    // [_openCopyPosition]'s own authoritative marking of a genuine
+    // original that happens to share a group with an older copy.
+    final symbolCategoryGroups = <String, List<int>>{};
+    for (final ticket in tracked) {
+      if (!stillOpen.contains(ticket)) continue;
+      final mt5Symbol = symbolByTicket[ticket];
+      final category = botCategories.categoryOf(ticket);
+      if (mt5Symbol == null || mt5Symbol.isEmpty || category == null) continue;
+      (symbolCategoryGroups['$mt5Symbol|${category.wireValue}'] ??= []).add(ticket);
+    }
+    for (final groupTickets in symbolCategoryGroups.values) {
+      if (groupTickets.length < 2) continue;
+      groupTickets.sort();
+      for (final ticket in groupTickets.skip(1)) {
+        if (!copyPositions.isCopy(ticket)) copyPositions.markCopy(ticket);
+      }
+    }
 
     var vanished = tracked.where((t) => !stillOpen.contains(t)).toList();
     if (vanished.isEmpty) return;

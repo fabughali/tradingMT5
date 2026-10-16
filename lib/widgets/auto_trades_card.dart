@@ -314,33 +314,15 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   /// refreshes without needing to track group identity anywhere.
   static Color? _copyGroupColor(AutoTradeRow row, {required bool isOriginal}) {
     if (row.copyCount <= 1) return null;
-    // Two SEPARATE palettes, not one palette shaded lighter/darker
-    // (2026-10-16, per the user: "the color for parent trade and copied
-    // trade should not be repeated" - a shade difference alone was too
-    // subtle to tell a parent and its own copy apart at a glance; these
-    // are genuinely different hues now). Both palettes are indexed by the
-    // SAME per-symbol hash, so group i's parent always pairs with group
-    // i's own copy color, and different symbol groups never land on the
-    // same color in either palette (up to this palette's own length).
-    const parentPalette = [
-      Colors.blue,
-      Colors.green,
-      Colors.deepOrange,
-      Colors.indigo,
-      Colors.teal,
-      Colors.brown,
-    ];
-    const copyPalette = [
-      Colors.amber,
-      Colors.pink,
-      Colors.cyan,
-      Colors.purple,
-      Colors.lime,
-      Colors.deepPurple,
-    ];
-    final i = row.mt5Symbol.hashCode.abs() % parentPalette.length;
-    final color = isOriginal ? parentPalette[i] : copyPalette[i];
-    return color.withValues(alpha: isOriginal ? 0.30 : 0.22);
+    // ONE color per symbol group, shaded by opacity - parent darker, every
+    // copy lighter (2026-10-16, per the user, after a brief detour through
+    // two separate palettes per group: "i asked you to make parent darker
+    // for same color. and copied lighter for same color... use same color
+    // for parent and X copied trades"). Different GROUPS still get
+    // different colors via the hash below.
+    const palette = [Colors.amber, Colors.cyan, Colors.purple, Colors.teal, Colors.pink, Colors.indigo];
+    final color = palette[row.mt5Symbol.hashCode.abs() % palette.length];
+    return color.withValues(alpha: isOriginal ? 0.30 : 0.12);
   }
 
   static String _fmtTag(String? tag) => tag == null ? '—' : tag.toUpperCase();
