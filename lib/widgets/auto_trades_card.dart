@@ -314,12 +314,33 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   /// refreshes without needing to track group identity anywhere.
   static Color? _copyGroupColor(AutoTradeRow row, {required bool isOriginal}) {
     if (row.copyCount <= 1) return null;
-    const palette = [Colors.amber, Colors.cyan, Colors.purple, Colors.teal, Colors.pink, Colors.indigo];
-    final color = palette[row.mt5Symbol.hashCode.abs() % palette.length];
-    // Original noticeably darker than its copies, so which row is which
-    // is obvious at a glance, not just "these rows are related" (2026-10-15,
-    // per the user).
-    return color.withValues(alpha: isOriginal ? 0.30 : 0.12);
+    // Two SEPARATE palettes, not one palette shaded lighter/darker
+    // (2026-10-16, per the user: "the color for parent trade and copied
+    // trade should not be repeated" - a shade difference alone was too
+    // subtle to tell a parent and its own copy apart at a glance; these
+    // are genuinely different hues now). Both palettes are indexed by the
+    // SAME per-symbol hash, so group i's parent always pairs with group
+    // i's own copy color, and different symbol groups never land on the
+    // same color in either palette (up to this palette's own length).
+    const parentPalette = [
+      Colors.blue,
+      Colors.green,
+      Colors.deepOrange,
+      Colors.indigo,
+      Colors.teal,
+      Colors.brown,
+    ];
+    const copyPalette = [
+      Colors.amber,
+      Colors.pink,
+      Colors.cyan,
+      Colors.purple,
+      Colors.lime,
+      Colors.deepPurple,
+    ];
+    final i = row.mt5Symbol.hashCode.abs() % parentPalette.length;
+    final color = isOriginal ? parentPalette[i] : copyPalette[i];
+    return color.withValues(alpha: isOriginal ? 0.30 : 0.22);
   }
 
   static String _fmtTag(String? tag) => tag == null ? '—' : tag.toUpperCase();
@@ -761,7 +782,15 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                               row.status != AutoTradeStatus.running
                                   ? '—'
                                   : row.slRatchetThreshold == null
-                                      ? '-\$5'
+                                      // A copy's own baseline SL is -$1, not
+                                      // the normal -$5 (2026-10-16, per the
+                                      // user: "why in sll for copied trade
+                                      // is set -5$ ?? while it should be
+                                      // -1$????") - this label was hardcoded
+                                      // to the normal baseline everywhere,
+                                      // never accounting for a copy's own
+                                      // tighter one.
+                                      ? (row.isCopy ? '-\$1' : '-\$5')
                                       : '+${row.slRatchetThreshold}%',
                               style: TextStyle(
                                 color: row.status == AutoTradeStatus.running &&

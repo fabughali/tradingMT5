@@ -1143,7 +1143,14 @@ class EngineService {
       final realizedProfitPercent =
           (profitForPct != null && notionalForPct != 0) ? profitForPct / notionalForPct * 100 : null;
       final ratchetThreshold = slRatchet.highestThreshold(ticket);
-      final sllAtTermination = ratchetThreshold != null ? '+$ratchetThreshold%' : '-\$5';
+      // A copy's own baseline SL is -$1, not the normal -$5 (2026-10-16,
+      // per the user) - see the Dashboard SLL column's own matching fix
+      // for the full reasoning.
+      final sllAtTermination = ratchetThreshold != null
+          ? '+$ratchetThreshold%'
+          : copyPositions.isCopy(ticket)
+          ? '-\$1'
+          : '-\$5';
       storage.appendJsonl(
         storage.botHistoryFile,
         BotHistoryEntry(
@@ -3596,11 +3603,26 @@ class EngineService {
         // this wait for a real price swing instead of triggering right
         // away. Using the symbol's OWN minimum stop distance instead
         // (trade_stops_level, in points) - the smallest legal distance
-        // from current price - plus a couple of extra points of safety
-        // margin, so the stop order sits just past current price and
-        // triggers on essentially the very next tick, matching a real
-        // market order in practice.
-        final minDistance = point > 0 ? (stopsLevelPoints + 2) * point : entry * 0.0005;
+        // from current price - so the stop order sits just past current
+        // price and triggers on essentially the very next tick, matching
+        // a real market order in practice.
+        //
+        // Tightened further 2026-10-16, per the user ("any filled trade
+        // should have a trigger price +/-1 value. same as setting in (+)
+        // button so the trigger occures asap") - dropped the extra "+2
+        // points" safety padding this used to add on top of the broker's
+        // own minimum, matching the exact same tightening already applied
+        // to copy trades' own pending-order fallback in
+        // [_openCopyPosition] (which itself had to add BACK the broker's
+        // real minimum after a first attempt using a flat one price unit
+        // broke placement outright with retcode=10015 "Invalid price" -
+        // the floor below is a hard broker rule, not a buffer this app
+        // can shrink past).
+        final minDistance = point <= 0
+            ? entry * 0.0005
+            : stopsLevelPoints > 0
+            ? stopsLevelPoints * point
+            : point;
         final buffer = minDistance;
         final triggerPrice = _roundToDigits(
           direction == TradeDirection.long ? ask + buffer : bid - buffer,
@@ -3798,7 +3820,15 @@ class EngineService {
       logger.log('$mt5Symbol ($category): could not fetch contract size for history percent: $e', level: 'WARNING');
     }
     final ratchetThreshold = slRatchet.highestThreshold(ticket);
-    final sllAtTermination = ratchetThreshold != null ? '+$ratchetThreshold%' : '-\$5';
+    // Same copy-aware baseline fix as the reconciliation loop's own
+    // matching line (2026-10-16, per the user) - defensive here, since
+    // [_findAppPosition] now always prefers the original over a copy, so
+    // this path shouldn't normally ever see a copy's own ticket.
+    final sllAtTermination = ratchetThreshold != null
+        ? '+$ratchetThreshold%'
+        : copyPositions.isCopy(ticket)
+        ? '-\$1'
+        : '-\$5';
     // Same Equiti-30%-Stop-Out-Level estimate as the Dashboard's own live
     // Liquidation column (see [AutoTradeRow.liquidationPrice]'s doc
     // comment for the exact formula) - computed here from
