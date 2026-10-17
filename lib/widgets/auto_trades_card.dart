@@ -20,6 +20,7 @@ class AutoTradesCard extends StatefulWidget {
     required this.onTerminate,
     required this.onChangeVolume,
     required this.onAddCopy,
+    required this.onIgnite,
     required this.historyPnlSince,
     required this.pnlSinceTimestamp,
     required this.onResetPnlSince,
@@ -67,6 +68,11 @@ class AutoTradesCard extends StatefulWidget {
   /// direction/TP/volume as what's already running, tighter -$1 SL. Only
   /// enabled in the UI while the row's live P&L is positive.
   final void Function(String) onAddCopy;
+
+  /// tvSymbol — thunder icon: ignite this waiting pair (2026-10-17, per the
+  /// user). Only ever called for a non-running row - the icon is disabled
+  /// in the UI for a running row.
+  final void Function(String) onIgnite;
 
   /// Realized (history-based, NOT live) P&L summed since [pnlSinceTimestamp]
   /// (2026-09-30, per the user). Null timestamp means "since the
@@ -176,8 +182,12 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               const Text(
-                'Tightening-only stop-loss, keyed off each trade\'s own live '
-                'P&L% - never loosens once a rung is locked.',
+                'Tightening-only protection, keyed off each trade\'s own '
+                'live P&L% - never loosens once a rung is locked. The '
+                'real MT5 SL/TP stay fixed at the 60/40 model\'s levels '
+                'the whole time (2026-10-17 redesign) - this closes the '
+                'position directly once P&L crosses the rung, it never '
+                'modifies the broker order.',
               ),
               const SizedBox(height: 12),
               Table(
@@ -191,7 +201,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                       ),
                       Padding(
                         padding: EdgeInsets.symmetric(vertical: 4),
-                        child: Text('SL locks to', style: TextStyle(fontWeight: FontWeight.bold)),
+                        child: Text('Closes at', style: TextStyle(fontWeight: FontWeight.bold)),
                       ),
                     ],
                   ),
@@ -341,18 +351,24 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
 
   /// [epochSeconds] is a TradingView bar timestamp (UTC seconds) — same
   /// clock as every other TV timestamp already shown in this app
-  /// (see [BotHistoryEntry]'s open/close signal times).
+  /// (see [BotHistoryEntry]'s open/close signal times). Shown in UTC
+  /// directly, NOT converted to local time - 2026-10-17, per the user:
+  /// "i want app readings 100% same as my eyes" - TradingView itself
+  /// displays in UTC, so converting this to local time read as a timing
+  /// error when the underlying bar time was correct the whole time.
   static String _fmtTvTime(int? epochSeconds) {
     if (epochSeconds == null) return '';
-    final l = DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000, isUtc: true).toLocal();
+    final l = DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000, isUtc: true);
     String two(int n) => n.toString().padLeft(2, '0');
     return '${two(l.month)}-${two(l.day)} ${two(l.hour)}:${two(l.minute)}';
   }
 
-  /// Same format as [_fmtTvTime] but for an already-resolved [DateTime]
-  /// (Close B's ETA) rather than a raw TV bar timestamp.
+  /// Same format/UTC reasoning as [_fmtTvTime], but for an already-resolved
+  /// [DateTime] (Close B's ETA) rather than a raw TV bar timestamp - this
+  /// ETA is itself computed FROM a TV bar time (barTime + 2 candles), so it
+  /// stays in the same clock as the signal it's relative to.
   static String _fmtTvTimeExact(DateTime dt) {
-    final l = dt.toLocal();
+    final l = dt.toUtc();
     String two(int n) => n.toString().padLeft(2, '0');
     return '${two(l.month)}-${two(l.day)} ${two(l.hour)}:${two(l.minute)}';
   }
@@ -587,6 +603,11 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                     const DataColumn(label: Text('Check')),
                     const DataColumn(label: Text('Auto')),
                     const DataColumn(label: Text('Last')),
+                    // Thunder/ignite icon (2026-10-17, per the user: "add a
+                    // thunder icon per each pair .. where user can ignite
+                    // any waiting pair") - see [AutoTradeRow.isIgnited]'s
+                    // own doc comment.
+                    const DataColumn(label: Text('Ignite')),
                     const DataColumn(label: Text('')),
                   ],
                   rows: [
@@ -1070,6 +1091,31 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                             Switch(
                               value: row.isLastTagged,
                               onChanged: (on) => widget.onToggleLast(row.tvSymbol, on),
+                            ),
+                          ),
+                          // Thunder/ignite icon (2026-10-17, per the user):
+                          // enabled only for a waiting pair (no running
+                          // position), per the user's own follow-up: "ignite
+                          // icon is active only for waiting pairs. disabled
+                          // for running pairs." Lit amber once armed so the
+                          // user can see which pairs are currently bypassing
+                          // margin level for their next signal.
+                          DataCell(
+                            IconButton(
+                              icon: Icon(row.isIgnited ? Icons.bolt : Icons.bolt_outlined),
+                              color: row.status == AutoTradeStatus.running
+                                  ? scheme.onSurfaceVariant.withValues(alpha: 0.3)
+                                  : row.isIgnited
+                                  ? Colors.amber
+                                  : scheme.onSurfaceVariant,
+                              tooltip: row.status == AutoTradeStatus.running
+                                  ? 'Only available for a waiting pair'
+                                  : row.isIgnited
+                                  ? 'Ignited - will open regardless of margin level once triggered'
+                                  : 'Ignite - bypass margin level for this pair\'s next signal',
+                              onPressed: row.status == AutoTradeStatus.running
+                                  ? null
+                                  : () => widget.onIgnite(row.tvSymbol),
                             ),
                           ),
                           DataCell(

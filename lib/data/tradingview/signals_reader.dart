@@ -678,15 +678,41 @@ Future<Worm10Check> readWorm10Signals(
       var supertrendSignals = [];
       var latestBarTime = 0;
       var worm10Rows = rowsOf(worm10Src);
+      var sortedRows = [];
       for (var r = 0; r < worm10Rows.length; r++) {
         var row = worm10Rows[r];
         var t = row[0];
         if (typeof t !== 'number') continue;
+        sortedRows.push(row);
+      }
+      sortedRows.sort(function (a, b) { return a[0] - b[0]; });
+      // 2026-10-17 - "New Higher High"/"New Lower Low" print on EVERY bar
+      // that's a fresh local extreme within an ongoing swing, not just
+      // the one bar the real zigzag pivot/label finally settles on - a
+      // sustained decline can print several separate HH/LL occurrences
+      // before the swing reverses. An earlier attempt to de-duplicate
+      // these HERE (by raw tag, before classification) was wrong: two LL
+      // prints a few hours apart can resolve to DIFFERENT, both-
+      // meaningful event kinds (buyOpen1 vs. the weaker sellClose1)
+      // depending on Supertrend's state at each one - collapsing by raw
+      // tag could silently discard a real close signal in favor of a
+      // later, unrelated open signal (confirmed live: a real SHORT's true
+      // close signal at Oct 13 00:00 got discarded this way). Every raw
+      // occurrence is emitted here, unfiltered - [deriveWorm10Events]
+      // does the de-duplication AFTER classification, where it can tell
+      // the two apart.
+      var wasZBuy = false, wasZSell = false;
+      for (var r = 0; r < sortedRows.length; r++) {
+        var row = sortedRows[r];
+        var t = row[0];
         if (t > latestBarTime) latestBarTime = t;
         if (isNum(row[hhCol])) zigzagSignals.push({ time: t, tag: 'HH' });
         if (isNum(row[llCol])) zigzagSignals.push({ time: t, tag: 'LL' });
-        if (isNum(row[zBuyCol])) zigzagSignals.push({ time: t, tag: 'BUY' });
-        if (isNum(row[zSellCol])) zigzagSignals.push({ time: t, tag: 'SELL' });
+        var isZBuy = isNum(row[zBuyCol]);
+        var isZSell = isNum(row[zSellCol]);
+        if (isZBuy && !wasZBuy) zigzagSignals.push({ time: t, tag: 'BUY' });
+        if (isZSell && !wasZSell) zigzagSignals.push({ time: t, tag: 'SELL' });
+        wasZBuy = isZBuy; wasZSell = isZSell;
         if (isNum(row[stBuyCol])) supertrendSignals.push({ time: t, tag: 'BUY' });
         if (isNum(row[stSellCol])) supertrendSignals.push({ time: t, tag: 'SELL' });
       }

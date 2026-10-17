@@ -86,6 +86,12 @@ class HistoryScreen extends ConsumerWidget {
     // distinct label so it's clear in History why it ended, not confused
     // with its own SL/TP hitting on its own.
     'parent_closed' => 'Closed with parent',
+    // 2026-10-17 REDESIGN, per the user: the flat -$5 floor and the
+    // profit-lock ratchet no longer modify the real MT5 SL - they close
+    // the position directly once live P&L crosses the relevant threshold
+    // (see EngineService._applySlRatchet's own doc comment on this date).
+    'sll_baseline' => 'SLL: -\$5 baseline',
+    'sll_ratchet' => 'SLL: ratchet lock',
     _ => 'Unknown',
   };
 
@@ -97,6 +103,7 @@ class HistoryScreen extends ConsumerWidget {
     'closed_by_user' => Colors.orange,
     'closed_by_app' => Colors.purple,
     'parent_closed' => Colors.indigo,
+    'sll_baseline' || 'sll_ratchet' => Colors.red,
     _ => scheme.outline,
   };
 
@@ -119,10 +126,17 @@ class HistoryScreen extends ConsumerWidget {
   }
 
   /// [epochSeconds] is a TradingView bar timestamp (UTC seconds), same as
-  /// every other TV timestamp shown in this app.
+  /// every other TV timestamp shown in this app. Shown in UTC directly -
+  /// NOT routed through [_fmtTime] (which converts to local for real MT5
+  /// times) - 2026-10-17, per the user: "i want app readings 100% same as
+  /// my eyes" - TradingView itself displays in UTC, so converting this to
+  /// local time read as a timing error when the underlying bar time was
+  /// correct the whole time.
   static String _fmtBarTime(int? epochSeconds) {
     if (epochSeconds == null) return '—';
-    return _fmtTime(DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000, isUtc: true));
+    final l = DateTime.fromMillisecondsSinceEpoch(epochSeconds * 1000, isUtc: true);
+    String two(int n) => n.toString().padLeft(2, '0');
+    return '${l.year}-${two(l.month)}-${two(l.day)} ${two(l.hour)}:${two(l.minute)}:${two(l.second)}';
   }
 
   static String _duration(DateTime start, DateTime? end) {
@@ -264,7 +278,15 @@ class _ReasonSummaryBar extends StatelessWidget {
     }
     // Stable, meaningful order rather than whatever order reasons first
     // appeared in.
-    const order = ['opposite_signal', 'take_profit', 'stop_loss', 'closed_by_user', 'closed_by_app'];
+    const order = [
+      'opposite_signal',
+      'take_profit',
+      'stop_loss',
+      'sll_baseline',
+      'sll_ratchet',
+      'closed_by_user',
+      'closed_by_app',
+    ];
     final reasons = [
       ...order.where(counts.containsKey),
       ...counts.keys.where((r) => !order.contains(r)),
@@ -435,140 +457,128 @@ class _HistoryCard extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 10),
+            // Restructured 2026-10-17, per the user's own exact spec: "open
+            // trading view : close trading view: , open MT5, close MT5 /
+            // open trading view reflect the open signal and it timestamp,
+            // along with signal itself / close trading view reflect the
+            // close signal and it timestamp, along with signal itself /
+            // open mt5: open trade in mt5 and time stamp and direction and
+            // volum and leverage, including entry price and all other
+            // detials / close mt5: close trade in mt5 and time stamp and
+            // direction and P&L in value and %, including closed price and
+            // all other detials." Replaces the former "above the line"
+            // (MT5 execution) / "above a Divider, below the line"
+            // (TradingView signal) split - that layout mixed reasons and
+            // left open which side was the actual decision (see this
+            // conversation's own back-and-forth: "which one was the
+            // decision - above live or below line?"). The four sections
+            // below ARE now that answer, spelled out instead of implied by
+            // position on the card. Close A/Close B collapse into one
+            // "Close" line - per the user's own backtester spec, a
+            // historical close is always already confirmed, so there's
+            // nothing left to show as separately "pending."
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  // 2026-10-06, per the user: "keep same naming as auto
-                  // table .. open price, close price .. so title naming
-                  // should match with auto table" - was "Entry"/"Exit".
-                  child: _kv('Open price', entry.entryPrice.toString()),
+                  child: _section('Open TradingView', [
+                    if (entry.openSignalType != null)
+                      _kv(
+                        worm10DisplayLabelOrRaw(entry.openSignalType) ?? '—',
+                        HistoryScreen._fmtBarTime(entry.openSignalAt),
+                      )
+                    else
+                      _kv('Signal', '—'),
+                    if (entry.updateSignalType != null) ...[
+                      const SizedBox(height: 6),
+                      _kv(
+                        'Update: ${worm10DisplayLabelOrRaw(entry.updateSignalType)}',
+                        HistoryScreen._fmtBarTime(entry.updateSignalAt),
+                      ),
+                    ],
+                  ]),
                 ),
+                const SizedBox(width: 12),
                 Expanded(
-                  child: _kv('Close price', entry.exitPrice?.toString() ?? '—'),
-                ),
-                Expanded(
-                  child: _kv(
-                    'P&L',
-                    // 2026-10-14, per the user: "include the P&L value in
-                    // history card once bot terminated, +11.02 (+33.45%)" -
-                    // same value+percent shape as the Auto-Managed Trades
-                    // table's own live P&L column, just snapshotted at
-                    // close instead of recomputed live.
-                    profit == null
-                        ? '—'
-                        : '${profit >= 0 ? '+' : ''}${profit.toStringAsFixed(2)}'
-                              '${entry.realizedProfitPercent != null ? ' (${entry.realizedProfitPercent! >= 0 ? '+' : ''}${entry.realizedProfitPercent!.toStringAsFixed(2)}%)' : ''}',
-                    valueColor: cardTint ?? profitColor,
-                  ),
+                  child: _section('Close TradingView', [
+                    if (entry.closeSignalType != null)
+                      _kv(
+                        worm10DisplayLabelOrRaw(entry.closeSignalType) ?? '—',
+                        HistoryScreen._fmtBarTime(entry.closeSignalAt),
+                      )
+                    else
+                      _kv('Signal', '— (not signal-driven)'),
+                  ]),
                 ),
               ],
             ),
-            // 2026-10-06, per the user: "add volume to history ... also add
-            // tp/sl trigger entry price too ... everything should be
-            // recorded" - the lot size and SL/TP levels this trade was
-            // actually opened with. Null (entries written before these
-            // fields existed) shows as "—", never backfilled.
-            const SizedBox(height: 8),
+            const SizedBox(height: 14),
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Expanded(
-                  child: _kv('Volume', entry.volume?.toString() ?? '—'),
+                  child: _section('Open MT5', [
+                    _kv('Opened', HistoryScreen._fmtTime(entry.startTime)),
+                    const SizedBox(height: 6),
+                    _kv('Direction', directionLabel, valueColor: directionColor),
+                    const SizedBox(height: 6),
+                    _kv('Entry price', entry.entryPrice.toString()),
+                    const SizedBox(height: 6),
+                    _kv('Volume', entry.volume?.toString() ?? '—'),
+                    const SizedBox(height: 6),
+                    _kv('Leverage', '1:2000'),
+                    const SizedBox(height: 6),
+                    _kv('SL / TP', '${entry.stopLoss?.toString() ?? '—'} / ${entry.takeProfit?.toString() ?? '—'}'),
+                    if (entry.investmentValue != null) ...[
+                      const SizedBox(height: 6),
+                      _kv('Investment', '\$${entry.investmentValue!.toStringAsFixed(2)}'),
+                    ],
+                  ]),
                 ),
+                const SizedBox(width: 12),
                 Expanded(
-                  child: _kv('SL', entry.stopLoss?.toString() ?? '—'),
-                ),
-                Expanded(
-                  child: _kv('TP', entry.takeProfit?.toString() ?? '—'),
+                  child: _section('Close MT5', [
+                    _kv('Closed', HistoryScreen._fmtTime(entry.endTime)),
+                    const SizedBox(height: 6),
+                    _kv('Direction', directionLabel, valueColor: directionColor),
+                    const SizedBox(height: 6),
+                    _kv(
+                      'P&L',
+                      // 2026-10-14, per the user: "include the P&L value in
+                      // history card once bot terminated, +11.02
+                      // (+33.45%)" - same value+percent shape as the
+                      // Auto-Managed Trades table's own live P&L column.
+                      profit == null
+                          ? '—'
+                          : '${profit >= 0 ? '+' : ''}${profit.toStringAsFixed(2)}'
+                                '${entry.realizedProfitPercent != null ? ' (${entry.realizedProfitPercent! >= 0 ? '+' : ''}${entry.realizedProfitPercent!.toStringAsFixed(2)}%)' : ''}',
+                      valueColor: cardTint ?? profitColor,
+                    ),
+                    const SizedBox(height: 6),
+                    _kv('Close price', entry.exitPrice?.toString() ?? '—'),
+                    const SizedBox(height: 6),
+                    _kv('Duration', HistoryScreen._duration(entry.startTime, entry.endTime)),
+                    // SLL/Extra margin/Liquidation (2026-10-14/15, per the
+                    // user) - all closing-side details, same as the P&L
+                    // itself: only known/meaningful once the trade ends.
+                    if (entry.sllAtTermination != null) ...[
+                      const SizedBox(height: 6),
+                      _kv('SLL', entry.sllAtTermination!),
+                    ],
+                    if (entry.extraMargin != null) ...[
+                      const SizedBox(height: 6),
+                      _kv('Extra margin', '\$${entry.extraMargin!.toStringAsFixed(2)}'),
+                    ],
+                    if (entry.liquidationPrice != null) ...[
+                      const SizedBox(height: 6),
+                      _kv('Liquidation', HistoryScreen._fmtPrice(entry.liquidationPrice)),
+                    ],
+                  ]),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(child: _kv('Opened', HistoryScreen._fmtTime(entry.startTime))),
-                Expanded(child: _kv('Closed', HistoryScreen._fmtTime(entry.endTime))),
-                Expanded(child: _kv('Duration', HistoryScreen._duration(entry.startTime, entry.endTime))),
-              ],
-            ),
-            // 2026-10-06, per the user: "i want history to include open
-            // signal, update signal, close A signal, close b signal ...
-            // and with timestamp (trading view timestamp)" / "everything
-            // should be traced" - same Open/Update/Close A/Close B naming
-            // as the Auto-Managed Trades table's own columns, every one
-            // carrying its TradingView bar timestamp via [_fmtBarTime]
-            // (same UTC-bar-time-to-local conversion used everywhere else
-            // in the app). "Opened on" (no timestamp) is gone - was
-            // missing the one thing this whole section exists to show.
-            if (entry.openSignalType != null) ...[
-              const Divider(height: 20),
-              Text(
-                'Open: ${worm10DisplayLabelOrRaw(entry.openSignalType)} @ ${HistoryScreen._fmtBarTime(entry.openSignalAt)}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-            if (entry.updateSignalType != null) ...[
-              const SizedBox(height: 2),
-              Text(
-                'Update: ${worm10DisplayLabelOrRaw(entry.updateSignalType)} @ ${HistoryScreen._fmtBarTime(entry.updateSignalAt)}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-            // 2026-09-30, per the user: "Close A" is the candle that
-            // carried the disagreeing signal (unchanged data - still
-            // [entry.closeSignalType]/[closeSignalAt], just relabeled to
-            // match the new "survive one extra candle" confirmation rule's
-            // own terminology); "Close B" is the candle right after it
-            // coming up empty, which is exactly what actually let the
-            // close execute - [entry.endTime] IS that confirmation moment,
-            // no new field needed. Only ever populated together, since
-            // both only apply to a genuinely signal-driven close
-            // (stopReason 'opposite_signal').
-            if (entry.closeSignalType != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                'Close A: ${worm10DisplayLabelOrRaw(entry.closeSignalType)} @ ${HistoryScreen._fmtBarTime(entry.closeSignalAt)}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-              const SizedBox(height: 2),
-              Text(
-                'Close B: confirmed empty @ ${HistoryScreen._fmtTime(entry.endTime)}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-            // 2026-10-14, per the user: "in history card, please include
-            // the sll setup at the trade terminal, for example ... xrp
-            // (opposite signal) sll: -5%/-5$, btc (sl closed) sll: +10%" -
-            // the symbol and close reason are already shown elsewhere on
-            // this same card (the title and the reason chip), so just the
-            // SLL value itself here. Either the ratchet rung that had
-            // locked ("+10%") or the flat baseline ("-$5") if it never
-            // crossed the first rung.
-            if (entry.sllAtTermination != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                'SLL: ${entry.sllAtTermination}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-            // Leverage/Investment/Extra Margin/Liquidation Price
-            // (2026-10-15, per the user: "all details required in
-            // history"). Leverage is the same flat broker constant the
-            // Dashboard shows, never computed. [extraMargin]/
-            // [liquidationPrice] are null for every entry closed before
-            // these fields existed and stay null forever for those - see
-            // [BotHistoryEntry.extraMargin]'s own doc comment for why that
-            // can't be backfilled.
-            if (entry.investmentValue != null) ...[
-              const SizedBox(height: 4),
-              Text(
-                'Leverage: 1:2000 · Investment: \$${entry.investmentValue!.toStringAsFixed(2)}'
-                '${entry.extraMargin != null ? ' · Extra margin: \$${entry.extraMargin!.toStringAsFixed(2)}' : ''}'
-                '${entry.liquidationPrice != null ? ' · Liquidation: ${HistoryScreen._fmtPrice(entry.liquidationPrice)}' : ''}',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
             if (entry.detail != null) ...[
-              const SizedBox(height: 6),
+              const SizedBox(height: 10),
               Text(
                 entry.detail!,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
@@ -577,7 +587,7 @@ class _HistoryCard extends StatelessWidget {
                 ),
               ),
             ],
-            const SizedBox(height: 4),
+            const SizedBox(height: 10),
             // 2026-09-30, per the user: "trade id should be a selectable
             // text" - the ticket number itself is SelectableText so it can
             // be copied; the "Ticket " label stays plain Text.
@@ -597,6 +607,25 @@ class _HistoryCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+
+  /// One of the card's four labeled blocks (Open/Close TradingView, Open/
+  /// Close MT5) - a bold section title over its own small stack of [_kv]
+  /// rows, visually separated so which side of the trade a given line
+  /// belongs to is never ambiguous (2026-10-17, per the user's own 4-part
+  /// card spec).
+  Widget _section(String title, List<Widget> rows) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          title,
+          style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: scheme.primary),
+        ),
+        const SizedBox(height: 6),
+        ...rows,
+      ],
     );
   }
 

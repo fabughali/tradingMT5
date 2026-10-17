@@ -1980,6 +1980,73 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-17** — Worm10 backtester/decision-engine correctness pass,
+  driven by repeated real-chart cross-checks against BTC/ETH/LTC/XRP:
+  (1) **Spec correction**: removed the "weak" `buyClose1`/`sellClose1`
+  event kinds (HH/LL + RSI, no Supertrend check) — these were an
+  unrequested addition that fired spurious closes whenever Supertrend
+  hadn't actually flipped; per the user's exact spec, an HH/LL signal is
+  either a fully-qualified reference (tag + Supertrend + RSI, all three)
+  or it's not a signal at all, never a weaker close-only trigger.
+  `Worm10EventKind` is now 4-way (`buyOpen1`/`sellOpen1`/`zigzagBuy`/
+  `zigzagSell`), not 6-way. (2) **SL/TP removal**: the backtester never
+  simulated SL/TP per the original spec — that was this app's own
+  unrequested addition and the root cause of "doesn't match the chart"
+  complaints; a simulated trade now closes exclusively on the next
+  opposing/closing worm10 signal. (3) **Coalescing fix, the real
+  mechanism**: the raw HH/LL/BUY/SELL plot can hold a qualifying value
+  across many consecutive bars for one real swing, so naive "every
+  qualifying bar = an event" reading produces spurious duplicate
+  trades — confirmed and fixed twice: first by collapsing consecutive
+  same-kind events, which over-merged a 38-hours-later recurrence of the
+  same kind into the wrong swing (confirmed live, LTCUSDT: a real close
+  at 10-13 00:00 was discarded in favor of an unrelated signal at 10-15
+  02:00). The actual rule, confirmed against dense per-bar RSI/Supertrend
+  data: two same-kind occurrences belong to the same swing only if the
+  qualifying condition (RSI zone + Supertrend direction) holds on EVERY
+  bar strictly between them, not merely "nothing else happened in
+  between" — `deriveWorm10Events` (`worm10_decision.dart`) now checks
+  this directly via `sameSwing`. (4) **Lookback window fix**: a trade
+  already running when the requested backtest window starts (opened by a
+  signal before the window's cutoff) now still gets its real pre-window
+  open time once it closes inside the window — `_runBacktest` simulates
+  over the full available history unfiltered and only filters the
+  *output rows* by the requested window afterward, instead of filtering
+  input events by cutoff before simulating (which silently discarded the
+  true open and corrupted the next trade's entry price). (5)
+  **Self-healing against stale indicator data**: confirmed live — running
+  a backtest for one symbol immediately after another could report the
+  CHART as switched (`setChartView` verified) while the worm10/spy9
+  custom scripts' own computed plot data was still the previous symbol's
+  (XRPUSDT backtest returning LTCUSDT-range ~$60-70 prices). `_runBacktest`
+  now re-reads signals with a 2s settle delay, requiring two consecutive
+  reads to agree on the latest signal before trusting the data, and
+  throws rather than silently returning a wrong result if it never
+  stabilizes within 6 attempts.
+
+- **2026-10-17** — Dashboard RAM indicator: a new status light next to
+  Engine/MT5/TradingView showing free system RAM and usage percentage
+  (`EngineStatus.ramAvailableMb`/`ramTotalMb`/`ramUsedPercent`, read from
+  `/proc/meminfo`'s `MemAvailable`/`MemTotal` every status write) — added
+  after a real incident where TradingView froze mid-sweep and crashed
+  while the system was down to ~955MB free with heavy swap use, which
+  had been misdiagnosed as a logic bug on more than one occasion. Light
+  goes red below 1500MB free (`ramLowThresholdMb`).
+
+- **2026-10-17** — Ignite flag consume-completeness fix: the thunder icon
+  (`IgnitedPairStore`) is meant to be one-shot — clear itself the moment
+  its pair's next real signal actually opens. Confirmed live:
+  BTCUSDT/ETHUSDT stayed ignited (icon lit) long after their triggering
+  trades had filled, run, and closed. Root cause — only 4 of the engine's
+  9 `_openPosition` call sites ever checked `ignitedPairs.isIgnited`/
+  called `.consume()`; the other 5 (retroactive-audit reopen and
+  flip-after-close, in both `_checkOneSymbol` and
+  `_checkOneSymbolSupertrend`/`_checkOneSymbolWorm10`) opened positions
+  with no ignite awareness at all, so if a pair's real open happened to
+  go through one of those paths, the flag could never be bypassed
+  *or* cleared — it just stayed lit forever. All 9 sites now
+  consistently check and consume the flag.
+
 - **2026-10-15** — Multiplier manual copy: fixed a real "+ click did
   nothing" report down to its actual root cause, which turned out to be
   TWO independent failure modes, both confirmed live at ~92-93% account
@@ -2673,6 +2740,13 @@ this section captures the larger inflection points.
   real outside the GitHub Actions build environment (see §19).
 - **No multi-account / multi-broker support** — one `config.json`, one MT5
   account, one data directory, by design.
+- **GUI abnormally burns 66-71% CPU continuously** — confirmed live,
+  reproducible, 2026-10-17, but NOT yet root-caused or fixed. Found while
+  investigating a separate TradingView freeze/crash (ultimately
+  root-caused to system RAM exhaustion, §20's 2026-10-17 RAM-indicator
+  entry) - the GUI's own high, sustained CPU usage was a contributing
+  factor to that RAM/resource pressure but is a distinct, still-open bug
+  in its own right.
 
 ## 22. Testing and verification approach
 

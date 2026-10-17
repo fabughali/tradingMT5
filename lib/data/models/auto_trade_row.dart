@@ -24,6 +24,7 @@ class AutoTradeRow {
     required this.isAutoManaged,
     required this.isPaused,
     required this.isLastTagged,
+    this.isIgnited = false,
     this.direction,
     this.price,
     this.currentPrice,
@@ -150,6 +151,13 @@ class AutoTradeRow {
   /// closes (any path), the base retires from auto-management instead of
   /// being picked back up.
   final bool isLastTagged;
+
+  /// Thunder-icon "armed" state (2026-10-17, per the user: "add a thunder
+  /// icon per each pair .. where user can ignite any waiting pair") - true
+  /// while this pair's next real fresh-open signal will bypass the risk
+  /// gate's margin-level checks. Only meaningful for a non-running row -
+  /// the icon itself is disabled once [status] is [AutoTradeStatus.running].
+  final bool isIgnited;
 
   /// The broker/MT5's own exact rejection text for the last failed open
   /// attempt (2026-09-29, per the user: "waiting pairs should reflect

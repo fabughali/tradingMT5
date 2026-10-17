@@ -20,9 +20,13 @@ import '../identity/sl_ratchet_store.dart';
 import '../identity/supertrend_pending_store.dart';
 import '../identity/symbol_resolve_store.dart';
 import '../identity/add_copy_request_store.dart';
+import '../identity/backtest_request_store.dart';
+import '../identity/backtest_result_store.dart';
+import '../models/backtest_row.dart';
 import '../identity/add_copy_result_store.dart';
 import '../identity/manual_copy_pending_order_store.dart';
 import '../identity/copy_position_store.dart';
+import '../identity/ignited_pair_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
 import '../identity/unpause_check_request_store.dart';
@@ -127,6 +131,9 @@ class EngineService {
     addCopyResults = AddCopyResultStore(storage);
     manualCopyPendingOrders = ManualCopyPendingOrderStore(storage);
     copyPositions = CopyPositionStore(storage);
+    backtestRequests = BacktestRequestStore(storage);
+    backtestResults = BacktestResultStore(storage);
+    ignitedPairs = IgnitedPairStore(storage);
     waitingReasons = WaitingReasonStore(storage);
     lastCheckedStore = LastCheckedStore(storage);
     pendingSignals = PendingSignalStore(storage);
@@ -219,6 +226,9 @@ class EngineService {
   late final AddCopyResultStore addCopyResults;
   late final ManualCopyPendingOrderStore manualCopyPendingOrders;
   late final CopyPositionStore copyPositions;
+  late final IgnitedPairStore ignitedPairs;
+  late final BacktestRequestStore backtestRequests;
+  late final BacktestResultStore backtestResults;
   late final WaitingReasonStore waitingReasons;
   late final LastCheckedStore lastCheckedStore;
   late final PendingSignalStore pendingSignals;
@@ -495,81 +505,197 @@ class EngineService {
 
       final watched = watchedBySymbol[mt5Symbol.toUpperCase()];
       final contractSize = (watched?['contract_size'] as num?)?.toDouble() ?? 1.0;
-      final digits = (watched?['digits'] as num?)?.toInt() ?? 2;
       final notional = volume * contractSize * priceOpen;
       if (notional == 0) continue;
       final pnlPercent = profit / notional * 100;
 
-      // 2026-10-13, per the user: "apply above also on currently running
-      // and waiting pairs" - retroactively tightens any already-open
-      // position that's never been ratchet-protected (so it's still
-      // sitting at its original open-time SL, typically MUCH wider than
-      // the new baseline) down to the same flat -$5 baseline
-      // baseline [_openPosition] now sets at ignition. Never fires for a
-      // position the ratchet has already locked (that SL is already
-      // tighter by construction - the ratchet only ever engages once P&L
-      // is positive) and never loosens an SL that's already at or past
-      // the baseline.
-      final currentSl = (position['stop_loss'] as num?)?.toDouble();
-      if (slRatchet.highestThreshold(ticket) == null && currentSl != null && currentSl != 0) {
-        final tradeDirection = direction == 'buy' ? TradeDirection.long : TradeDirection.short;
-        final baselineSl = _baselineStopLoss(
-          entry: priceOpen,
-          direction: tradeDirection,
-          volume: volume,
-          contractSize: contractSize,
-          digits: digits,
-        );
-        final tighterThanCurrent = tradeDirection == TradeDirection.long
-            ? baselineSl > currentSl
-            : baselineSl < currentSl;
-        if (tighterThanCurrent) {
+      // 2026-10-17 REDESIGN, per the user: "tp/sl should be fixed
+      // according to 40/60 rules... app should take an action according
+      // to P&L.. but not modifying tp/sl" / "sll rules applied and
+      // checked every 30 sec not by modifying tp/sl" - replaces BOTH the
+      // former baseline-SL-modification block and the ratchet's own SL
+      // modification below. The real MT5 SL/TP are now the 60/40 model's
+      // levels, set once at open and never touched again by this sweep -
+      // instead, this directly CLOSES the position once live P&L crosses
+      // whatever the SLL ladder currently says: flat -$5 before any rung
+      // has locked, or the locked rung's own percent afterward. Accepted
+      // trade-off, confirmed with the user: this protection now only
+      // applies while the engine is actively running - the original wide
+      // 60/40 SL/TP still sit on MT5 as the one remaining broker-side
+      // backstop if the engine itself is down.
+      final existingThreshold = slRatchet.highestThreshold(ticket);
+      if (existingThreshold == null) {
+        if (profit <= -5) {
           try {
-            await mt5.modifyStopLossTakeProfit(symbol: mt5Symbol, positionTicket: ticket, sl: baselineSl);
+            await _closePosition(
+              AutoCategory.oneHour,
+              tvSymbol,
+              mt5Symbol,
+              position,
+              stopReason: 'sll_baseline',
+              detail: 'SLL: flat -\$5 baseline reached (live P&L \$${profit.toStringAsFixed(2)}).',
+            );
             logger.log(
-              'BASELINE SL: $tvSymbol ($mt5Symbol) retroactively tightened '
-              'to $baselineSl (was $currentSl).',
+              'SLL: $tvSymbol ($mt5Symbol) closed at the -\$5 baseline '
+              '(P&L \$${profit.toStringAsFixed(2)}).',
             );
           } catch (e) {
             logger.log(
-              'BASELINE SL: failed to retroactively tighten $tvSymbol ($mt5Symbol): $e',
+              'SLL: failed to close $tvSymbol ($mt5Symbol) at the -\$5 baseline: $e',
               level: 'ERROR',
             );
           }
+          continue;
+        }
+      } else {
+        final lockPercent = slRatioForThreshold(existingThreshold);
+        if (pnlPercent <= lockPercent) {
+          try {
+            await _closePosition(
+              AutoCategory.oneHour,
+              tvSymbol,
+              mt5Symbol,
+              position,
+              stopReason: 'sll_ratchet',
+              detail: 'SLL: locked +$existingThreshold% rung reached '
+                  '(live P&L ${pnlPercent.toStringAsFixed(2)}%).',
+            );
+            logger.log(
+              'SLL: $tvSymbol ($mt5Symbol) closed at its locked +$existingThreshold% '
+              'rung (P&L ${pnlPercent.toStringAsFixed(2)}%).',
+            );
+          } catch (e) {
+            logger.log(
+              'SLL: failed to close $tvSymbol ($mt5Symbol) at its locked rung: $e',
+              level: 'ERROR',
+            );
+          }
+          continue;
         }
       }
 
       final newThreshold = highestSlRatchetThresholdCrossed(pnlPercent);
       if (newThreshold == null) continue;
-      final existingThreshold = slRatchet.highestThreshold(ticket);
       if (existingThreshold != null && newThreshold <= existingThreshold) continue;
 
-      final lockPercent = slRatioForThreshold(newThreshold);
-      final isBuy = direction == 'buy';
-      final rawSl = isBuy
-          ? priceOpen * (1 + lockPercent / 100)
-          : priceOpen * (1 - lockPercent / 100);
-      final newSl = _roundToDigits(rawSl, digits);
-
-      try {
-        await mt5.modifyStopLossTakeProfit(
-          symbol: mt5Symbol,
-          positionTicket: ticket,
-          sl: newSl,
-        );
-        slRatchet.recordLock(ticket, newThreshold);
-        logger.log(
-          'SL RATCHET: $tvSymbol ($mt5Symbol) crossed +$newThreshold% P&L - '
-          'locked SL to +${lockPercent.toStringAsFixed(0)}% (price $newSl).',
-        );
-      } catch (e) {
-        logger.log(
-          'SL RATCHET: failed to modify SL for $tvSymbol ($mt5Symbol) at '
-          '+$newThreshold%: $e',
-          level: 'ERROR',
-        );
-      }
+      slRatchet.recordLock(ticket, newThreshold);
+      logger.log(
+        'SLL: $tvSymbol ($mt5Symbol) crossed +$newThreshold% P&L - locking in '
+        '+${slRatioForThreshold(newThreshold).toStringAsFixed(0)}% (real TP/SL left untouched).',
+      );
     }
+  }
+
+  /// One-time retroactive SL correction for positions already open when
+  /// the 2026-10-17 SLL redesign shipped (2026-10-17, per the user:
+  /// "modify all running trades and waiting trades accordingly"). Every
+  /// position opened under the OLD architecture has its real SL sitting at
+  /// whatever the old baseline/ratchet logic last set it to, not the 60/40
+  /// model's own level - this restores it, ONCE, then never runs again
+  /// (gated by [CoreStorage.sllMigrationDoneFile]).
+  ///
+  /// The true original range was never persisted (only the final SL PRICE
+  /// was, and that's exactly what's wrong) - confirmed with the user this
+  /// can't be exactly reconstructed, so this re-derives an honest SL fresh
+  /// from [computeLiquidationLevels] using the position's own REAL entry
+  /// price against the CURRENT live zigzag range, rather than guessing at
+  /// history. Pending/waiting orders need no equivalent fix -
+  /// [_reconcileStaleRestingOrderIfAny] already recomputes and replaces a
+  /// stale resting order's SL/TP against the 60/40 model fresh on every
+  /// single cycle, so they self-correct with no migration needed. Copies
+  /// are skipped - their own -$1 baseline-at-open is a separate, unchanged
+  /// mechanism, never the 60/40 model.
+  Future<void> retroactiveFix6040SlOnce() async {
+    if (storage.fileExists(storage.sllMigrationDoneFile)) return;
+    try {
+      await _ensureCdpUp();
+      final cdp = _cdp!;
+      final symbols = _loadSymbolsFresh();
+      final tvByMt5Symbol = {
+        for (final m in symbols) m.mt5Symbol.toUpperCase(): m.tradingViewSymbol,
+      };
+      final positionsResult = await mt5.getOpenPositions();
+      final positions = ((positionsResult['positions'] as List?) ?? const [])
+          .cast<Map<String, dynamic>>();
+      // Only mark this migration done once EVERY eligible position was
+      // actually resolved (corrected, or already correct) - never on a
+      // partial pass. Found live: right after a fresh engine/TradingView
+      // restart, the chart can still be mid-warm-up for several minutes,
+      // so an early position in the loop can get skipped for "no live
+      // range" purely from bad timing - that must retry next cycle, not
+      // get silently treated as permanently done just because later
+      // positions in the same pass happened to succeed.
+      var anySkipped = false;
+      for (final position in positions) {
+        final ticket = _parseTicket(position['position_id']);
+        final mt5Symbol = position['symbol'] as String?;
+        if (ticket == null || mt5Symbol == null) continue;
+        final tvSymbol = tvByMt5Symbol[mt5Symbol.toUpperCase()];
+        if (tvSymbol == null) continue;
+        if (copyPositions.isCopy(ticket)) continue;
+        final direction = (position['action'] as String?) == 'sell' ? TradeDirection.short : TradeDirection.long;
+        final priceOpen = (position['price_open'] as num?)?.toDouble();
+        final currentSl = (position['stop_loss'] as num?)?.toDouble();
+        if (priceOpen == null) continue;
+
+        // 2026-10-17 bugfix: was missing the worm10Script scriptIdPart
+        // override (see [_readConfirmedRange]'s own doc comment) - without
+        // it, this defaulted to customScripts[0] (worm_9_26/MSB), which
+        // isn't even attached to the chart under the worm10 technique
+        // (only worm_10_26 + spy_9_26 are, per the free-account 2-
+        // indicator limit) - this read was searching for a script that
+        // was never on the chart, guaranteed to fail every single time
+        // regardless of history or TradingView readiness.
+        final range = await _readConfirmedRange(
+          cdp,
+          AutoCategory.oneHour,
+          tvSymbol,
+          immediate: true,
+          scriptIdPart: worm10Script.scriptIdPart,
+        );
+        if (range == null) {
+          logger.log(
+            'SLL MIGRATION: no live range for $tvSymbol ($mt5Symbol) yet - '
+            'will retry this pair next cycle.',
+            level: 'WARNING',
+          );
+          anySkipped = true;
+          continue;
+        }
+        try {
+          final levels = computeLiquidationLevels(
+            top: range.top,
+            bottom: range.bottom,
+            entry: priceOpen,
+            direction: direction,
+          );
+          final symbolInfoResult = await mt5.getMarketWatchSymbol(mt5Symbol);
+          final infoList = (symbolInfoResult['symbols'] as List?) ?? const [];
+          final digits = infoList.isNotEmpty
+              ? ((infoList.first as Map<String, dynamic>)['digits'] as num?)?.toInt() ?? 5
+              : 5;
+          final newSl = _roundToDigits(levels.stopLossPrice, digits);
+          if (currentSl == newSl) continue;
+          await mt5.modifyStopLossTakeProfit(symbol: mt5Symbol, positionTicket: ticket, sl: newSl);
+          logger.log(
+            'SLL MIGRATION: $tvSymbol ($mt5Symbol) ticket=$ticket SL restored to '
+            'the 60/40 model: $newSl (was $currentSl).',
+          );
+        } catch (e) {
+          logger.log('SLL MIGRATION: failed for $tvSymbol ($mt5Symbol) ticket=$ticket: $e', level: 'ERROR');
+          anySkipped = true;
+        }
+      }
+      if (anySkipped) {
+        logger.log('SLL MIGRATION: not all positions resolved this pass - will retry next cycle.', level: 'WARNING');
+        return;
+      }
+    } catch (e, st) {
+      logger.log('SLL MIGRATION: sweep failed, will retry next restart: $e\n$st', level: 'ERROR');
+      return;
+    }
+    storage.writeString(storage.sllMigrationDoneFile, DateTime.now().toUtc().toIso8601String());
+    logger.log('SLL MIGRATION: complete.');
   }
 
   /// Margin gate refresh cadence (2026-10-13, per the user). Same reasoning
@@ -1338,6 +1464,15 @@ class EngineService {
     // disabled, so it can never run again even by accident.
     await _processAllPendingTerminateRequests();
     await _processAllPendingAddCopyRequests();
+    // Only drained here, at the top of the cycle - NOT inside the long
+    // per-symbol sweeps the other requests are also drained from
+    // (2026-10-17) - a backtest can genuinely take a while (pulling
+    // multiple days/weeks of history), so it's deliberately NOT given the
+    // same "don't starve behind a sweep" responsiveness; it waits for a
+    // natural cycle boundary instead; the next full cycle after this one
+    // just picks up a bit later than normal, never any WORSE than that.
+    await _processPendingBacktestRequest();
+    await retroactiveFix6040SlOnce();
     // Periodic scan, not a one-shot queued request like the two calls
     // above - re-evaluates every running original's own P&L against its
     // $5 ladder once per full cycle pass (2026-10-15, per the user's
@@ -1417,6 +1552,16 @@ class EngineService {
         // noticed, the exact same problem terminate/unpause already solved
         // by re-checking before every symbol instead of once per lap.
         await _processAllPendingSymbolResolveRequests();
+        // Same "don't wait out the whole sweep" reasoning as the terminate
+        // drain above - REVERSED 2026-10-17 from this feature's original
+        // "only at the top of the cycle" design (see that comment's own
+        // history): confirmed live a full audit sweep (every symbol
+        // force-re-checked, e.g. right after a restart) can run 20-30+
+        // minutes, not the "few seconds" the original reasoning assumed -
+        // a backtest request sitting behind that is indistinguishable from
+        // "broken" to the user. Drained at every per-symbol boundary now,
+        // same as everything else in this block.
+        await _processPendingBacktestRequest();
         // Self-throttled to [_slRatchetInterval] internally - safe to call
         // this liberally at every per-symbol boundary in the loop, same
         // pattern as the mandatory health recheck right below (2026-10-13).
@@ -1788,6 +1933,11 @@ class EngineService {
         // immediate reverse-check sweep") a real Multiplier click got
         // stuck behind for minutes before this was added (2026-10-15).
         await _processAllPendingAddCopyRequests();
+        // 2026-10-17 - this IS the exact sweep a real backtest request got
+        // stuck behind for 10+ minutes (confirmed live, right after a
+        // restart forces this "Power on" full sweep) - same fix as above.
+        await _processPendingBacktestRequest();
+        await retroactiveFix6040SlOnce();
         try {
           final currentSymbols = _loadSymbolsFresh();
           final mapping = currentSymbols.firstWhere(
@@ -2054,17 +2204,29 @@ class EngineService {
             );
           } else if (trueDirection == runningDirection) {
             final trueStartWire = signalTagToWire(trueStart.tag);
-            final needsWrite = openSnapshot == null ||
-                openSnapshot.tag != trueStartWire ||
-                openSnapshot.barTime != trueStart.time;
-            if (needsWrite) {
+            // 2026-10-17 REDESIGN, per the user: "tv readings should be
+            // before mt5 .. if in any scenario tv readings are after mt5
+            // readings = readings are fake" - found live: this "correct an
+            // already-backfilled Start" path could overwrite Open with a
+            // LATER same-direction reconfirmation than the position's own
+            // real MT5 open time, which can never be a legitimate "what
+            // opened this trade" signal (a cause can't postdate its
+            // effect). Open is now written ONCE, on the ticket's genuine
+            // first backfill only - a later same-direction reconfirmation
+            // belongs in the Update field below instead, which already
+            // exists for exactly this. Pure persistence change - the
+            // audit's own forward-replay decision logic below always
+            // recomputes [trueStart] fresh from live data regardless of
+            // what's stored here, so this has zero effect on trading
+            // correctness, only on what gets displayed as "Open."
+            if (openSnapshot == null) {
               entrySignals.record(
                 auditTicket,
                 EntrySignalSnapshot(tag: trueStartWire, barTime: trueStart.time),
               );
               logger.log(
-                '$mt5Symbol ($category): ${openSnapshot == null ? "backfilled" : "corrected"} '
-                'Start signal for ticket=$auditTicket - $trueStartWire@${trueStart.time}.',
+                '$mt5Symbol ($category): backfilled Start signal for '
+                'ticket=$auditTicket - $trueStartWire@${trueStart.time}.',
               );
             }
             if (updateSignal != null) {
@@ -2116,9 +2278,12 @@ class EngineService {
                 detail: 'Retroactive audit: the true signal chain disagreed with the running direction.',
               );
               if (!(await _hasPendingAppOrder(mt5Symbol, category))) {
-                final flipGate = risk.gate('open', mt5Symbol, category);
+                final ignitedAudit = ignitedPairs.isIgnited(tvSymbol);
+                final flipGate = risk.gate('open', mt5Symbol, category, bypassMarginGate: ignitedAudit);
                 if (flipGate.allowed) {
-                  await _openPosition(category, mapping, trueDirection, range.top, range.bottom, trueStart);
+                  if (await _openPosition(category, mapping, trueDirection, range.top, range.bottom, trueStart)) {
+                    if (ignitedAudit) ignitedPairs.consume(tvSymbol);
+                  }
                 } else {
                   logger.log(
                     '$tvSymbol ($category): audit-driven risk gate blocked reopen: ${flipGate.reason}',
@@ -2269,13 +2434,15 @@ class EngineService {
         );
         return;
       }
-      final flipGate = risk.gate('open', mt5Symbol, category);
+      final ignitedFlip = ignitedPairs.isIgnited(tvSymbol);
+      final flipGate = risk.gate('open', mt5Symbol, category, bypassMarginGate: ignitedFlip);
       if (!flipGate.allowed) {
         logger.log('$tvSymbol ($category): risk gate blocked open: ${flipGate.reason}');
         return;
       }
       if (await _openPosition(category, mapping, newDirection, range.top, range.bottom, latest)) {
         pendingSignals.clear(barKey);
+        if (ignitedFlip) ignitedPairs.consume(tvSymbol);
       }
       return;
     }
@@ -2326,15 +2493,26 @@ class EngineService {
       );
     }
 
-    final gate = risk.gate('open', mt5Symbol, category);
+    // Ignite bypass (2026-10-17, per the user: "margin level has nothing
+    // to do with manual ignited pair") - a pair the user explicitly
+    // ignited via the Dashboard's thunder icon still waits for this same
+    // genuine signal, it just doesn't get blocked by margin level once
+    // the signal is real. One-shot: consumed the moment this fresh open
+    // actually succeeds.
+    final ignited = ignitedPairs.isIgnited(tvSymbol);
+    final gate = risk.gate('open', mt5Symbol, category, bypassMarginGate: ignited);
     if (!gate.allowed) {
       logger.log('$tvSymbol ($category): risk gate blocked open: ${gate.reason}');
       return;
+    }
+    if (ignited) {
+      logger.log('$tvSymbol ($category): opening on an ignited pair - margin-level gate bypassed.');
     }
 
     if (await _openPosition(category, mapping, newDirection, range.top, range.bottom, latest)) {
       pendingSignals.clear(barKey);
       firstOpen.markOpened(seasonKey);
+      if (ignited) ignitedPairs.consume(tvSymbol);
     }
   }
 
@@ -2590,13 +2768,15 @@ class EngineService {
         );
         return;
       }
-      final flipGate = risk.gate('open', mt5Symbol, category);
+      final ignitedFlip = ignitedPairs.isIgnited(tvSymbol);
+      final flipGate = risk.gate('open', mt5Symbol, category, bypassMarginGate: ignitedFlip);
       if (!flipGate.allowed) {
         logger.log('$tvSymbol ($category): risk gate blocked open: ${flipGate.reason}');
         return;
       }
       if (await _openPosition(category, mapping, newDirection, range.top, range.bottom, latest)) {
         supertrendPending.clear(barKey);
+        if (ignitedFlip) ignitedPairs.consume(tvSymbol);
       }
       return;
     }
@@ -2612,14 +2792,19 @@ class EngineService {
       return;
     }
 
-    final gate = risk.gate('open', mt5Symbol, category);
+    final ignited = ignitedPairs.isIgnited(tvSymbol);
+    final gate = risk.gate('open', mt5Symbol, category, bypassMarginGate: ignited);
     if (!gate.allowed) {
       logger.log('$tvSymbol ($category): risk gate blocked open: ${gate.reason}');
       return;
     }
+    if (ignited) {
+      logger.log('$tvSymbol ($category): opening on an ignited pair - margin-level gate bypassed.');
+    }
 
     if (await _openPosition(category, mapping, newDirection, range.top, range.bottom, latest)) {
       supertrendPending.clear(barKey);
+      if (ignited) ignitedPairs.consume(tvSymbol);
     }
   }
 
@@ -2885,18 +3070,54 @@ class EngineService {
               'next time this audit re-arms.',
             );
           } else if (trueDirection == runningDirection) {
-            final needsWrite = openSnapshot == null ||
-                openSnapshot.kind != trueStart.kind ||
-                openSnapshot.barTime != trueStart.time;
-            if (needsWrite) {
-              worm10EntrySignals.record(
-                auditTicket,
-                Worm10EntrySignalSnapshot(kind: trueStart.kind, barTime: trueStart.time),
+            // 2026-10-17 REDESIGN, per the user: "tv readings should be
+            // before mt5 .. if in any scenario tv readings are after mt5
+            // readings = readings are fake" - found live (ticket
+            // 1660890548): this "correct an already-backfilled Start" path
+            // could overwrite Open with a LATER same-direction
+            // reconfirmation than the position's own real MT5 open time,
+            // which can never be a legitimate "what opened this trade"
+            // signal. Open is now written ONCE, on the ticket's genuine
+            // first backfill only - a later same-direction reconfirmation
+            // belongs in the Update field below instead. Pure persistence
+            // change - the forward-replay decision logic above always
+            // recomputes [trueStart] fresh from live data regardless of
+            // what's stored here, so this has zero effect on trading
+            // correctness, only on what gets displayed as "Open."
+            if (openSnapshot == null) {
+              // Re-confirm this Start event is still really there before
+              // WRITING it (2026-10-17, found live: right as the MT5
+              // bridge reconnected after a brief connection-refused
+              // outage, a single stale read briefly reported the wrong
+              // "latest case-1 event" - e.g. one 21 days old - and this
+              // audit only ever runs ONCE per ticket, so that bad read
+              // would have been permanently baked in with no chance to
+              // self-correct).
+              final recheck = await readWorm10Signals(
+                cdp,
+                tvSymbol,
+                worm10Script.scriptIdPart,
+                customScripts[1].scriptIdPart,
+                onDebugError: (msg) => logger.log('$tvSymbol ($category) worm10 audit Start recheck: $msg'),
               );
-              logger.log(
-                '$mt5Symbol ($category): ${openSnapshot == null ? "backfilled" : "corrected"} '
-                'worm10 Start for ticket=$auditTicket - $trueStartWire@${trueStart.time}.',
-              );
+              final recheckEvents = deriveWorm10Events(recheck);
+              final stillThere = recheckEvents.any((e) => e.kind == trueStart.kind && e.time == trueStart.time);
+              if (!stillThere) {
+                logger.log(
+                  '$tvSymbol ($category): worm10 audit Start event ($trueStartWire@${trueStart.time}) '
+                  'no longer present on re-read - skipping write to avoid baking in a stale read.',
+                  level: 'WARNING',
+                );
+              } else {
+                worm10EntrySignals.record(
+                  auditTicket,
+                  Worm10EntrySignalSnapshot(kind: trueStart.kind, barTime: trueStart.time),
+                );
+                logger.log(
+                  '$mt5Symbol ($category): backfilled worm10 Start for '
+                  'ticket=$auditTicket - $trueStartWire@${trueStart.time}.',
+                );
+              }
             }
             if (updateEvent != null) {
               final updateWire = worm10EventKindToWire(updateEvent.kind);
@@ -2948,7 +3169,8 @@ class EngineService {
                 worm10CloseAt: trueStart.time,
               );
               if (!(await _hasPendingAppOrder(mt5Symbol, category))) {
-                final flipGate = risk.gate('open', mt5Symbol, category);
+                final ignitedAudit = ignitedPairs.isIgnited(tvSymbol);
+                final flipGate = risk.gate('open', mt5Symbol, category, bypassMarginGate: ignitedAudit);
                 if (flipGate.allowed) {
                   if (await _openPosition(
                     category,
@@ -2962,8 +3184,7 @@ class EngineService {
                     worm10OpenKindWire: trueStartWire,
                     worm10OpenAt: trueStart.time,
                   )) {
-                    // no-op - real time check below still runs this cycle
-                    // against whatever's now running, same as Signal Flip.
+                    if (ignitedAudit) ignitedPairs.consume(tvSymbol);
                   }
                 } else {
                   logger.log(
@@ -3073,10 +3294,14 @@ class EngineService {
         if (await _reconcileStaleRestingOrderIfAny(category, tvSymbol, mt5Symbol, decision.resultDirection!, range.top, range.bottom)) {
           return;
         }
-        final gate = risk.gate('open', mt5Symbol, category);
+        final ignitedFresh = ignitedPairs.isIgnited(tvSymbol);
+        final gate = risk.gate('open', mt5Symbol, category, bypassMarginGate: ignitedFresh);
         if (!gate.allowed) {
           logger.log('$tvSymbol ($category): risk gate blocked open: ${gate.reason}');
           return;
+        }
+        if (ignitedFresh) {
+          logger.log('$tvSymbol ($category): opening on an ignited pair - margin-level gate bypassed.');
         }
         if (await _openPosition(
           category,
@@ -3089,6 +3314,7 @@ class EngineService {
           worm10OpenAt: latest.time,
         )) {
           worm10Pending.clear(barKey);
+          if (ignitedFresh) ignitedPairs.consume(tvSymbol);
         }
         return;
 
@@ -3129,10 +3355,14 @@ class EngineService {
           if (await _reconcileStaleRestingOrderIfAny(category, tvSymbol, mt5Symbol, decision.resultDirection!, range.top, range.bottom)) {
             return;
           }
-          final gate = risk.gate('open', mt5Symbol, category);
+          final ignitedRecycle = ignitedPairs.isIgnited(tvSymbol);
+          final gate = risk.gate('open', mt5Symbol, category, bypassMarginGate: ignitedRecycle);
           if (!gate.allowed) {
             logger.log('$tvSymbol ($category): risk gate blocked open: ${gate.reason}');
             return;
+          }
+          if (ignitedRecycle) {
+            logger.log('$tvSymbol ($category): opening on an ignited pair - margin-level gate bypassed.');
           }
           if (await _openPosition(
             category,
@@ -3145,6 +3375,7 @@ class EngineService {
             worm10OpenAt: latest.time,
           )) {
             worm10Pending.clear(barKey);
+            if (ignitedRecycle) ignitedPairs.consume(tvSymbol);
           }
           return;
         }
@@ -3167,7 +3398,8 @@ class EngineService {
           );
           return;
         }
-        final flipGate = risk.gate('open', mt5Symbol, category);
+        final ignitedFlip = ignitedPairs.isIgnited(tvSymbol);
+        final flipGate = risk.gate('open', mt5Symbol, category, bypassMarginGate: ignitedFlip);
         if (!flipGate.allowed) {
           logger.log('$tvSymbol ($category): risk gate blocked open: ${flipGate.reason}');
           return;
@@ -3183,6 +3415,7 @@ class EngineService {
           worm10OpenAt: latest.time,
         )) {
           worm10Pending.clear(barKey);
+          if (ignitedFlip) ignitedPairs.consume(tvSymbol);
         }
         return;
     }
@@ -3287,24 +3520,13 @@ class EngineService {
     final restingSl = (pendingOrder['stop_loss'] as num?)?.toDouble();
     final restingTp = (pendingOrder['take_profit'] as num?)?.toDouble();
     final target = await _computeTargetLevels(mt5Symbol, newDirection, rangeTop, rangeBottom);
-    // 2026-10-13, per the user - compared against the SAME baseline SL
-    // [_openPosition] would use to re-place this order (not the 60/40
-    // model's own `target.sl`), using the resting order's own volume, so
-    // a resting order that no longer matches the current baseline rule
-    // (e.g. this feature just shipped) gets correctly flagged stale too.
-    final restingVolume = (pendingOrder['volume_current'] as num?)?.toDouble() ??
-        (pendingOrder['volume_initial'] as num?)?.toDouble();
-    final expectedSl = target != null && restingVolume != null
-        ? _baselineStopLoss(
-            entry: target.entry,
-            direction: newDirection,
-            volume: restingVolume,
-            contractSize: (target.info['contract_size'] as num?)?.toDouble() ?? 1.0,
-            digits: target.digits,
-          )
-        : null;
+    // 2026-10-17 REDESIGN, per the user - compared against the 60/40
+    // model's own `target.sl` directly now, since [_openPosition] no
+    // longer overwrites it with the baseline (see that method's own doc
+    // comment on this same date) - a resting order is stale only if the
+    // direction or the real 60/40 levels themselves have moved.
     final changed = target != null &&
-        (restingDirection != newDirection || restingSl != expectedSl || restingTp != target.tp);
+        (restingDirection != newDirection || restingSl != target.sl || restingTp != target.tp);
     if (!changed) {
       logger.log(
         '$tvSymbol ($category): a pending order for this symbol/category '
@@ -3391,6 +3613,22 @@ class EngineService {
       await Future<void>.delayed(const Duration(seconds: 5));
       final retryLines = await readLines(cdp, rangeScriptIdPart);
       range = detectZigzagRange(retryLines, swingCount: config.technique.rangeSwingCount);
+    }
+    // 2026-10-17 - found live: a chart that just freshly loaded (e.g. right
+    // after TradingView restarts) can start with too SHORT a default
+    // history window to contain [config.technique.rangeSwingCount]
+    // confirmed swings at all - no amount of re-reading the SAME short
+    // window ever produces a range in that case, only asking for more
+    // history does. Same [requestMoreChartHistory] call the worm10
+    // retroactive audit's own case-1 search already uses for the identical
+    // "not enough loaded yet" problem - only engaged here as a last resort,
+    // so the normal already-working case pays nothing extra.
+    if (range == null) {
+      final extended = await requestMoreChartHistory(cdp);
+      if (extended) {
+        final extendedLines = await readLines(cdp, rangeScriptIdPart);
+        range = detectZigzagRange(extendedLines, swingCount: config.technique.rangeSwingCount);
+      }
     }
     if (range == null) {
       logger.log('$tvSymbol ($category): no range yet, skipping cycle.');
@@ -3690,18 +3928,15 @@ class EngineService {
     final point = (info['point'] as num?)?.toDouble() ?? 0.0;
     final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
 
-    // 2026-10-13, per the user - the real volume for this attempt is only
-    // known now (after the step-down retry ladder above), so the baseline
-    // SL (§10's own "whichever occurs first" spec) can only be finalized
-    // here, not inside [_computeTargetLevels].
-    sl = _baselineStopLoss(
-      entry: entry,
-      direction: direction,
-      volume: tryVolume,
-      contractSize: (info['contract_size'] as num?)?.toDouble() ?? 1.0,
-      digits: digits,
-    );
-
+    // 2026-10-17 REDESIGN, per the user: "tp/sl should be fixed according
+    // to 40/60 rules... app should take an action according to P&L.. but
+    // not modifying tp/sl" - the real broker-side SL/TP is now the 60/40
+    // model's own [target.sl]/[tp], set ONCE here and never touched again
+    // by anything (previously this line overwrote [target.sl] with the
+    // tight -$5 baseline from the very first moment a trade opened - the
+    // baseline/ratchet protection has moved entirely to [_applySlRatchet]'s
+    // own live 30s P&L sweep, which now closes the position directly
+    // instead of ever modifying its SL/TP).
     logger.log(
       '$mt5Symbol ($category): opening ${direction == TradeDirection.long ? 'BUY' : 'SELL'} '
       'vol=$tryVolume entry=$entry sl=$sl tp=$tp '
@@ -4866,6 +5101,34 @@ class EngineService {
     return null;
   }
 
+  /// System-wide available RAM, read fresh on every status write
+  /// (2026-10-17, per the user, after a real incident: TradingView froze
+  /// mid-sweep and crashed while the system was down to ~955MB free with
+  /// heavy swap use - a Dashboard light for this is the whole point, so
+  /// the NEXT time this happens the user sees it immediately instead of
+  /// having to diagnose it after the fact). Reads `/proc/meminfo`'s
+  /// `MemAvailable` - the kernel's own "truly usable, including
+  /// reclaimable cache" figure, the same number `free -h`'s own
+  /// "available" column reports. Linux-only; null (never treated as
+  /// "low") anywhere else or if the read fails for any reason.
+  int? _readMeminfoValueMb(String key) {
+    try {
+      final content = File('/proc/meminfo').readAsStringSync();
+      for (final line in content.split('\n')) {
+        if (line.startsWith(key)) {
+          final match = RegExp(r'(\d+)').firstMatch(line);
+          if (match != null) return int.parse(match.group(1)!) ~/ 1024;
+        }
+      }
+    } catch (_) {
+      // Not on Linux, or /proc unavailable - stays null.
+    }
+    return null;
+  }
+
+  int? _readAvailableRamMb() => _readMeminfoValueMb('MemAvailable:');
+  int? _readTotalRamMb() => _readMeminfoValueMb('MemTotal:');
+
   void _writeStatus({
     bool connected = false,
     String? message,
@@ -4879,7 +5142,373 @@ class EngineService {
         lastCycleAt: DateTime.now(),
         message: message,
         health: health,
+        ramAvailableMb: _readAvailableRamMb(),
+        ramTotalMb: _readTotalRamMb(),
       ).toJson(),
+    );
+  }
+
+  /// Technique Summary screen's "reverse calculation" backtester
+  /// (2026-10-17, per the user: investment value + pair + number of days,
+  /// re-running the SAME real worm_10_26 decision logic against historical
+  /// TradingView data as if it had been trading live the whole time -
+  /// "same as if it is currently running .. real calculations .. full
+  /// mackup"). One request at a time - see [BacktestRequestStore]'s own
+  /// doc comment for why. Deliberately NOT queued through the terminate/
+  /// add-copy drain points inside the long per-symbol sweep - a multi-day
+  /// history pull can genuinely take a while, and there's no reason to
+  /// risk starving that sweep's own responsiveness for it.
+  Future<void> _processPendingBacktestRequest() async {
+    final req = backtestRequests.loadPending();
+    if (req == null) return;
+    final tvSymbol = (req['tv_symbol'] as String).toUpperCase();
+    final investment = (req['investment'] as num).toDouble();
+    final days = (req['days'] as num).toInt();
+    final volume = (req['volume'] as num?)?.toDouble() ?? 1.0;
+    // 2026-10-17, per the user: the GUI resolves (or confirms a listed
+    // pair's own) MT5 symbol itself before ever sending this request, so
+    // this is trusted directly rather than re-derived from config.json -
+    // see [BacktestRequestStore.request]'s own doc comment.
+    final requestedMt5Symbol = req['mt5_symbol'] as String?;
+    backtestRequests.clear();
+
+    SymbolMapping? mapping;
+    if (requestedMt5Symbol != null) {
+      mapping = SymbolMapping(tradingViewSymbol: tvSymbol, mt5Symbol: requestedMt5Symbol);
+    } else {
+      final matches = _loadSymbolsFresh().where((m) => m.tradingViewSymbol.toUpperCase() == tvSymbol);
+      if (matches.isNotEmpty) mapping = matches.first;
+    }
+    if (mapping == null) {
+      backtestResults.recordDone(
+        BacktestResult(
+          tvSymbol: tvSymbol,
+          investment: investment,
+          days: days,
+          volume: volume,
+          rows: const [],
+          totalProfitUsd: 0,
+          totalProfitPercent: 0,
+          winCount: 0,
+          lossCount: 0,
+          error: 'No symbol mapping found for $tvSymbol in config.json.',
+        ),
+      );
+      return;
+    }
+    backtestResults.recordRunning(tvSymbol);
+    logger.log(
+      'BACKTEST: starting $tvSymbol over the last $days day(s), '
+      'investment=\$${investment.toStringAsFixed(2)}.',
+    );
+    try {
+      final result = await _runBacktest(mapping, investment: investment, days: days, volume: volume);
+      backtestResults.recordDone(result);
+      logger.log(
+        'BACKTEST: $tvSymbol finished - ${result.rows.length} trade(s), '
+        'total \$${result.totalProfitUsd.toStringAsFixed(2)} '
+        '(${result.totalProfitPercent.toStringAsFixed(2)}%).',
+      );
+    } catch (e, st) {
+      logger.log('BACKTEST: $tvSymbol failed: $e\n$st', level: 'ERROR');
+      backtestResults.recordDone(
+        BacktestResult(
+          tvSymbol: tvSymbol,
+          investment: investment,
+          days: days,
+          volume: volume,
+          rows: const [],
+          totalProfitUsd: 0,
+          totalProfitPercent: 0,
+          winCount: 0,
+          lossCount: 0,
+          error: '$e',
+        ),
+      );
+    }
+  }
+
+  /// The actual simulation - see [_processPendingBacktestRequest]'s own
+  /// doc comment for the full spec. 2026-10-17 REDESIGN, per the user:
+  /// "i want open signals and close signals and update signals ... i
+  /// dont want any sll" - a trade closes ONLY on the next opposing/
+  /// closing worm10 signal, same as the chart's own signal-to-signal
+  /// logic. An earlier version of this simulated a flat -$5 SL + 60/40-
+  /// model TP as real-price-path exits (scanning bar High/Low) - that
+  /// was never part of the original spec and was the actual source of
+  /// "this doesn't match what I see on the chart" confusion, since a
+  /// trade could close on SL long before the real next signal. Removed
+  /// entirely, not just disclosed as a limitation.
+  Future<BacktestResult> _runBacktest(
+    SymbolMapping mapping, {
+    required double investment,
+    required int days,
+    // 2026-10-17, per the user's own follow-up: "in back tester, make sure
+    // can adjust volum, not fixed 1" - supersedes the original spec's flat
+    // v=1. Feeds the exact same real baseline-SL formula ([_baselineStopLoss])
+    // and real P&L formula a live trade at this size would use.
+    required double volume,
+  }) async {
+    final tvSymbol = mapping.tradingViewSymbol;
+    final mt5Symbol = mapping.mt5Symbol;
+    const category = AutoCategory.oneHour;
+
+    await _ensureCdpUp();
+    final cdp = _cdp!;
+
+    final chartView = await setChartView(cdp, tvSymbol, category.signalResolution);
+    if (!chartView.ok) {
+      throw StateError('could not switch the chart to $tvSymbol (${chartView.error})');
+    }
+    // 2026-10-17 bugfix: worm_10_26/spy_9_26 are documented as requiring
+    // Heikin Ashi candles (see [_indicatorsReadyFor]'s own live-path
+    // equivalent) - [setChartView] only switches the SYMBOL/resolution,
+    // never the candle style, so without this the backtest was reading
+    // signals off whatever style the chart happened to already be on.
+    // Found live: a real run (SOLUSDT, 7 days) came back with SIX trades,
+    // every single one LONG off an "LL" open that immediately stopped out
+    // - exactly the kind of systematic skew reading regular candles
+    // instead of Heikin Ashi would produce.
+    final styleOk = await ensureChartStyle(cdp, ChartStyle.heikinAshi);
+    if (!styleOk) {
+      throw StateError('could not switch the chart to Heikin Ashi candles for $tvSymbol');
+    }
+
+    final cutoff = DateTime.now().toUtc().subtract(Duration(days: days)).millisecondsSinceEpoch ~/ 1000;
+    await requestMoreChartHistory(cdp);
+
+    final barsRaw = await cdp.evaluate('''(function() {
+      try {
+        var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
+        var series = chart.model().mainSeries();
+        var bars = series.bars();
+        var size = bars.size();
+        if (size === 0) return { error: 'no bars loaded' };
+        var first = bars.firstIndex();
+        var last = bars.lastIndex();
+        var out = [];
+        for (var i = first; i <= last; i++) {
+          var v = bars.valueAt(i);
+          if (v) out.push(v);
+        }
+        return { bars: out };
+      } catch (e) {
+        return { error: String(e && e.message || e) };
+      }
+    })()''') as Map<String, dynamic>?;
+    if (barsRaw?['error'] != null) {
+      throw StateError('could not read historical bars: ${barsRaw!['error']}');
+    }
+    final barsList = ((barsRaw?['bars'] as List?) ?? const []).cast<List<dynamic>>();
+    if (barsList.isEmpty) throw StateError('no historical bars available for $tvSymbol');
+
+    final barTimes = <int>[];
+    final barClose = <double>[];
+    for (final b in barsList) {
+      barTimes.add((b[0] as num).toInt());
+      barClose.add((b[4] as num).toDouble());
+    }
+
+    // 2026-10-17, per the user - self-healing against stale indicator
+    // data: [setChartView] above already confirms the CHART reports the
+    // new symbol, but the worm10/spy9 custom scripts' own computed plot
+    // data can lag behind that for a few seconds while they recalculate
+    // for the newly-switched symbol. Confirmed live: running a backtest
+    // for XRPUSDT immediately after one for LTCUSDT produced IDENTICAL
+    // event timestamps AND entry prices in LTC's ~$60-70 range (XRP
+    // trades under $5) - the chart had switched, but [readWorm10Signals]
+    // still read the previous symbol's stale computed signals. Re-read
+    // with a short settle delay until two consecutive reads agree on the
+    // latest signal before trusting the data; fail loudly instead of
+    // silently handing back a wrong result if it never settles.
+    Future<Worm10Check> readSignalsOnce() => readWorm10Signals(
+      cdp,
+      tvSymbol,
+      worm10Script.scriptIdPart,
+      customScripts[1].scriptIdPart,
+      onDebugError: (msg) => logger.log('BACKTEST $tvSymbol signal: $msg'),
+    );
+    bool sameLatestSignal(Worm10Check a, Worm10Check b) {
+      final aLast = a.zigzag.signals.isEmpty ? null : a.zigzag.signals.last;
+      final bLast = b.zigzag.signals.isEmpty ? null : b.zigzag.signals.last;
+      return aLast?.time == bLast?.time && aLast?.tag == bLast?.tag;
+    }
+
+    var check = await readSignalsOnce();
+    const maxStabilizeAttempts = 6;
+    var stable = false;
+    for (var attempt = 0; attempt < maxStabilizeAttempts; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      final recheck = await readSignalsOnce();
+      final agree = sameLatestSignal(check, recheck);
+      check = recheck;
+      if (agree) {
+        stable = true;
+        break;
+      }
+      logger.log(
+        'BACKTEST $tvSymbol: signal data still settling after the symbol '
+        'switch (attempt ${attempt + 1}/$maxStabilizeAttempts) - retrying.',
+      );
+    }
+    if (!stable) {
+      throw StateError(
+        '$tvSymbol signal data never stabilized after switching charts - '
+        'refusing to run a backtest on possibly-stale data from another symbol',
+      );
+    }
+
+    // 2026-10-17, per the user - a trade already running when the
+    // requested window starts (opened by a qualifying signal BEFORE
+    // `cutoff`) must still show its real, pre-window open time once it
+    // closes inside the window (confirmed live: LTCUSDT trade 1's true
+    // open was 10-06 03:00, two days before a 10-day window's cutoff,
+    // closing 10-08 17:00 - filtering events by cutoff before simulating
+    // discarded that open entirely). So simulate over the FULL available
+    // history unfiltered, and only filter the resulting rows afterward by
+    // whether they're relevant to the requested window.
+    final events = deriveWorm10Events(check);
+
+    final symInfo = await mt5.getMarketWatchSymbol(mt5Symbol);
+    final symbols = (symInfo['symbols'] as List?) ?? const [];
+    if (symbols.isEmpty) throw StateError('$mt5Symbol not found in MT5 Market Watch');
+    final contractSize = ((symbols.first as Map<String, dynamic>)['contract_size'] as num?)?.toDouble() ?? 1.0;
+
+    double priceAtOrAfter(int time) {
+      for (var i = 0; i < barTimes.length; i++) {
+        if (barTimes[i] >= time) return barClose[i];
+      }
+      return barClose.last;
+    }
+
+    // 2026-10-17 REDESIGN, per the user: "i want open signals and close
+    // signals and update signals ... i dont want any sll" - the original
+    // spec never asked for a simulated stop-loss/take-profit at all
+    // ("Close A(HH/LL or Buy/Sell of zigzag)... Close b always confirmed")
+    // - SL/TP price-level exit detection was an unrequested addition on
+    // top of that, and became the source of the "this doesn't match what
+    // I see on the chart" confusion all along. A trade now closes
+    // EXCLUSIVELY on the next opposing/closing worm10 signal, matching
+    // the chart's own signal-to-signal logic directly - nothing else.
+    final rows = <BacktestRow>[];
+    TradeDirection? current;
+    int? openAt;
+    String? openTag;
+    double? entryPrice;
+    String? updateTag;
+    int? updateAt;
+
+    void openTrade(Worm10Event event, TradeDirection direction) {
+      current = direction;
+      openAt = event.time;
+      openTag = worm10EventKindDisplayLabel(event.kind);
+      entryPrice = priceAtOrAfter(event.time);
+      updateTag = null;
+      updateAt = null;
+    }
+
+    void closeTrade({
+      required int atTime,
+      required double exitPrice,
+      required String closeTagLabel,
+      bool stillRunning = false,
+    }) {
+      final dir = current!;
+      final pnl =
+          (dir == TradeDirection.long ? (exitPrice - entryPrice!) : (entryPrice! - exitPrice)) *
+          contractSize *
+          volume;
+      rows.add(
+        BacktestRow(
+          direction: dir == TradeDirection.long ? 'buy' : 'sell',
+          openTag: openTag!,
+          openAt: openAt!,
+          updateTag: updateTag,
+          updateAt: updateAt,
+          closeTag: closeTagLabel,
+          closeAt: atTime,
+          entryPrice: entryPrice!,
+          exitPrice: exitPrice,
+          exitReason: stillRunning ? 'still_running' : 'signal_close',
+          profitUsd: pnl,
+          profitPercent: investment > 0 ? pnl / investment * 100 : 0,
+          stillRunning: stillRunning,
+        ),
+      );
+      current = null;
+      openAt = null;
+      openTag = null;
+      entryPrice = null;
+      updateTag = null;
+      updateAt = null;
+    }
+
+    for (final event in events) {
+      final decision = worm10DecisionFor(current, event.kind);
+      // 2026-10-17, per the user: "i want a table with full LL/HH buy
+      // sell ... close" - full raw-event trace, one line per resolved
+      // signal, so the exact chain feeding each trade can be checked
+      // against the chart directly instead of only seeing the collapsed
+      // open/update/close per trade.
+      final resultDirLabel = decision.resultDirection == null
+          ? ''
+          : ' ${decision.resultDirection == TradeDirection.long ? "LONG" : "SHORT"}';
+      logger.log(
+        'BACKTEST $tvSymbol: event ${worm10EventKindToWire(event.kind)}'
+        '(${worm10EventKindDisplayLabel(event.kind)})@${event.time} '
+        '[running=${current == null ? "flat" : (current == TradeDirection.long ? "LONG" : "SHORT")}] '
+        '-> ${decision.action.name}$resultDirLabel',
+      );
+      switch (decision.action) {
+        case Worm10Action.none:
+          break;
+        case Worm10Action.update:
+          updateTag = worm10EventKindDisplayLabel(event.kind);
+          updateAt = event.time;
+        case Worm10Action.openFresh:
+          openTrade(event, decision.resultDirection!);
+        case Worm10Action.recycle:
+        case Worm10Action.flip:
+          if (current != null) {
+            closeTrade(
+              atTime: event.time,
+              exitPrice: priceAtOrAfter(event.time),
+              closeTagLabel: worm10EventKindDisplayLabel(event.kind),
+            );
+          }
+          openTrade(event, decision.resultDirection!);
+      }
+    }
+
+    if (current != null) {
+      closeTrade(
+        atTime: barTimes.last,
+        exitPrice: barClose.last,
+        closeTagLabel: '—',
+        stillRunning: true,
+      );
+    }
+
+    // Report only rows relevant to the requested window - a trade that
+    // closed before `cutoff` has nothing to do with this window at all,
+    // even though simulating from full history was necessary to get its
+    // own open/close times (and any later trade's open) right.
+    final reportRows = rows.where((r) => r.closeAt >= cutoff).toList();
+
+    final totalUsd = reportRows.fold(0.0, (sum, r) => sum + r.profitUsd);
+    final wins = reportRows.where((r) => !r.stillRunning && r.profitUsd > 0).length;
+    final losses = reportRows.where((r) => !r.stillRunning && r.profitUsd <= 0).length;
+
+    return BacktestResult(
+      tvSymbol: tvSymbol,
+      investment: investment,
+      days: days,
+      volume: volume,
+      rows: reportRows,
+      totalProfitUsd: totalUsd,
+      totalProfitPercent: investment > 0 ? totalUsd / investment * 100 : 0,
+      winCount: wins,
+      lossCount: losses,
     );
   }
 

@@ -70,6 +70,20 @@ class DashboardScreen extends ConsumerWidget {
                           label: 'TradingView connected',
                         ),
                         const SizedBox(height: 8),
+                        // 2026-10-17, per the user, after a real incident:
+                        // TradingView froze mid-sweep and crashed while the
+                        // system was down to ~955MB free RAM with heavy
+                        // swap use - several "wrong reading" reports that
+                        // day traced back to this, not a logic bug. Same
+                        // light pattern as Engine/MT5/TradingView above.
+                        ReuseStatusLight(
+                          on: s.ramOk,
+                          label: s.ramAvailableMb != null
+                              ? 'RAM free: ${s.ramAvailableMb} MB'
+                                    '${s.ramUsedPercent != null ? ' (${s.ramUsedPercent}% used)' : ''}'
+                              : 'RAM',
+                        ),
+                        const SizedBox(height: 8),
                         Text('Last cycle: ${UtilDate.relative(s.lastCycleAt)}'),
                         if (s.message != null) ...[
                           const SizedBox(height: 8),
@@ -119,6 +133,10 @@ class DashboardScreen extends ConsumerWidget {
               },
               onAddCopy: (tvSymbol) {
                 ref.read(controlRepositoryProvider).requestAddCopy(tvSymbol);
+                ref.invalidate(autoTradesProvider);
+              },
+              onIgnite: (tvSymbol) {
+                ref.read(controlRepositoryProvider).ignitePair(tvSymbol);
                 ref.invalidate(autoTradesProvider);
               },
               historyPnlSince: historyPnlSince,

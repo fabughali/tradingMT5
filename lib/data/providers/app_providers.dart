@@ -8,6 +8,7 @@ import '../models/account_snapshot.dart';
 import '../models/app_config.dart';
 import '../models/auto_category.dart';
 import '../models/auto_trade_row.dart';
+import '../models/backtest_row.dart';
 import '../models/bot_history_entry.dart';
 import '../models/control_toggle_state.dart';
 import '../models/decision_technique.dart';
@@ -191,6 +192,20 @@ final addCopyResultsProvider =
       }
     });
 
+/// Technique Summary screen's backtester (2026-10-17, per the user) -
+/// polls every 2s while the dialog/card is mounted so the "Execute" button
+/// can disable and show a spinner while `status == 'running'`, then
+/// display the finished table the moment it lands. Null means no run has
+/// ever been requested (or it was cleared).
+final backtestResultProvider =
+    StreamProvider.autoDispose<({String status, BacktestResult? result})?>((ref) async* {
+      final repo = ref.watch(controlRepositoryProvider);
+      while (true) {
+        yield repo.peekBacktestResult();
+        await Future<void>.delayed(const Duration(seconds: 2));
+      }
+    });
+
 /// Mirrors MT5's own Market Watch, live. Per the user (2026-09-17): the
 /// app's symbol list is never separately maintained — whatever is currently
 /// visible in MT5's Market Watch IS the app's list. Add a symbol in MT5 and
@@ -307,6 +322,12 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
       // right state - see [AutoTradeRow.isPaused]'s own doc comment.
       final pausedBases = storage
           .readJsonArrayStrict(storage.pausedPairsFile)
+          .map((e) => e.toString().toUpperCase())
+          .toSet();
+      // 2026-10-17, per the user: thunder icon per pair - this set backs
+      // its "armed" visual state, see [IgnitedPairStore]'s own doc comment.
+      final ignitedBases = storage
+          .readJsonArrayStrict(storage.ignitedPairsFile)
           .map((e) => e.toString().toUpperCase())
           .toSet();
       final entrySignalsRaw =
@@ -488,16 +509,13 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           final pendingBarTime = worm10PendingBarTime ?? (pendingEntry?['bar_time'] as num?)?.toInt();
           if (pendingWireTag != null && pendingBarTime != null) {
             // The direction this candidate points toward - a plain lookup
-            // for worm10's six kinds (buyClose1/sellOpen1/zigzagSell all
-            // point toward short; the mirror three toward long), or the
-            // existing 4-way [Signal.side] lookup for the other two
-            // techniques.
+            // for worm10's four kinds (sellOpen1/zigzagSell point toward
+            // short; the mirror two toward long), or the existing 4-way
+            // [Signal.side] lookup for the other two techniques.
             final pendingSide = worm10PendingKindWire != null
                 ? switch (worm10EventKindFromWire(worm10PendingKindWire)) {
-                    Worm10EventKind.buyOpen1 || Worm10EventKind.zigzagBuy || Worm10EventKind.sellClose1 =>
-                      SignalSide.buy,
-                    Worm10EventKind.sellOpen1 || Worm10EventKind.zigzagSell || Worm10EventKind.buyClose1 =>
-                      SignalSide.sell,
+                    Worm10EventKind.buyOpen1 || Worm10EventKind.zigzagBuy => SignalSide.buy,
+                    Worm10EventKind.sellOpen1 || Worm10EventKind.zigzagSell => SignalSide.sell,
                   }
                 : Signal(tag: signalTagFromWire(pendingWireTag), time: pendingBarTime).side;
             final pendingDirection = pendingSide == SignalSide.buy ? 'buy' : 'sell';
@@ -560,6 +578,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               isAutoManaged: isAutoManaged,
               isPaused: isPaused,
               isLastTagged: isLastTagged,
+              isIgnited: ignitedBases.contains(tvSymbol),
               direction: position['action'] as String?,
               price: positionPriceOpen,
               currentPrice: positionCurrentPrice,
@@ -617,6 +636,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               isAutoManaged: isAutoManaged,
               isPaused: isPaused,
               isLastTagged: isLastTagged,
+              isIgnited: ignitedBases.contains(tvSymbol),
               desiredVolume: desiredVolume,
               currentVolume: tradeVolumes.lastApplied(volKey),
               volumeMin: volumeMinForRow,
@@ -651,6 +671,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               isAutoManaged: isAutoManaged,
               isPaused: isPaused,
               isLastTagged: isLastTagged,
+              isIgnited: ignitedBases.contains(tvSymbol),
               waitingReason: reasonEntry?['reason'] as String?,
               desiredVolume: desiredVolume,
               currentVolume: tradeVolumes.lastApplied(volKey),

@@ -114,7 +114,20 @@ class RiskGate {
   String _key(String symbol, AutoCategory category) =>
       '$symbol|${category.wireValue}';
 
-  GateResult gate(String action, String symbol, AutoCategory category) {
+  /// [bypassMarginGate] (2026-10-17, per the user: "margin level has
+  /// nothing to do with manual ignited pair. so if margin level is less
+  /// than rule, still this ignited pair will run once it is triggered") -
+  /// skips BOTH margin-level rules (the hard [marginGateTripped] block and
+  /// the margin-tiered position cap, [positionCapFor]) for a pair the user
+  /// explicitly ignited via the Dashboard's thunder icon. Every other gate
+  /// (kill switch, cooldown, daily loss limit, per-symbol max-positions)
+  /// still applies unchanged - the user only ever singled out margin level.
+  GateResult gate(
+    String action,
+    String symbol,
+    AutoCategory category, {
+    bool bypassMarginGate = false,
+  }) {
     if (action == 'close') return const GateResult.allowed();
 
     _rolloverIfNewDay();
@@ -124,7 +137,7 @@ class RiskGate {
     if (killSwitchTripped) {
       return const GateResult.blocked('KILL SWITCH: STOP file present');
     }
-    if (marginGateTripped) {
+    if (!bypassMarginGate && marginGateTripped) {
       return GateResult.blocked(
         'MARGIN GATE: margin level ${_marginLevel!.toStringAsFixed(1)}% <= '
         '$marginGateThresholdPct% - new opens blocked until it recovers',
@@ -149,7 +162,7 @@ class RiskGate {
     // real risk rises and getting out of the way entirely above 300%.
     // Checked BEFORE the per-symbol cap so the more general limit is what
     // the user sees in the block reason when both would apply.
-    final cap = positionCapFor(_marginLevel);
+    final cap = bypassMarginGate ? null : positionCapFor(_marginLevel);
     if (cap != null) {
       final totalOpen = _state.openPositions.values.fold(0, (a, b) => a + b);
       if (totalOpen >= cap) {

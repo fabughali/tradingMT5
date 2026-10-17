@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../data/models/decision_technique.dart';
+import '../../widgets/backtester_card.dart';
 
 /// "Read more" screen for a decision technique (2026-10-06, per the user:
 /// "below each technique there is read more .. once it is clicked, app
@@ -51,7 +52,13 @@ class TechniqueDetailsScreen extends StatelessWidget {
         children: [
           Center(
             child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 720),
+              // Widened 2026-10-17, per the user ("make the screen in
+              // summary expanded") - the backtester's result table (9+
+              // columns) was cramped inside the original 720px prose
+              // column; the "How this technique works" text itself still
+              // reads fine at this width, it just no longer caps the
+              // whole screen.
+              constraints: const BoxConstraints(maxWidth: 1200),
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(24, 28, 24, 36),
                 child: Column(
@@ -92,6 +99,13 @@ class TechniqueDetailsScreen extends StatelessWidget {
                     const Divider(height: 1),
                     const SizedBox(height: 28),
                     ...sections,
+                    // Technique Summary screen's backtester (2026-10-17,
+                    // per the user) - re-runs this SAME decision logic
+                    // against real historical data. Worm10/Hybrid Decision
+                    // only: it's built directly on [worm10DecisionFor] and
+                    // [deriveWorm10Events], which the other two techniques
+                    // don't use.
+                    if (technique.id == DecisionTechnique.worm10.id) const BacktesterCard(),
                   ],
                 ),
               ),

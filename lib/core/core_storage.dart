@@ -258,6 +258,29 @@ class CoreStorage {
   /// comment.
   String get copyPositionsFile => p.join(logsDir, 'copy-positions.json');
 
+  /// The Technique Summary screen's backtester request/result (2026-10-17,
+  /// per the user) - see [BacktestRequestStore]/[BacktestResultStore]'s own
+  /// doc comments.
+  String get backtestRequestFile => p.join(logsDir, 'backtest-request.json');
+  String get backtestResultFile => p.join(logsDir, 'backtest-result.json');
+
+  /// Bases the user manually "ignited" via the Dashboard's thunder icon
+  /// (2026-10-17, per the user: "add a thunder icon per each pair ... where
+  /// user can ignite any waiting pair ... margin level has nothing to do
+  /// with manual ignited pair") - once this pair's own real signal next
+  /// triggers a fresh open, the risk gate's margin-level checks are
+  /// bypassed for that one open, then this flag clears itself (one-shot).
+  /// See [IgnitedPairStore]'s own doc comment.
+  String get ignitedPairsFile => p.join(logsDir, 'ignited-pairs.json');
+
+  /// Marker for the one-time retroactive SL fix run once after the
+  /// 2026-10-17 SLL redesign (TP/SL now fixed at the 60/40 model's own
+  /// levels, never modified again - see
+  /// [EngineService.retroactiveFix6040SlOnce]'s own doc comment). Presence
+  /// means every position open at that point has already had its SL
+  /// re-derived; never re-runs after that, even across restarts.
+  String get sllMigrationDoneFile => p.join(logsDir, 'sll-migration-done.marker');
+
   /// Per `${category.wireValue}|$tvSymbol` manual trade-size override +
   /// step-down retry state (2026-10-03, per the user: "add one more column
   /// about current trade volume ... with plus minus icons"). See

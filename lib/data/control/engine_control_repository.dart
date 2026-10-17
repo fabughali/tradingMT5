@@ -12,6 +12,10 @@ import '../identity/supertrend_pending_store.dart';
 import '../identity/symbol_resolve_store.dart';
 import '../identity/add_copy_request_store.dart';
 import '../identity/add_copy_result_store.dart';
+import '../identity/backtest_request_store.dart';
+import '../identity/backtest_result_store.dart';
+import '../identity/ignited_pair_store.dart';
+import '../models/backtest_row.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
 import '../identity/unpause_check_request_store.dart';
@@ -39,11 +43,14 @@ class EngineControlRepository {
       _terminateRequests = TerminateRequestStore(_storage),
       _addCopyRequests = AddCopyRequestStore(_storage),
       _addCopyResults = AddCopyResultStore(_storage),
+      _backtestRequests = BacktestRequestStore(_storage),
+      _backtestResults = BacktestResultStore(_storage),
       _tradeVolumes = TradeVolumeStore(_storage),
       _retired = RetiredStore(_storage),
       _pendingSignals = PendingSignalStore(_storage),
       _supertrendPending = SupertrendPendingStore(_storage),
       _paused = PausedPairStore(_storage),
+      _ignited = IgnitedPairStore(_storage),
       _unpauseRequests = UnpauseCheckRequestStore(_storage),
       _symbolResolve = SymbolResolveStore(_storage),
       _logger = AppLogger(_storage);
@@ -54,11 +61,14 @@ class EngineControlRepository {
   final TerminateRequestStore _terminateRequests;
   final AddCopyRequestStore _addCopyRequests;
   final AddCopyResultStore _addCopyResults;
+  final BacktestRequestStore _backtestRequests;
+  final BacktestResultStore _backtestResults;
   final TradeVolumeStore _tradeVolumes;
   final RetiredStore _retired;
   final PendingSignalStore _pendingSignals;
   final SupertrendPendingStore _supertrendPending;
   final PausedPairStore _paused;
+  final IgnitedPairStore _ignited;
   final UnpauseCheckRequestStore _unpauseRequests;
   final SymbolResolveStore _symbolResolve;
 
@@ -267,6 +277,54 @@ class EngineControlRepository {
   /// Polled by [addCopyResultsProvider] - every outcome currently sitting
   /// in the store, across all symbols, in one file read.
   Map<String, Map<String, dynamic>> addCopyResultsSnapshot() => _addCopyResults.peekAll();
+
+  /// Technique Summary screen's backtester "Execute" button (2026-10-17,
+  /// per the user: investment/pair/days). Fire-and-forget, same shape as
+  /// every other request store here - the engine picks it up on its next
+  /// cycle.
+  void requestBacktest({
+    required String tvSymbol,
+    required String mt5Symbol,
+    required double investment,
+    required int days,
+    required double volume,
+  }) {
+    _backtestRequests.request(
+      tvSymbol: tvSymbol,
+      mt5Symbol: mt5Symbol,
+      investment: investment,
+      days: days,
+      volume: volume,
+    );
+    _logUserAction(
+      'Backtest requested for $tvSymbol/$mt5Symbol ($days day(s), investment '
+      '\$${investment.toStringAsFixed(2)}, volume $volume).',
+    );
+  }
+
+  /// Polled while a backtest is pending/running - null means no run has
+  /// ever been requested (or the result was cleared). See
+  /// [BacktestResultStore.peek]'s own doc comment for the status values.
+  ({String status, BacktestResult? result})? peekBacktestResult() => _backtestResults.peek();
+
+  void clearBacktestResult() => _backtestResults.clear();
+
+  /// Dashboard's thunder icon (2026-10-17, per the user: "add a thunder
+  /// icon per each pair .. where user can ignite any waiting pair. once
+  /// user ignite any pair, it will be filled and gave the priority. margin
+  /// level has nothing to do with manual ignited pair"). Only meaningful
+  /// for a pair with no running position yet - the icon itself is disabled
+  /// in the GUI for a running row. See [IgnitedPairStore]'s own doc comment
+  /// for the one-shot margin-level-bypass semantics.
+  void ignitePair(String tvSymbol) {
+    _ignited.ignite(tvSymbol);
+    _logUserAction(
+      'Ignited $tvSymbol (Dashboard) - its next real signal will open '
+      'regardless of margin level.',
+    );
+  }
+
+  bool isIgnited(String tvSymbol) => _ignited.isIgnited(tvSymbol);
 
   /// Dashboard volume +/- (2026-10-03, per the user) — sets the target
   /// volume for [tvSymbol]'s NEXT open (fresh or recycled). Never touches a
