@@ -1885,7 +1885,30 @@ class EngineService {
     final range = await _readConfirmedRange(cdp, category, tvSymbol, immediate: immediate);
     if (range == null) return;
 
-    await setChartView(cdp, tvSymbol, category.signalResolution);
+    // 2026-10-17 - found live, root-caused from a real financial loss: this
+    // call's own return value was never checked. When the switch silently
+    // times out (confirmed happening repeatedly under the TradingView/CDP
+    // instability already well-documented throughout this codebase's own
+    // doc comments), the code used to barrel ahead and read signals from
+    // WHATEVER symbol the chart was still actually showing - in one
+    // confirmed live incident, an entire 26-symbol "verify every
+    // auto-managed pair" sweep misattributed ONE stuck symbol's own
+    // 10-day-old signal to every other symbol in the sweep, each exactly
+    // ~43s apart, because every single switch attempt in that sweep
+    // silently failed and nothing ever noticed. Refusing to read signals
+    // at all unless the chart is CONFIRMED showing the right symbol is the
+    // only safe response - a skipped cycle is far better than a decision
+    // made on the wrong pair's data.
+    final chartView = await setChartView(cdp, tvSymbol, category.signalResolution);
+    if (!chartView.ok) {
+      logger.log(
+        '$tvSymbol ($category): chart view switch failed (${chartView.error}) - '
+        'refusing to read signals from a chart that might still be showing a '
+        'different symbol. Skipping this cycle.',
+        level: 'ERROR',
+      );
+      return;
+    }
     var check = await readSwingOscillatorSignals(
       cdp,
       tvSymbol,
@@ -2421,7 +2444,21 @@ class EngineService {
     if (range == null) return;
 
     // Supertrend Plus's own Buy/Sell entry signal.
-    await setChartView(cdp, tvSymbol, category.signalResolution);
+    // 2026-10-17 - same unchecked-result bug fixed everywhere else this
+    // exact call appears - see [_checkOneSymbol]'s own matching fix for
+    // the full root-cause reasoning (confirmed live: a whole sweep
+    // misattributing one stuck symbol's stale signal to every other
+    // symbol in it).
+    final chartView = await setChartView(cdp, tvSymbol, category.signalResolution);
+    if (!chartView.ok) {
+      logger.log(
+        '$tvSymbol ($category): chart view switch failed (${chartView.error}) - '
+        'refusing to read signals from a chart that might still be showing a '
+        'different symbol. Skipping this cycle.',
+        level: 'ERROR',
+      );
+      return;
+    }
     final check = await readSupertrendSignals(
       cdp,
       tvSymbol,
@@ -2650,7 +2687,28 @@ class EngineService {
     );
     if (range == null) return;
 
-    await setChartView(cdp, tvSymbol, category.signalResolution);
+    // 2026-10-17 - THIS is the exact call that caused a confirmed real
+    // financial loss: its return value was never checked, so when the
+    // chart-view switch silently timed out during a "verify every
+    // auto-managed pair" sweep, the code kept reading whatever symbol the
+    // chart was ACTUALLY still showing and misattributing it to every
+    // other symbol in the sweep - confirmed live via engine.log: 26
+    // different symbols all returned the IDENTICAL 10-day-old
+    // SELL_OPEN1@Oct6 event, each read roughly 43s apart, one per symbol in
+    // the sweep's own alphabetical order, meaning only the very first
+    // symbol's chart was ever genuinely showing - every subsequent "switch"
+    // never actually happened. See [_checkOneSymbol]'s own matching fix for
+    // the general pattern.
+    final chartView = await setChartView(cdp, tvSymbol, category.signalResolution);
+    if (!chartView.ok) {
+      logger.log(
+        '$tvSymbol ($category): chart view switch failed (${chartView.error}) - '
+        'refusing to read signals from a chart that might still be showing a '
+        'different symbol. Skipping this cycle.',
+        level: 'ERROR',
+      );
+      return;
+    }
     var check = await readWorm10Signals(
       cdp,
       tvSymbol,
@@ -3307,7 +3365,21 @@ class EngineService {
     String? scriptIdPart,
   }) async {
     final rangeScriptIdPart = scriptIdPart ?? customScripts[0].scriptIdPart;
-    await setChartView(cdp, tvSymbol, category.rangeResolution);
+    // 2026-10-17 - same unchecked-result bug fixed everywhere else this
+    // call appears - see [_checkOneSymbol]'s own matching fix for the full
+    // root-cause reasoning. This one feeds the TP/SL range every
+    // technique shares, so a misattributed symbol here would compute the
+    // WRONG stop-loss/take-profit levels for whatever's actually open.
+    final chartView = await setChartView(cdp, tvSymbol, category.rangeResolution);
+    if (!chartView.ok) {
+      logger.log(
+        '$tvSymbol ($category): chart view switch failed (${chartView.error}) - '
+        'refusing to read the TP/SL range from a chart that might still be '
+        'showing a different symbol.',
+        level: 'ERROR',
+      );
+      return null;
+    }
     final lines = await readLines(cdp, rangeScriptIdPart);
     var range = detectZigzagRange(lines, swingCount: config.technique.rangeSwingCount);
     // Extra retries when [immediate] - see the Power-on sweep's own doc
