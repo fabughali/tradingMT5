@@ -512,20 +512,40 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
             // for worm10's four kinds (sellOpen1/zigzagSell point toward
             // short; the mirror two toward long), or the existing 4-way
             // [Signal.side] lookup for the other two techniques.
+            //
+            // 2026-10-18, per a real confirmed crash: a persisted pending
+            // entry can carry a wire value from a kind that's since been
+            // REMOVED (e.g. `SELL_CLOSE1`, retired when the "weak"
+            // close-only variants were removed) - [worm10EventKindFromWire]
+            // throws on that by design. Treated the same as "no pending
+            // candidate" here rather than crashing the whole Dashboard
+            // refresh over one stale leftover row.
+            SignalSide? worm10PendingSide;
+            if (worm10PendingKindWire != null) {
+              try {
+                worm10PendingSide = switch (worm10EventKindFromWire(worm10PendingKindWire)) {
+                  Worm10EventKind.buyOpen1 || Worm10EventKind.zigzagBuy => SignalSide.buy,
+                  Worm10EventKind.sellOpen1 || Worm10EventKind.zigzagSell => SignalSide.sell,
+                };
+              } catch (_) {
+                worm10PendingSide = null;
+              }
+            }
             final pendingSide = worm10PendingKindWire != null
-                ? switch (worm10EventKindFromWire(worm10PendingKindWire)) {
-                    Worm10EventKind.buyOpen1 || Worm10EventKind.zigzagBuy => SignalSide.buy,
-                    Worm10EventKind.sellOpen1 || Worm10EventKind.zigzagSell => SignalSide.sell,
-                  }
+                ? worm10PendingSide
                 : Signal(tag: signalTagFromWire(pendingWireTag), time: pendingBarTime).side;
-            final pendingDirection = pendingSide == SignalSide.buy ? 'buy' : 'sell';
-            if (pendingDirection != (position['action'] as String?)) {
-              closeATag = pendingWireTag;
-              closeAAt = pendingBarTime;
-              closeBEta = DateTime.fromMillisecondsSinceEpoch(
-                (pendingBarTime + AutoCategory.oneHour.candlePeriod.inSeconds * 2) * 1000,
-                isUtc: true,
-              );
+            // null only when the catch above fired - skip this candidate
+            // entirely rather than crash on a stale/removed wire kind.
+            if (pendingSide != null) {
+              final pendingDirection = pendingSide == SignalSide.buy ? 'buy' : 'sell';
+              if (pendingDirection != (position['action'] as String?)) {
+                closeATag = pendingWireTag;
+                closeAAt = pendingBarTime;
+                closeBEta = DateTime.fromMillisecondsSinceEpoch(
+                  (pendingBarTime + AutoCategory.oneHour.candlePeriod.inSeconds * 2) * 1000,
+                  isUtc: true,
+                );
+              }
             }
           }
           final positionProfit = (position['profit'] as num?)?.toDouble();

@@ -224,10 +224,19 @@ Future<VerifyResult> verifyCustomScripts(CdpClient cdp) async {
 }
 
 class SetChartViewResult {
-  const SetChartViewResult({required this.ok, this.error, this.state});
+  const SetChartViewResult({required this.ok, this.error, this.state, this.switched = false});
   final bool ok;
   final String? error;
   final ChartState? state;
+
+  /// True only when a real `setSymbol`/`setResolution` call actually fired
+  /// this time (not a no-op because the chart was already showing the
+  /// requested view) - 2026-10-18, so callers know when it's necessary to
+  /// also wait for the underlying indicator SCRIPT's own computed data to
+  /// catch up, not just the chart's symbol label (confirmed real bug: the
+  /// chart reporting the new symbol via [getChartState] does not mean
+  /// worm_10_26/spy_9_26's own plot data has recalculated for it yet).
+  final bool switched;
 }
 
 /// Letter resolutions ('D','W','M') land internally as '1D'/'1W'/'1M' —
@@ -330,7 +339,7 @@ Future<SetChartViewResult> setChartView(
         resolution == null ||
         _normalizeResolution(state!.resolution ?? '') ==
             _normalizeResolution(resolution);
-    if (symOk && resOk) return SetChartViewResult(ok: true, state: state);
+    if (symOk && resOk) return SetChartViewResult(ok: true, state: state, switched: true);
   }
   return SetChartViewResult(
     ok: false,

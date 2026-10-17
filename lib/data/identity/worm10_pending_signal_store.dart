@@ -24,13 +24,27 @@ class Worm10PendingSignalStore {
 
   void _write(Map<String, dynamic> map) => _storage.writeJson(_storage.worm10PendingFile, map);
 
+  /// 2026-10-18, per a real confirmed crash: a pending entry can carry a
+  /// wire value from a kind that's since been REMOVED from
+  /// [Worm10EventKind] (e.g. `SELL_CLOSE1`/`BUY_CLOSE1`, retired when the
+  /// "weak" close-only variants were removed) - [worm10EventKindFromWire]
+  /// correctly throws on that, by design, for a genuinely corrupt value,
+  /// but a stale-but-was-once-valid value isn't corrupt, it's just
+  /// outdated. Treated as "nothing pending" and cleaned up here, the same
+  /// way every other store in this app skips a bad entry rather than
+  /// crashing the caller.
   Worm10PendingSignal? get(String key) {
     final raw = _readRaw()[key] as Map<String, dynamic>?;
     if (raw == null) return null;
-    return Worm10PendingSignal(
-      kind: worm10EventKindFromWire(raw['kind'] as String),
-      barTime: (raw['bar_time'] as num).toInt(),
-    );
+    try {
+      return Worm10PendingSignal(
+        kind: worm10EventKindFromWire(raw['kind'] as String),
+        barTime: (raw['bar_time'] as num).toInt(),
+      );
+    } catch (_) {
+      clear(key);
+      return null;
+    }
   }
 
   void set(String key, Worm10EventKind kind, int barTime) {

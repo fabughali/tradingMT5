@@ -87,10 +87,14 @@ class EntrySignalStore {
   /// Overwrites the update-signal fields on an existing snapshot - a no-op
   /// if [ticket] has no snapshot at all (shouldn't happen: a position with
   /// no entry snapshot has no ticket to update against in the first
-  /// place).
+  /// place). Also a no-op if [time] predates the snapshot's own [barTime]
+  /// (Open) - an update can never happen before the open it's updating;
+  /// see the identical, confirmed-live guard in
+  /// [Worm10EntrySignalStore.recordUpdate].
   void recordUpdate(int ticket, String tag, int time) {
     final existing = _byTicket[ticket];
     if (existing == null) return;
+    if (time < existing.barTime) return;
     _byTicket[ticket] = existing.withUpdate(tag, time);
     _persist();
   }

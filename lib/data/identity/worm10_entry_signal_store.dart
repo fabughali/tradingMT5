@@ -76,9 +76,21 @@ class Worm10EntrySignalStore {
     _persist();
   }
 
+  /// 2026-10-18, per a real confirmed bug: an Update ever written earlier
+  /// than its own position's Open (`barTime`) is impossible by
+  /// definition - an "update" is a re-confirmation of an ALREADY-running
+  /// position, it cannot predate the open it's updating. Confirmed live
+  /// (ticket 1660976227): Open 2026-10-17 16:00, Update 2026-09-07 00:00 -
+  /// over a month EARLIER - written by the retroactive audit's own
+  /// independently-rederived `updateEvent`, which was never checked
+  /// against the already-stored real open time. This guard is the single
+  /// point every write path funnels through, so no call site can
+  /// reintroduce it; a rejected write is logged by the caller's own
+  /// `current?.updateTime != time` check simply never matching again.
   void recordUpdate(int ticket, Worm10EventKind kind, int time) {
     final existing = _byTicket[ticket];
     if (existing == null) return;
+    if (time < existing.barTime) return;
     _byTicket[ticket] = existing.withUpdate(kind, time);
     _persist();
   }

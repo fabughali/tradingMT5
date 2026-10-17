@@ -2901,6 +2901,49 @@ class EngineService {
       customScripts[1].scriptIdPart,
       onDebugError: (msg) => logger.log('$tvSymbol ($category) worm10 signal: $msg'),
     );
+    // 2026-10-18, per a real confirmed bug - [chartView.ok] only means the
+    // chart's symbol LABEL switched; the worm_10_26/spy_9_26 scripts' own
+    // computed plot data can still lag behind that for a few seconds
+    // (confirmed live in the backtester, same mechanism: a stale read
+    // right after a symbol switch produced an impossible Update timestamp
+    // over a month before its own position's Open, on 3 separate live
+    // tickets). Only worth the settle delay when a switch actually
+    // happened this cycle ([chartView.switched]) - most cycles re-check a
+    // chart already showing the right symbol.
+    if (chartView.switched) {
+      var stable = false;
+      for (var attempt = 0; attempt < 6; attempt++) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+        final recheck = await readWorm10Signals(
+          cdp,
+          tvSymbol,
+          worm10Script.scriptIdPart,
+          customScripts[1].scriptIdPart,
+          onDebugError: (msg) => logger.log('$tvSymbol ($category) worm10 settle recheck: $msg'),
+        );
+        final prevLast = check.zigzag.signals.isEmpty ? null : check.zigzag.signals.last;
+        final nextLast = recheck.zigzag.signals.isEmpty ? null : recheck.zigzag.signals.last;
+        final agree = prevLast?.time == nextLast?.time && prevLast?.tag == nextLast?.tag;
+        check = recheck;
+        if (agree) {
+          stable = true;
+          break;
+        }
+        logger.log(
+          '$tvSymbol ($category): worm10 signal data still settling after '
+          'the symbol switch (attempt ${attempt + 1}/6) - retrying.',
+        );
+      }
+      if (!stable) {
+        logger.log(
+          '$tvSymbol ($category): worm10 signal data never stabilized after '
+          'switching charts - skipping this cycle rather than risk acting on '
+          'possibly-stale data from another symbol.',
+          level: 'ERROR',
+        );
+        return;
+      }
+    }
     var events = deriveWorm10Events(check);
     // Same extra-retry treatment as every other technique's own signal read.
     for (var i = 0; i < 2 && events.isEmpty && immediate; i++) {

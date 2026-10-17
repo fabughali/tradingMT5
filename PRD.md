@@ -1980,6 +1980,35 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Three more real bugs from the same family, found via a
+  real user report (ATOM ticket showing Update 2026-09-07, over a month
+  BEFORE its own Open 2026-10-17 — impossible by definition) and confirmed
+  NOT self-correcting despite the retroactive audit cache being cleared
+  33 times that day alone: (1) **Monotonicity guard**: neither
+  `Worm10EntrySignalStore.recordUpdate` nor the legacy
+  `EntrySignalStore.recordUpdate` ever checked that an Update's time came
+  after its own position's Open - now both reject (no-op) any write where
+  `time < barTime`, the single choke point every call site funnels
+  through. (2) **Live self-healing, not just the backtester**: the same
+  "chart reports the new symbol, but the indicator script's own computed
+  data hasn't caught up yet" race already fixed in `_runBacktest`
+  (2026-10-17) was NOT fixed in the live real-time sweep - confirmed live,
+  3 different real pairs (AAVE/ATOM/UNI) all independently backfilled an
+  impossible shared Update from a stale cross-symbol read.
+  `_checkOneSymbolWorm10` now runs the identical settle-and-recheck retry
+  (gated on `SetChartViewResult.switched` so it only costs time on a
+  cycle that actually switched symbols) before trusting any signal read.
+  (3) **Crash regression from the 2026-10-17 event-kind cleanup**: removing
+  `buyClose1`/`sellClose1` from `Worm10EventKind` made
+  `worm10EventKindFromWire` correctly throw on those now-unknown wire
+  strings - but `Worm10PendingSignalStore.get` and a Dashboard-side lookup
+  in `app_providers.dart` both called it unguarded, so a LEFTOVER
+  pre-cleanup pending entry (`"SELL_CLOSE1"`) crashed the technique-switch
+  check for that symbol every cycle, and would have crashed the Dashboard
+  the next time it rendered that row. Both call sites now catch and treat
+  an unparseable/retired wire value as "nothing pending," same resilience
+  pattern every other store in this app already uses for a corrupt entry.
+
 - **2026-10-17** — Worm10 backtester/decision-engine correctness pass,
   driven by repeated real-chart cross-checks against BTC/ETH/LTC/XRP:
   (1) **Spec correction**: removed the "weak" `buyClose1`/`sellClose1`
