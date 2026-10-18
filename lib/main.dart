@@ -123,6 +123,15 @@ void main() {
 }
 
 Future<void> _ensureMt5OnStartup() async {
+  // 2026-10-18, per the user, after repeatedly finding MT5 open on
+  // launch with Power showing off: this self-heal launch had NO Power
+  // check at all - it fired unconditionally on every GUI start,
+  // completely independent of whether the user actually wants trading
+  // active. The self-heal intent above only makes sense while Power is
+  // on - that's the only time anything is actually relying on MT5 being
+  // up. Checked fresh here (not cached) since this runs once at startup,
+  // same instant as the Power toggle's own read.
+  if (!_controlRepo.isPowerOn) return;
   final storage = CoreStorage.instance;
   final config = loadOrInitConfig(storage);
   if (Platform.isWindows) {

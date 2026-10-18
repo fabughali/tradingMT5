@@ -1980,6 +1980,26 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Fixed the REAL cause of MT5 opening with Power off,
+  per the user, after the previous fix (directly below) turned out not
+  to be the actual culprit: "hey still mt5 opens while power toggle
+  off??". Found a completely different code path: `lib/main.dart`'s
+  `main()` calls `_ensureMt5OnStartup()` unconditionally, fire-and-
+  forget, the instant the GUI process starts - with NO Power check at
+  all. This is a self-heal feature from 2026-09-19 (MT5 kept going down
+  independently of the app, so the GUI launches it fresh on its own
+  start so the Market Watch list doesn't just sit empty) - but it never
+  accounted for Power being OFF, so simply opening the GUI app was
+  enough to launch MT5 regardless of the user's actual trading intent.
+  The previous entry's fix only touched the ENGINE's own health-check
+  loop, which only runs once the engine process is already alive and
+  cycling - a real but much narrower race than this one, which fires
+  100% of the time on every GUI launch while Power is off. Fixed:
+  `_ensureMt5OnStartup` now returns immediately if
+  `EngineControlRepository.isPowerOn` is false - the self-heal launch
+  only makes sense while Power is on, since that's the only time
+  anything is actually relying on MT5 being up.
+
 - **2026-10-18** — Narrowed the window where MT5 launches during an
   in-progress shutdown, per the user: "i closed the app.. then tv and
   mt5 ... i open the app but still the power toggle is off... i found
