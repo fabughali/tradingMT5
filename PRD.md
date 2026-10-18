@@ -1980,6 +1980,83 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Backtester Pair/Volume input UX, per the user: "in
+  pair .. once user enter any text, app should give suggestions list
+  'if existed'. volum should match the value in mt5.. user only need to
+  press on +/- .. where default value is minimum mt5 value". Pair field
+  is now a `RawAutocomplete<SymbolMapping>` wrapping the same
+  `TextEditingController` - as the user types, a dropdown suggests
+  matching pairs already in `config.json` (contains-match, case
+  insensitive); picking one resolves it instantly via the existing
+  "already configured" fast path (no MT5/TradingView search) and
+  immediately fetches its real volume bounds. An unlisted pair typed in
+  full still runs the normal search once Execute is pressed - it just
+  never appears in the dropdown, matching the user's own "if existed"
+  qualifier. Volume is no longer free-typed: it's a +/- stepper
+  (identical visual pattern to the live Auto Table's own stepper -
+  `_VolumeStepper` in `backtester_card.dart`), reading real
+  `volume_min`/`volume_step`/`volume_max` straight off the symbol's own
+  MT5 Market Watch record (the SAME `get_marketwatch_symbols` fields
+  `EngineService._runBacktest` already normalizes against) and
+  defaulting to the real minimum - never a guessed number. For an
+  unlisted pair, the bounds come from the same `findSymbolInFullCatalog`
+  record the MT5-catalog search already fetches (no second round trip);
+  for a listed pair, a light `getMarketWatchSymbol` call on selection.
+  The stepper shows "—" and stays disabled until a pair is actually
+  resolved, rather than defaulting to any value that might not be real
+  for that symbol.
+
+- **2026-10-18** — Backtester: Volume restored as its own independent
+  4th input ("inputs are investment, pair, days, volum"), superseding
+  the Investment-drives-Volume entry directly below from earlier the
+  same day - that design (investment leveraged into a computed volume)
+  produced mathematically-correct but absurdly large lot sizes (2794
+  lots for a $100 investment on LTC) that didn't match what the user
+  actually wanted, confirmed directly: "keep same calculations exactly
+  as mt5... dont touch this" was about keeping THAT formula's own math
+  honest once something WAS chosen, not a mandate to keep deriving
+  volume from investment. Final design: Volume alone drives $ P&L
+  (`priceDiff * contractSize * volume - $0.1 commission`), normalized to
+  the symbol's real `volume_step`/`volume_min` from MT5 before use (so
+  the backtest never simulates a lot size MT5 itself wouldn't actually
+  let through); Investment stays purely the %-return basis, independent
+  of Volume - matching the user's own description ("more volume == more
+  p&l... more investment == more capital and multiplier") and real MT5
+  itself, which has no "dollar investment" concept at all, only the lot
+  size you choose. Also added, per the same message: `first_entry_price`
+  (the window's first trade's own entry) and `last_close_price` (the
+  exit of the LAST trade that's genuinely closed, explicitly excluding
+  the one still-open "now" trade) as new top-level summary fields on
+  `BacktestResult`, shown next to the existing per-row Entry/Exit
+  columns - verified live against real LTC data.
+
+- **2026-10-18** — Backtester redesign: Investment now DRIVES Volume,
+  per the user ("there should not be a pre-set values in the fields...
+  there should not be a pre-set table of calculations... user changes
+  the investment value but calculations stay fixed... read calculations
+  from mt5... more investment == more capital and multiplier"). Research
+  first, per the user's explicit instruction: confirmed the live
+  Auto-Trades table already treats "Investment" as a DERIVED notional
+  value (`volume * contractSize * price`), never a free input - the
+  backtester's old Investment field was inconsistent with that, used
+  only to divide into a percentage, completely disconnected from the
+  separate Volume field that actually drove the dollar P&L. Fixed:
+  removed the standalone Volume input entirely; each trade's own real
+  lot size is now computed as `investment * 2000 (this broker's real
+  leverage) / (contractSize * entryPrice)`, rounded to the symbol's real
+  `volume_step` and floored at its real `volume_min` - the exact same
+  clamp `_openPosition` enforces for a live trade - verified live against
+  real MT5 data (LTC, $100 investment -> ~2795 lots, profit_usd matching
+  the formula exactly). Per the user's own explicit confirmation this
+  produces very large lot sizes for a small investment, deliberately left
+  as-is ("keep same calculations exactly as mt5... user need to test if
+  this inputs gains or loss") - the point is testing an investment
+  amount's real gain/loss, not a realistic position size. Also: every
+  input field now starts genuinely blank (no pre-filled 100/30/0.01), and
+  editing Investment/Days/Pair after a run immediately clears the
+  displayed result so a stale table from before the edit can never sit on
+  screen looking like it reflects the current field values.
+
 - **2026-10-18** — Waiting-card fixes, per the user's two immediate
   follow-ups to the two-section redesign: (1) the fixed outer `height`
   never accounted for the `Container`'s own top+bottom padding, so the

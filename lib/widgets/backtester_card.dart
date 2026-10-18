@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/models/app_config.dart';
 import '../data/models/backtest_row.dart';
 import '../data/mt5/mt5_client.dart';
 import '../data/providers/app_providers.dart';
@@ -16,11 +17,18 @@ enum _ResolveState { idle, checking, pass, fail }
 /// number of days. and button will be for execution, then app will make a
 /// reverse calculations from that number of days starting from that day
 /// up to now"). Re-runs the SAME real worm_10_26 decision logic against
-/// historical TradingView data at the volume the user sets, leverage
-/// 1:2000, same broker/MT5 rules. Queued through the live engine's own
-/// existing CDP connection (not a separate one) so it can never contend
-/// with live trading for chart control - per the user's own choice when
-/// this trade-off was raised.
+/// historical TradingView data, same broker/MT5 rules. Queued through the
+/// live engine's own existing CDP connection (not a separate one) so it
+/// can never contend with live trading for chart control - per the
+/// user's own choice when this trade-off was raised.
+///
+/// Volume is its own real, independent input (2026-10-18, per the user:
+/// "inputs are investment, pair, days, volum") - real MT5 has no "dollar
+/// investment" concept at all, only the lot size actually traded, so
+/// Volume alone drives $ P&L while Investment stays the %-return basis.
+/// The typed volume is normalized to the symbol's real volume_step/
+/// volume_min before use, same as a live trade would be - see
+/// [BacktestRow.volume]'s own doc comment.
 ///
 /// Pair is a free-text field, not limited to already-configured pairs
 /// (2026-10-17, per the user: "why user have to choose from drop menu
@@ -43,8 +51,8 @@ class BacktesterCard extends ConsumerStatefulWidget {
 class _BacktesterCardState extends ConsumerState<BacktesterCard> {
   late final TextEditingController _investmentCtrl;
   late final TextEditingController _daysCtrl;
-  late final TextEditingController _volumeCtrl;
   late final TextEditingController _pairCtrl;
+  late final FocusNode _pairFocusNode;
 
   _ResolveState _mt5State = _ResolveState.idle;
   _ResolveState _tvState = _ResolveState.idle;
@@ -52,6 +60,19 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
   String? _resolvedForQuery;
   String? _resolvedTvSymbol;
   String? _resolvedMt5Symbol;
+
+  // 2026-10-18, per the user: "volum should match the value in mt5..
+  // user only need to press on +/- .. where default value is minimum
+  // mt5 value" - no more free-typed number; a +/- stepper (same control
+  // the live Auto Table already uses) stepping in the resolved symbol's
+  // real MT5 volume_step, starting from its real volume_min. Null until
+  // a symbol is actually resolved - the stepper stays disabled until
+  // then rather than guessing a bound that might not apply to this pair.
+  double? _volumeMin;
+  double? _volumeStep;
+  double? _volumeMax;
+  double? _volume;
+
   Timer? _tvPollTimer;
   int _tvPollElapsedMs = 0;
   static const _tvPollTimeout = Duration(seconds: 120);
@@ -75,16 +96,28 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
   @override
   void initState() {
     super.initState();
-    _investmentCtrl = TextEditingController(text: '100');
-    _daysCtrl = TextEditingController(text: '30');
-    // 2026-10-17, per the user: default volume=1 is large enough on a
-    // high-priced asset (e.g. BTC) that the flat -$5 baseline SL sits only
-    // a few dollars from entry - normal intra-candle noise hits it almost
-    // immediately, before any real signal-to-signal close (what the user
-    // sees by eye on the chart) ever gets a chance to happen. 0.01 is a
-    // far more typical real position size, giving the SL real room.
-    _volumeCtrl = TextEditingController(text: '0.01');
+    // 2026-10-18, per the user: "there should not be a pre-set values in
+    // the fields" - every field starts genuinely blank, forcing an
+    // explicit value rather than silently running at a number the user
+    // never actually chose.
+    _investmentCtrl = TextEditingController();
+    _daysCtrl = TextEditingController();
     _pairCtrl = TextEditingController();
+    _pairFocusNode = FocusNode();
+    // 2026-10-18, per the user: "there should not be a pre-set table of
+    // calculations... user changes investment/volume/days but
+    // calculations stay fixed" - any edit after a run invalidates the
+    // displayed result immediately, so a stale table (from before the
+    // edit) never sits on screen looking like it reflects the current
+    // field values.
+    _investmentCtrl.addListener(_clearStaleResult);
+    _daysCtrl.addListener(_clearStaleResult);
+  }
+
+  void _clearStaleResult() {
+    if (ref.read(controlRepositoryProvider).peekBacktestResult()?.result != null) {
+      ref.read(controlRepositoryProvider).clearBacktestResult();
+    }
   }
 
   @override
@@ -93,8 +126,8 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
     _waitingGraceTimer?.cancel();
     _investmentCtrl.dispose();
     _daysCtrl.dispose();
-    _volumeCtrl.dispose();
     _pairCtrl.dispose();
+    _pairFocusNode.dispose();
     super.dispose();
   }
 
@@ -114,17 +147,75 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
     _resolvedForQuery = null;
     _resolvedTvSymbol = null;
     _resolvedMt5Symbol = null;
+    _volumeMin = null;
+    _volumeStep = null;
+    _volumeMax = null;
+    _volume = null;
+  }
+
+  // 2026-10-18, per the user: "volum should match the value in mt5" -
+  // reads the real broker bounds straight off the symbol's own MT5
+  // Market Watch record (same 'volume_min'/'volume_step'/'volume_max'
+  // fields the live engine's own volume stepper and [EngineService.
+  // _runBacktest]'s normalization use) and defaults the stepper to the
+  // real minimum, never a guessed number.
+  void _applyVolumeBounds(Map<String, dynamic> symbolInfo) {
+    final min = (symbolInfo['volume_min'] as num?)?.toDouble() ?? 0.01;
+    final step = (symbolInfo['volume_step'] as num?)?.toDouble() ?? min;
+    final max = (symbolInfo['volume_max'] as num?)?.toDouble() ?? 100;
+    if (!mounted) return;
+    setState(() {
+      _volumeMin = min;
+      _volumeStep = step;
+      _volumeMax = max;
+      _volume = min;
+    });
+  }
+
+  Future<void> _fetchVolumeBoundsFor(String mt5Symbol) async {
+    final storage = ref.read(storageProvider);
+    final config = ref.read(configProvider);
+    final env = storage.readEnvFile();
+    final client = Mt5Client(apiKey: env['MT5_MCP_API_KEY'] ?? '', host: config.mt5.mcpHost, port: config.mt5.mcpPort);
+    try {
+      await client.connect();
+      final info = await client.getMarketWatchSymbol(mt5Symbol);
+      final symbols = (info['symbols'] as List?) ?? const [];
+      if (symbols.isNotEmpty) _applyVolumeBounds(symbols.first as Map<String, dynamic>);
+    } catch (_) {
+      // Leave bounds unset - the stepper just stays disabled; the user
+      // can retry (re-select the pair) rather than trade on a guessed
+      // bound that might not match this symbol's real broker limits.
+    } finally {
+      client.close();
+    }
+  }
+
+  // Shared by the Pair field's autocomplete selection AND the exact-text
+  // fast path below - a pair already in config.json never needs an MT5/
+  // TradingView search, only its real volume bounds.
+  Future<void> _resolveListedPair(SymbolMapping m) async {
+    setState(() {
+      _resetResolution();
+      _mt5State = _ResolveState.pass;
+      _tvState = _ResolveState.pass;
+      _resolveDetail = 'Already configured (${m.mt5Symbol}).';
+      _resolvedForQuery = m.tradingViewSymbol.toUpperCase();
+      _resolvedTvSymbol = m.tradingViewSymbol;
+      _resolvedMt5Symbol = m.mt5Symbol;
+      _pairCtrl.text = m.tradingViewSymbol;
+    });
+    await _fetchVolumeBoundsFor(m.mt5Symbol);
   }
 
   Future<void> _execute() async {
     final investment = double.tryParse(_investmentCtrl.text.trim());
     final days = int.tryParse(_daysCtrl.text.trim());
-    final volume = double.tryParse(_volumeCtrl.text.trim());
     final query = _pairCtrl.text.trim().toUpperCase();
-    if (investment == null || investment <= 0 || days == null || days <= 0 || volume == null || volume <= 0 || query.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter a valid investment, pair, volume, and number of days.')),
-      );
+    if (investment == null || investment <= 0 || days == null || days <= 0 || query.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Enter a valid investment, pair, and number of days.')));
       return;
     }
 
@@ -135,31 +226,27 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
         mt5Symbol: _resolvedMt5Symbol!,
         investment: investment,
         days: days,
-        volume: volume,
+        volume: _volume ?? _volumeMin ?? 0.01,
       );
       _markSubmitted();
       return;
     }
 
-    // Fast path: already a known pair in config.json - no search needed.
+    // Fast path: already a known pair in config.json - no search needed
+    // (2026-10-18, per the user, confirming existing behavior: "app does
+    // not require to search for a pair in mt5 and tv while it is already
+    // existed in app list").
     final config = ref.read(configProvider);
     for (final m in config.symbols) {
       if (m.tradingViewSymbol.toUpperCase() == query) {
-        setState(() {
-          _resetResolution();
-          _mt5State = _ResolveState.pass;
-          _tvState = _ResolveState.pass;
-          _resolveDetail = 'Already configured (${m.mt5Symbol}).';
-          _resolvedForQuery = query;
-          _resolvedTvSymbol = m.tradingViewSymbol;
-          _resolvedMt5Symbol = m.mt5Symbol;
-        });
+        await _resolveListedPair(m);
+        if (!mounted) return;
         ref.read(controlRepositoryProvider).requestBacktest(
           tvSymbol: m.tradingViewSymbol,
           mt5Symbol: m.mt5Symbol,
           investment: investment,
           days: days,
-          volume: volume,
+          volume: _volume ?? _volumeMin ?? 0.01,
         );
         _markSubmitted();
         return;
@@ -168,15 +255,10 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
 
     // Unlisted pair - same MT5-catalog + TradingView-existence search as
     // Add Pair, just never written to config.json.
-    await _resolveAndRun(query, investment: investment, days: days, volume: volume);
+    await _resolveAndRun(query, investment: investment, days: days);
   }
 
-  Future<void> _resolveAndRun(
-    String query, {
-    required double investment,
-    required int days,
-    required double volume,
-  }) async {
+  Future<void> _resolveAndRun(String query, {required double investment, required int days}) async {
     setState(() {
       _resetResolution();
       _mt5State = _ResolveState.checking;
@@ -224,6 +306,11 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
       return;
     }
     final mt5Symbol = record['symbol'] as String? ?? query;
+    // [record] already carries this symbol's own volume_min/volume_step/
+    // volume_max - the SAME `get_marketwatch_symbols` record the engine
+    // itself reads bounds from - so the stepper gets its real default
+    // the instant MT5 confirms the symbol, no second round trip.
+    _applyVolumeBounds(record);
     setState(() {
       _mt5State = _ResolveState.pass;
       _resolveDetail = 'Found in MT5 as "$mt5Symbol" - confirming on TradingView...';
@@ -235,17 +322,11 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
     _tvPollTimer?.cancel();
     _tvPollTimer = Timer.periodic(
       const Duration(milliseconds: 1500),
-      (_) => _pollTv(query, mt5Symbol, investment: investment, days: days, volume: volume),
+      (_) => _pollTv(query, mt5Symbol, investment: investment, days: days),
     );
   }
 
-  void _pollTv(
-    String tvSymbol,
-    String mt5Symbol, {
-    required double investment,
-    required int days,
-    required double volume,
-  }) {
+  void _pollTv(String tvSymbol, String mt5Symbol, {required double investment, required int days}) {
     final result = ref.read(controlRepositoryProvider).peekSymbolResolve(tvSymbol);
     _tvPollElapsedMs += 1500;
     if (result == null || result.isPending) {
@@ -282,7 +363,7 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
       mt5Symbol: mt5Symbol,
       investment: investment,
       days: days,
-      volume: volume,
+      volume: _volume ?? _volumeMin ?? 0.01,
     );
     _markSubmitted();
   }
@@ -354,6 +435,10 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
               runSpacing: 12,
               crossAxisAlignment: WrapCrossAlignment.end,
               children: [
+                // Investment is the %-return basis, independent of Volume
+                // (2026-10-18, per the user: "inputs are investment, pair,
+                // days, volum" - real MT5 has no "dollar investment"
+                // field at all, only the lot size you trade).
                 SizedBox(
                   width: 160,
                   child: TextField(
@@ -367,23 +452,75 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
                     ),
                   ),
                 ),
-                // Free-text (2026-10-17, per the user: "why user have to
-                // choose from drop menu list... so user can apply back
-                // test on any (listed or not listed) pairs") - typing a
-                // new pair re-arms resolution (see [_resetResolution]).
+                // Free-text with suggestions (2026-10-17, per the user:
+                // "why user have to choose from drop menu list... so user
+                // can apply back test on any (listed or not listed)
+                // pairs"; 2026-10-18: "once user enter any text, app
+                // should give suggestions list 'if existed'") - matches
+                // are scoped to pairs already in config.json; picking one
+                // resolves it instantly (no MT5/TradingView search, same
+                // fast path as typing the exact ticker) and fetches its
+                // real volume bounds for the stepper below. An unlisted
+                // pair still runs the full search once Execute is
+                // pressed - it just never shows in this dropdown.
                 SizedBox(
                   width: 200,
-                  child: TextField(
-                    controller: _pairCtrl,
-                    enabled: !isBusy,
-                    textCapitalization: TextCapitalization.characters,
-                    onChanged: (_) => setState(_resetResolution),
-                    onSubmitted: (_) => _execute(),
-                    decoration: const InputDecoration(
-                      labelText: 'Pair (e.g. BTCUSDT)',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
+                  child: RawAutocomplete<SymbolMapping>(
+                    textEditingController: _pairCtrl,
+                    focusNode: _pairFocusNode,
+                    optionsBuilder: (TextEditingValue value) {
+                      final q = value.text.trim().toUpperCase();
+                      if (q.isEmpty) return const Iterable<SymbolMapping>.empty();
+                      return ref.read(configProvider).symbols.where((m) => m.tradingViewSymbol.toUpperCase().contains(q));
+                    },
+                    displayStringForOption: (m) => m.tradingViewSymbol,
+                    onSelected: (m) => _resolveListedPair(m),
+                    fieldViewBuilder: (context, controller, focusNode, onFieldSubmitted) {
+                      return TextField(
+                        controller: controller,
+                        focusNode: focusNode,
+                        enabled: !isBusy,
+                        textCapitalization: TextCapitalization.characters,
+                        onChanged: (_) {
+                          setState(_resetResolution);
+                          _clearStaleResult();
+                        },
+                        onSubmitted: (_) {
+                          onFieldSubmitted();
+                          _execute();
+                        },
+                        decoration: const InputDecoration(
+                          labelText: 'Pair (e.g. BTCUSDT)',
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      );
+                    },
+                    optionsViewBuilder: (context, onSelected, options) {
+                      return Align(
+                        alignment: Alignment.topLeft,
+                        child: Material(
+                          elevation: 4,
+                          child: SizedBox(
+                            width: 200,
+                            child: ListView.builder(
+                              padding: EdgeInsets.zero,
+                              shrinkWrap: true,
+                              itemCount: options.length,
+                              itemBuilder: (context, index) {
+                                final m = options.elementAt(index);
+                                return ListTile(
+                                  dense: true,
+                                  title: Text(m.tradingViewSymbol),
+                                  subtitle: Text(m.mt5Symbol, style: const TextStyle(fontSize: 11)),
+                                  onTap: () => onSelected(m),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      );
+                    },
                   ),
                 ),
                 SizedBox(
@@ -399,21 +536,19 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
                     ),
                   ),
                 ),
-                // 2026-10-17, per the user's own follow-up: "in back
-                // tester, make sure can adjust volum, not fixed 1" -
-                // supersedes the original spec's flat v=1.
-                SizedBox(
-                  width: 120,
-                  child: TextField(
-                    controller: _volumeCtrl,
-                    enabled: !isBusy,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: const InputDecoration(
-                      labelText: 'Volume',
-                      border: OutlineInputBorder(),
-                      isDense: true,
-                    ),
-                  ),
+                // 2026-10-18, per the user: "volum should match the value
+                // in mt5.. user only need to press on +/- .. where
+                // default value is minimum mt5 value" - a stepper, not a
+                // free-typed number, same control the live Auto Table
+                // already uses; disabled with a dash until a pair is
+                // actually resolved and its real bounds are known.
+                _VolumeStepper(
+                  value: _volume,
+                  min: _volumeMin,
+                  step: _volumeStep,
+                  max: _volumeMax,
+                  enabled: !isBusy && _volumeMin != null,
+                  onChanged: (v) => setState(() => _volume = v),
                 ),
                 // 2026-10-17, per the user: "when engine is busy, make the
                 // check button disabled. when button is doing a check, make
@@ -536,8 +671,7 @@ class _BacktestResultView extends StatelessWidget {
           runSpacing: 4,
           children: [
             Text(
-              '${result.tvSymbol} · ${result.days}d · \$${result.investment.toStringAsFixed(2)} invested · '
-              'volume ${result.volume}',
+              '${result.tvSymbol} · ${result.days}d · \$${result.investment.toStringAsFixed(2)} invested',
               style: const TextStyle(fontWeight: FontWeight.w600),
             ),
             Text(
@@ -546,6 +680,16 @@ class _BacktestResultView extends StatelessWidget {
               style: TextStyle(color: totalColor, fontWeight: FontWeight.w700),
             ),
             Text('${result.winCount}W / ${result.lossCount}L', style: TextStyle(color: scheme.onSurfaceVariant)),
+            // 2026-10-18, per the user: "entry price will be the price at
+            // first trade. close price will be the price according to
+            // last trade (not now trade)" - the window's own overall
+            // entry/exit, distinct from each row's own entry/exit below.
+            if (result.firstEntryPrice != null && result.lastClosePrice != null)
+              Text(
+                'Entry ${result.firstEntryPrice!.toStringAsFixed(5)} -> '
+                'Close ${result.lastClosePrice!.toStringAsFixed(5)}',
+                style: TextStyle(color: scheme.onSurfaceVariant),
+              ),
           ],
         ),
         const SizedBox(height: 12),
@@ -561,6 +705,11 @@ class _BacktestResultView extends StatelessWidget {
               DataColumn(label: Text('Close B')),
               DataColumn(label: Text('Entry')),
               DataColumn(label: Text('Exit')),
+              // 2026-10-18, per the user: Investment now drives Volume per
+              // trade (real leverage/contract-size/entry-price math), so
+              // it varies trade to trade instead of being one fixed
+              // number for the whole run - shown here per row.
+              DataColumn(label: Text('Volume')),
               DataColumn(label: Text('Reason')),
               DataColumn(label: Text('P&L')),
             ],
@@ -606,6 +755,7 @@ class _BacktestResultView extends StatelessWidget {
                     ),
                     DataCell(Text(row.entryPrice.toStringAsFixed(5))),
                     DataCell(Text(row.exitPrice.toStringAsFixed(5))),
+                    DataCell(Text(row.volume.toStringAsFixed(2))),
                     DataCell(
                       Text(
                         switch (row.exitReason) {
@@ -628,6 +778,83 @@ class _BacktestResultView extends StatelessWidget {
                 ),
             ],
           ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Volume input as a +/- stepper (2026-10-18, per the user: "volum should
+/// match the value in mt5.. user only need to press on +/- .. where
+/// default value is minimum mt5 value") - same visual pattern as the Auto
+/// Table's own volume stepper ([AutoTradesCard]), just driven by a plain
+/// local value instead of a pending-change request to the engine.
+class _VolumeStepper extends StatelessWidget {
+  const _VolumeStepper({
+    required this.value,
+    required this.min,
+    required this.step,
+    required this.max,
+    required this.enabled,
+    required this.onChanged,
+  });
+
+  final double? value;
+  final double? min;
+  final double? step;
+  final double? max;
+  final bool enabled;
+  final ValueChanged<double> onChanged;
+
+  static String _fmtVolume(double v) {
+    var s = v.toStringAsFixed(3);
+    while (s.contains('.') && s.endsWith('0')) {
+      s = s.substring(0, s.length - 1);
+    }
+    if (s.endsWith('.')) s = s.substring(0, s.length - 1);
+    return s;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final effective = value ?? min;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Volume', style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant)),
+        const SizedBox(height: 4),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.remove_circle_outline),
+              iconSize: 22,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              onPressed: (enabled && effective != null)
+                  ? () => onChanged((effective - step!).clamp(min!, max!))
+                  : null,
+            ),
+            SizedBox(
+              width: 56,
+              child: Text(
+                effective == null ? '—' : _fmtVolume(effective),
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.add_circle_outline),
+              iconSize: 22,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              onPressed: (enabled && effective != null)
+                  ? () => onChanged((effective + step!).clamp(min!, max!))
+                  : null,
+            ),
+          ],
         ),
       ],
     );

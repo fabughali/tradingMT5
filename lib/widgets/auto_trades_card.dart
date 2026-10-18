@@ -420,16 +420,22 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     // long broker rejection reason just wraps across more lines), while
     // the bottom section (volume stepper + action icons) stays a small,
     // fixed size identical on every card regardless of what's above it.
-    const upperHeight = 120.0;
-    const bottomHeight = 100.0;
+    const cardHeight = 230.0;
     const cardPadding = 10.0;
+    // 2026-10-18, per the user: "the padding from bottom edge of the
+    // card to the bottom of action row should be same as the padding
+    // from top edge of the card to the top edge of the title" - a fixed
+    // `bottomHeight` SizedBox left dead space below the action row
+    // whenever the two rows' real content was shorter than that
+    // allotment, making the bottom gap bigger than the top one. The
+    // bottom section is now sized to its own natural (`min`) content
+    // instead, and the upper section is `Expanded` to absorb whatever
+    // space is left - so the action row always sits flush against the
+    // SAME `cardPadding` the title sits flush against up top, by
+    // construction, not by tuning a magic number.
     return Container(
       width: 180,
-      // 2026-10-18, per the user: content was overlapping the card's
-      // bottom edge - the fixed height previously left out the
-      // Container's own top+bottom padding, so the two inner sections
-      // never actually fit inside it.
-      height: upperHeight + bottomHeight + 10 + cardPadding * 2,
+      height: cardHeight,
       padding: const EdgeInsets.all(cardPadding),
       decoration: BoxDecoration(
         border: Border.all(color: scheme.outlineVariant),
@@ -438,9 +444,10 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Upper section: pair title + full status text.
-          SizedBox(
-            height: upperHeight,
+          // Upper section: pair title + full status text - expands to
+          // fill whatever space the fixed-size bottom section doesn't
+          // use.
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -475,17 +482,13 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
             ),
           ),
           const SizedBox(height: 10),
-          // Bottom section: volume row, then the action-icon row - fixed
-          // size, identical on every card. 2026-10-18, per the user: the
-          // gap between these two rows should be smaller - a tight,
-          // explicit gap instead of spaceBetween stretching it to fill
-          // the section's full fixed height.
-          SizedBox(
-            height: bottomHeight,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.start,
-              children: [
-                Row(
+          // Bottom section: volume row, then the action-icon row -
+          // naturally sized (no dead space), identical on every card
+          // since every card has the exact same two rows.
+          Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
                     IconButton(
@@ -595,7 +598,6 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                 ),
               ],
             ),
-          ),
         ],
       ),
     );

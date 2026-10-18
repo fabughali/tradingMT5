@@ -5207,7 +5207,7 @@ class EngineService {
     final tvSymbol = (req['tv_symbol'] as String).toUpperCase();
     final investment = (req['investment'] as num).toDouble();
     final days = (req['days'] as num).toInt();
-    final volume = (req['volume'] as num?)?.toDouble() ?? 1.0;
+    final volume = (req['volume'] as num).toDouble();
     // 2026-10-17, per the user: the GUI resolves (or confirms a listed
     // pair's own) MT5 symbol itself before ever sending this request, so
     // this is trusted directly rather than re-derived from config.json -
@@ -5228,7 +5228,6 @@ class EngineService {
           tvSymbol: tvSymbol,
           investment: investment,
           days: days,
-          volume: volume,
           rows: const [],
           totalProfitUsd: 0,
           totalProfitPercent: 0,
@@ -5259,7 +5258,6 @@ class EngineService {
           tvSymbol: tvSymbol,
           investment: investment,
           days: days,
-          volume: volume,
           rows: const [],
           totalProfitUsd: 0,
           totalProfitPercent: 0,
@@ -5286,10 +5284,11 @@ class EngineService {
     SymbolMapping mapping, {
     required double investment,
     required int days,
-    // 2026-10-17, per the user's own follow-up: "in back tester, make sure
-    // can adjust volum, not fixed 1" - supersedes the original spec's flat
-    // v=1. Feeds the exact same real baseline-SL formula ([_baselineStopLoss])
-    // and real P&L formula a live trade at this size would use.
+    // 2026-10-18, per the user: "inputs are investment, pair, days,
+    // volum" - real, independent input again. Real MT5 has no "dollar
+    // investment" concept at all, only the lot size you actually choose
+    // to trade - [investment] stays purely the %-return basis
+    // ([BacktestRow.profitPercent]'s own denominator).
     required double volume,
   }) async {
     final tvSymbol = mapping.tradingViewSymbol;
@@ -5457,7 +5456,19 @@ class EngineService {
     final symInfo = await mt5.getMarketWatchSymbol(mt5Symbol);
     final symbols = (symInfo['symbols'] as List?) ?? const [];
     if (symbols.isEmpty) throw StateError('$mt5Symbol not found in MT5 Market Watch');
-    final contractSize = ((symbols.first as Map<String, dynamic>)['contract_size'] as num?)?.toDouble() ?? 1.0;
+    final symbolInfo = symbols.first as Map<String, dynamic>;
+    final contractSize = (symbolInfo['contract_size'] as num?)?.toDouble() ?? 1.0;
+    // 2026-10-18, per the user: "calculation should be same as mt5
+    // calculations 100000%" - the user's own typed volume is normalized
+    // to what MT5 would ACTUALLY let them trade (the real volume_step
+    // this symbol enforces, floored at its real volume_min), the exact
+    // same clamp [_openPosition] applies for a live trade, rather than
+    // simulating P&L at a lot size the broker would silently round or
+    // reject.
+    final volumeMin = (symbolInfo['volume_min'] as num?)?.toDouble() ?? 0.01;
+    final volumeStep = (symbolInfo['volume_step'] as num?)?.toDouble() ?? volumeMin;
+    var normalizedVolume = (volume / volumeStep).floorToDouble() * volumeStep;
+    if (normalizedVolume < volumeMin) normalizedVolume = volumeMin;
 
     double priceAtOrAfter(int time) {
       for (var i = 0; i < barTimes.length; i++) {
@@ -5514,7 +5525,7 @@ class EngineService {
       final pnl =
           (dir == TradeDirection.long ? (exitPrice - entryPrice!) : (entryPrice! - exitPrice)) *
               contractSize *
-              volume -
+              normalizedVolume -
           commissionPerTrade;
       rows.add(
         BacktestRow(
@@ -5531,6 +5542,7 @@ class EngineService {
           profitUsd: pnl,
           profitPercent: investment > 0 ? pnl / investment * 100 : 0,
           stillRunning: stillRunning,
+          volume: normalizedVolume,
         ),
       );
       current = null;
@@ -5597,16 +5609,34 @@ class EngineService {
     final wins = reportRows.where((r) => !r.stillRunning && r.profitUsd > 0).length;
     final losses = reportRows.where((r) => !r.stillRunning && r.profitUsd <= 0).length;
 
+    // 2026-10-18, per the user: "entry price will be the price at first
+    // trade. close price will be the price according to last trade (not
+    // now trade)... so last trade is the trade where there is open and
+    // close" - [reportRows] is already in chronological order (trades
+    // are appended as they close, in event order), so the first row's
+    // own entry is the window's overall entry; the last GENUINELY CLOSED
+    // row's exit (explicitly skipping the one still-open "now" trade,
+    // which has no real close yet) is the window's overall close.
+    final firstEntryPrice = reportRows.isEmpty ? null : reportRows.first.entryPrice;
+    double? lastClosePrice;
+    for (var i = reportRows.length - 1; i >= 0; i--) {
+      if (!reportRows[i].stillRunning) {
+        lastClosePrice = reportRows[i].exitPrice;
+        break;
+      }
+    }
+
     return BacktestResult(
       tvSymbol: tvSymbol,
       investment: investment,
       days: days,
-      volume: volume,
       rows: reportRows,
       totalProfitUsd: totalUsd,
       totalProfitPercent: investment > 0 ? totalUsd / investment * 100 : 0,
       winCount: wins,
       lossCount: losses,
+      firstEntryPrice: firstEntryPrice,
+      lastClosePrice: lastClosePrice,
     );
   }
 

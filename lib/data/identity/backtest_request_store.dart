@@ -28,10 +28,10 @@ class BacktestRequestStore {
     required String mt5Symbol,
     required double investment,
     required int days,
-    // 2026-10-17, per the user's own follow-up: "in back tester, make sure
-    // can adjust volum, not fixed 1" - supersedes the original spec's flat
-    // v=1 (see [EngineService._runBacktest]'s own doc comment for how this
-    // feeds the real baseline-SL/P&L math).
+    // 2026-10-18, per the user: "inputs are investment, pair, days,
+    // volum" - real, independent input, same as a live trade's own lot
+    // size (see [EngineService._runBacktest]'s own doc comment for how
+    // this feeds the real P&L math).
     required double volume,
   }) {
     _storage.writeJson(_storage.backtestRequestFile, {
