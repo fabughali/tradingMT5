@@ -85,13 +85,21 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
   // (via [BacktestResultStore.recordRunning]), which can lag behind a
   // click by however long the engine takes to reach its next drain point -
   // normally a couple seconds, but could briefly be longer right after a
-  // restart forces a full re-audit sweep. This covers that gap so the
-  // button and status text react the instant the click happens, not only
-  // once the engine catches up. Auto-clears once the stream shows
-  // 'running' (the engine caught up) or after a short grace period either
-  // way, so a stale flag can never get stuck forever.
+  // restart forces a full re-audit sweep, or if the engine is mid-cycle
+  // on other symbols. This covers that gap so the button and status text
+  // react the instant the click happens, not only once the engine
+  // catches up. Auto-clears once the stream shows 'running' (the engine
+  // caught up); the grace timer is a last-resort safety valve only, set
+  // far longer than any real pickup delay should ever take, so it never
+  // fires as a ROUTINE cutoff (2026-10-18, per the user: "once user
+  // click on execute, loading indicator should be still loading until
+  // report viewed in app" - a real result/error always arrives via
+  // [BacktestResultStore.recordDone] eventually and clears busy state on
+  // its own; this timer only guards the case where the request never
+  // even got picked up at all).
   bool _waitingForEngine = false;
   Timer? _waitingGraceTimer;
+  static const _waitingGraceTimeout = Duration(minutes: 3);
 
   @override
   void initState() {
@@ -112,6 +120,16 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
     // field values.
     _investmentCtrl.addListener(_clearStaleResult);
     _daysCtrl.addListener(_clearStaleResult);
+    // 2026-10-18, per the user: "once user navigates to summary screen,
+    // there is a table visible there before entering any date" - the
+    // backtest result is a PERSISTED file (`backtest-result.json`), so a
+    // previous run's report survives navigating away and back (or even a
+    // full app restart) and would otherwise flash in the instant this
+    // screen mounts, before the user has touched anything. Clearing it
+    // on mount guarantees a fresh visit - and, per the same message,
+    // "once user click on back button, everything reset" - always
+    // starts genuinely blank, same as every input field already does.
+    ref.read(controlRepositoryProvider).clearBacktestResult();
   }
 
   void _clearStaleResult() {
@@ -132,9 +150,14 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
   }
 
   void _markSubmitted() {
+    // Clear whatever report is currently shown (the previous run's, or
+    // nothing) the instant a new run is requested - 2026-10-18, per the
+    // user: loading should stay loading, with no old table visible
+    // underneath it, until the NEW report is actually ready to view.
+    ref.read(controlRepositoryProvider).clearBacktestResult();
     _waitingGraceTimer?.cancel();
     setState(() => _waitingForEngine = true);
-    _waitingGraceTimer = Timer(const Duration(seconds: 8), () {
+    _waitingGraceTimer = Timer(_waitingGraceTimeout, () {
       if (mounted) setState(() => _waitingForEngine = false);
     });
   }

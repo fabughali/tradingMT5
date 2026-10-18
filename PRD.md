@@ -1980,6 +1980,37 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Backtester busy-state and stale-result fixes, per the
+  user: "once user click on execute, loading indicator should be still
+  loading until report viewed in app. one user click on back button,
+  everything reset" and "there is an error, once user navigates to
+  summary screen, there is a table visible there before entering any
+  date... check why". Root cause of the stale table: `backtest-
+  result.json` is a PERSISTED file (`BacktestResultStore`), so a
+  previous run's report survived navigating away from and back to the
+  Technique Summary screen (and even a full app restart) and would
+  flash in the instant `BacktesterCard` mounted, before the user had
+  touched anything - nothing ever cleared it on screen entry, only on
+  editing a field. Fixed: `initState()` now clears it immediately on
+  mount, and `_markSubmitted()` (called the instant Execute is pressed,
+  for every resolution path) also clears it right away, so no old
+  report is ever visible underneath the new run's loading state. The
+  "loading indicator should still be loading" complaint was a real gap
+  too: the local "waiting for engine to pick this up" flag used an 8-
+  second grace timer as an unconditional cutoff - on a repeat run within
+  the same session, the stream's `status` field was still showing the
+  PREVIOUS run's `'done'` state (not yet overwritten) for however long
+  the engine took to reach its next drain point, so if that exceeded 8s
+  the busy flag dropped and the Execute button/status row would flash
+  back to idle before the engine had even started. The engine's own
+  `BacktestResultStore.recordDone()` writes status and result together
+  in one atomic file write (confirmed: no possible gap between "not
+  running anymore" and "result available"), so the real fix was just to
+  stop treating 8s as a routine cutoff - the grace timer is now 3
+  minutes, a last-resort safety valve only for a request that silently
+  never got picked up at all, not something expected to fire in normal
+  operation.
+
 - **2026-10-18** — Backtester Pair/Volume input UX, per the user: "in
   pair .. once user enter any text, app should give suggestions list
   'if existed'. volum should match the value in mt5.. user only need to
