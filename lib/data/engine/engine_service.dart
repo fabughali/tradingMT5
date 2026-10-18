@@ -27,6 +27,7 @@ import '../identity/add_copy_result_store.dart';
 import '../identity/manual_copy_pending_order_store.dart';
 import '../identity/copy_position_store.dart';
 import '../identity/favorite_pair_store.dart';
+import '../platform/windows_memory.dart';
 import '../identity/ignited_pair_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
@@ -5174,6 +5175,16 @@ class EngineService {
   /// reclaimable cache" figure, the same number `free -h`'s own
   /// "available" column reports. Linux-only; null (never treated as
   /// "low") anywhere else or if the read fails for any reason.
+  ///
+  /// 2026-10-18, per the user: "check why ram is not showing same thing
+  /// in exe as linex in engine card" - this was never a different NUMBER
+  /// on Windows, it was no number at all: `/proc/meminfo` doesn't exist
+  /// there, so the read always threw and both values stayed silently
+  /// null. [readWindowsMemoryMb] is the real Windows counterpart (a
+  /// direct `GlobalMemoryStatusEx` syscall, not a `wmic`/PowerShell
+  /// subprocess - see its own doc comment for why that matters at this
+  /// call frequency); on any other platform both stay null, same as
+  /// today.
   int? _readMeminfoValueMb(String key) {
     try {
       final content = File('/proc/meminfo').readAsStringSync();
@@ -5189,8 +5200,8 @@ class EngineService {
     return null;
   }
 
-  int? _readAvailableRamMb() => _readMeminfoValueMb('MemAvailable:');
-  int? _readTotalRamMb() => _readMeminfoValueMb('MemTotal:');
+  int? _readAvailableRamMb() => Platform.isWindows ? readWindowsMemoryMb()?.availMb : _readMeminfoValueMb('MemAvailable:');
+  int? _readTotalRamMb() => Platform.isWindows ? readWindowsMemoryMb()?.totalMb : _readMeminfoValueMb('MemTotal:');
 
   void _writeStatus({
     bool connected = false,

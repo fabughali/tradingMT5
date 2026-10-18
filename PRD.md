@@ -1980,6 +1980,32 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Fixed Windows RAM reporting, per the user: "check why
+  ram is not showing same thing in exe as linex in engine card".
+  Investigated first: the Dashboard's RAM light was never showing a
+  DIFFERENT number between platforms - it was reading
+  `File('/proc/meminfo')`, which simply doesn't exist on Windows, so the
+  read always threw, both `ramAvailableMb`/`ramTotalMb` stayed silently
+  null, and the Windows build just showed the bare `'RAM'` label with no
+  figures at all (confirmed this was true of every Windows install -
+  the feature's own changelog entry, PRD §19, and §21's known gaps all
+  independently confirm the Windows port has never been exercised on a
+  real Windows machine, only compiled by CI). Fixed with a real Windows
+  counterpart, `lib/data/platform/windows_memory.dart`
+  (`readWindowsMemoryMb()`): calls `GlobalMemoryStatusEx` in
+  `kernel32.dll` directly via `dart:ffi` (the `ffi` package, already a
+  transitive dependency, promoted to a direct one) rather than shelling
+  out to `wmic`/PowerShell - `_writeStatus` runs on nearly every engine
+  action (18 call sites), so this needs to be as cheap as the Linux
+  file read, not a subprocess spawn per call. `MEMORYSTATUSEX` is a
+  stable, unchanged-since-Windows-2000 struct. `_readAvailableRamMb`/
+  `_readTotalRamMb` in `engine_service.dart` now branch on
+  `Platform.isWindows` - real figures on both platforms now, same null-
+  on-failure contract either way (never treated as "low" per
+  [EngineStatus.ramOk]'s own short-circuit). Unverified on a real
+  Windows machine (same caveat as the rest of the Windows port) - CI
+  compile-checks it but can't exercise the actual syscall.
+
 - **2026-10-18** — Favorite pairs: a star icon on waiting/unfilled cards,
   per the user: "add a star icon for those waiting/unfilled cards where
   once this icon is clicked, app will give those pairs priority in
