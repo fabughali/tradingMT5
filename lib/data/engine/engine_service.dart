@@ -985,6 +985,21 @@ class EngineService {
         );
         return _finishHealthCheck(PowerHealthState.mt5NotInstalled);
       }
+      // 2026-10-18, per the user, after a real incident: closed the GUI
+      // (and TradingView and MT5 themselves), reopened it with Power
+      // still showing off, and found MT5 open anyway. Root cause: MT5 is
+      // deliberately launched DETACHED (see [ensureMt5Running]'s own doc
+      // comment - the engine never auto-kills a live broker session), so
+      // an in-flight launch that started moments before a stop signal
+      // arrives keeps running to completion with zero lifecycle tie back
+      // to this process, outliving it even after a forced exit. This
+      // can't be fully eliminated (once [ensureMt5Running] below is
+      // actually called there's no way to un-launch it), but checking
+      // [_stopRequested] right before STARTING a fresh launch closes the
+      // much more common window - earlier steps this same cycle
+      // iteration (internet check, status writes) give a real chance for
+      // a stop signal to land before this point is even reached.
+      if (_stopRequested) return _finishHealthCheck(_lastHealth);
       logger.log('Power check: MT5 not running — launching it.');
       _writeStatus(
         health: PowerHealthState.checking,

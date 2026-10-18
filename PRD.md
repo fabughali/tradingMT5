@@ -1980,6 +1980,27 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Narrowed the window where MT5 launches during an
+  in-progress shutdown, per the user: "i closed the app.. then tv and
+  mt5 ... i open the app but still the power toggle is off... i found
+  that mt5 open??? why". Root cause, verified live (both processes
+  confirmed fully closed and Power confirmed off by the time this was
+  investigated, so no cleanup was actually needed in the moment): MT5
+  is deliberately launched DETACHED (`ProcessStartMode.detached`, see
+  [ensureMt5Running]'s own doc comment - the engine never auto-kills a
+  live broker session on its own exit, a different and much higher-
+  risk decision than restarting a chart viewer), so an MT5 launch
+  already triggered by the health check moments before a stop signal
+  arrives keeps running to completion with zero lifecycle tie back to
+  the engine process, outliving it even after the force-exit watchdog.
+  Can't be fully eliminated - once [ensureMt5Running] is actually
+  called there's no way to un-launch it - but [EngineService.
+  _runHealthCheck] now checks `_stopRequested` immediately before
+  STARTING a fresh launch, closing the more common part of the window:
+  earlier steps in the same cycle iteration (internet check, status
+  writes) give a real chance for a stop signal to land before this
+  point is reached at all.
+
 - **2026-10-18** — Fixed the RAM light staying green after Power off,
   the last piece of the status-lights fix directly below, per the
   user, caught immediately after that fix landed: "why ram still green
