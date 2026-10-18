@@ -409,8 +409,16 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     final showPending = row.desiredVolume != null &&
         hasCurrent &&
         (row.desiredVolume! - row.currentVolume!).abs() > 1e-9;
+    // Fixed width AND height (2026-10-18, per the user: "width and height
+    // of all cards should be identical") - a long broker rejection reason
+    // (e.g. "order rejected: retcode=10016 Invalid stops") used to push
+    // that one card taller than its neighbors. The status label is now
+    // capped to 2 lines with ellipsis overflow instead of growing the
+    // card, and the volume number sits in a fixed-width slot so it can
+    // never wrap mid-number either.
     return Container(
       width: 180,
+      height: 210,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         border: Border.all(color: scheme.outlineVariant),
@@ -419,18 +427,28 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(row.mt5Symbol, style: const TextStyle(fontWeight: FontWeight.w700)),
+          Text(
+            row.mt5Symbol,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontWeight: FontWeight.w700),
+          ),
           const SizedBox(height: 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: color.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(6),
-            ),
-            child: Text(
-              label,
-              softWrap: true,
-              style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 12),
+          SizedBox(
+            height: 32,
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                label,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 11),
+              ),
             ),
           ),
           const SizedBox(height: 8),
@@ -438,39 +456,46 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               IconButton(
-                icon: const Icon(Icons.remove_circle_outline, size: 16),
-                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.remove_circle_outline, size: 22),
                 padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                 tooltip: 'Decrease next-open volume',
                 onPressed: () => widget.onChangeVolume(
                   row.tvSymbol,
                   (effective - row.volumeStep).clamp(row.volumeMin, row.volumeMax).toDouble(),
                 ),
               ),
-              Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    _fmtVolume(current),
-                    style: TextStyle(
-                      fontWeight: FontWeight.w600,
-                      decoration: showPending ? TextDecoration.lineThrough : null,
-                      color: showPending ? scheme.onSurfaceVariant : null,
-                    ),
-                  ),
-                  if (showPending)
+              SizedBox(
+                width: 56,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
                     Text(
-                      _fmtVolume(effective),
-                      style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 12),
+                      _fmtVolume(current),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w600,
+                        decoration: showPending ? TextDecoration.lineThrough : null,
+                        color: showPending ? scheme.onSurfaceVariant : null,
+                      ),
                     ),
-                ],
+                    if (showPending)
+                      Text(
+                        _fmtVolume(effective),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 12),
+                      ),
+                  ],
+                ),
               ),
               IconButton(
-                icon: const Icon(Icons.add_circle_outline, size: 16),
-                visualDensity: VisualDensity.compact,
+                icon: const Icon(Icons.add_circle_outline, size: 22),
                 padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                 tooltip: 'Increase next-open volume',
                 onPressed: () => widget.onChangeVolume(
                   row.tvSymbol,
@@ -479,31 +504,44 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
               ),
             ],
           ),
+          const Spacer(),
+          // 2026-10-18, per the user: "make a spacing between each row and
+          // next row in the card so user not pressing any icon by mistake
+          // since icons you are using are too small ... make them little
+          // larger" - bigger icons AND a bigger tap target (36x36, up from
+          // the table's compact 28x28) plus real vertical gaps instead of
+          // spaceAround's edge-to-edge packing, so an accidental tap on
+          // the wrong control (e.g. Power right next to Ignite) is harder.
           Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
             children: [
               IconButton(
-                icon: Icon(row.isPaused ? Icons.play_arrow : Icons.pause),
+                icon: Icon(row.isPaused ? Icons.play_arrow : Icons.pause, size: 22),
                 color: row.isPaused ? Colors.green : scheme.onSurfaceVariant,
-                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                 tooltip: row.isPaused
                     ? 'Resume — engine will act on this pair again'
                     : 'Pause — engine will take no action on this pair',
                 onPressed: () => widget.onTogglePause(row.tvSymbol, !row.isPaused),
               ),
+              const SizedBox(width: 6),
               IconButton(
-                icon: Icon(row.isIgnited ? Icons.bolt : Icons.bolt_outlined),
+                icon: Icon(row.isIgnited ? Icons.bolt : Icons.bolt_outlined, size: 22),
                 color: row.isIgnited ? Colors.amber : scheme.onSurfaceVariant,
-                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                 tooltip: row.isIgnited
                     ? 'Ignited - will open regardless of margin level once triggered'
                     : 'Ignite - bypass margin level for this pair\'s next signal',
                 onPressed: () => widget.onIgnite(row.tvSymbol),
               ),
+              const SizedBox(width: 6),
               IconButton(
-                icon: const Icon(Icons.power_settings_new),
+                icon: const Icon(Icons.power_settings_new, size: 22),
                 color: Colors.orange,
-                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
                 tooltip: 'Cancel this pair\'s pending attempt',
                 onPressed: () => widget.onTerminate(row.tvSymbol),
               ),

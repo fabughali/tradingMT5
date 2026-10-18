@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Waiting-card polish, per the user's two immediate
+  follow-ups to the card split above: (1) "width and height of all cards
+  should be identical" - a long broker rejection reason used to push one
+  card taller than its neighbors; the status label is now capped to 2
+  lines with ellipsis overflow inside a fixed-height slot instead of
+  growing the card, and the volume number sits in a fixed-width slot so
+  it never wraps mid-number either. (2) "make a spacing between each row
+  and next row in the card so user not pressing any icon by mistake ...
+  make them little larger" - the three action icons (Auto/Ignite/Power)
+  grew from a 28x28 compact tap target to 36x36 with real gaps between
+  them, replacing `spaceAround`'s edge-to-edge packing that made an
+  accidental tap on the wrong control easy.
+
 - **2026-10-18** — Auto-Managed Trades table split into two presentations,
   per the user: "make the waiting trades (unfilled) in a card not in
   table. so auto table contains filled trades and running trades. and
