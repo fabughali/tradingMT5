@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Backtester commission fix, per the user ("broker Equiti
+  is deducting $0.1 per each new trade, mock up the calculations in MT5").
+  Verified directly against this broker's real trade history via
+  `get_trading_history_positions` (queried over the live MT5 MCP bridge):
+  the broker's own `profit` field is GROSS price-movement only
+  (`(close-open) * volume * contract_size`, confirmed by recomputing it
+  by hand against several real app-placed trades) - the real `-$0.1`
+  commission comes back as a SEPARATE field, never folded into `profit`.
+  The backtester's simulated P&L (`_runBacktest`) only ever computed the
+  gross figure, so it overstated every trade's net result by exactly the
+  commission - now subtracts $0.1 per trade (charged once per position
+  opened, matching the real data), same as MT5 actually nets.
+
 - **2026-10-18** — Three more real bugs from the same family, found via a
   real user report (ATOM ticket showing Update 2026-09-07, over a month
   BEFORE its own Open 2026-10-17 — impossible by definition) and confirmed

@@ -5450,6 +5450,18 @@ class EngineService {
       updateAt = null;
     }
 
+    // 2026-10-18, per the user - the backtest's simulated P&L must match
+    // what MT5 actually nets, not just raw price movement: confirmed live
+    // against this broker's (Equiti) own real trade history
+    // (get_trading_history_positions) that its reported `profit` field is
+    // GROSS price-movement only - the real commission charge comes back
+    // as a SEPARATE `commission` field (consistently -$0.1 per round-trip
+    // position across real app-placed trades sampled), never folded into
+    // `profit` itself. Charged once per position opened, regardless of
+    // how it closes (including still-running, since the broker charges it
+    // at open).
+    const commissionPerTrade = 0.1;
+
     void closeTrade({
       required int atTime,
       required double exitPrice,
@@ -5459,8 +5471,9 @@ class EngineService {
       final dir = current!;
       final pnl =
           (dir == TradeDirection.long ? (exitPrice - entryPrice!) : (entryPrice! - exitPrice)) *
-          contractSize *
-          volume;
+              contractSize *
+              volume -
+          commissionPerTrade;
       rows.add(
         BacktestRow(
           direction: dir == TradeDirection.long ? 'buy' : 'sell',

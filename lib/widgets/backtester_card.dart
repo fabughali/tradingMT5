@@ -343,7 +343,9 @@ class _BacktesterCardState extends ConsumerState<BacktesterCard> {
               'pure signal to signal: a trade opens on a confirmed Open '
               'signal and closes on the next opposing signal, exactly '
               'like reading the chart by eye. Does not simulate SL/TP or '
-              'the live profit-lock ratchet.',
+              'the live profit-lock ratchet. P&L includes this broker\'s '
+              r'real $0.10 commission per trade, confirmed against actual '
+              'MT5 history.',
               style: TextStyle(color: scheme.onSurfaceVariant, fontSize: 12),
             ),
             const SizedBox(height: 16),
