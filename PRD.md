@@ -1980,6 +1980,18 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Fixed the RAM light staying green after Power off,
+  the last piece of the status-lights fix directly below, per the
+  user, caught immediately after that fix landed: "why ram still green
+  while power is off???" Root cause: `EngineStatus.ramOk` defaults
+  `true` when the reading is null, by design (a transient read failure
+  should never look alarming) - but that same null-safe default also
+  made this ONE light stay green with no live engine behind it at all,
+  inconsistent with Engine/MT5/TradingView, which all correctly gate on
+  `s.running`/`s.connected`/health. Dashboard's RAM light now checks
+  `s.running && s.ramOk`, so "off" looks the same everywhere on this
+  card.
+
 - **2026-10-18** — Fixed Dashboard status lights freezing green after
   Power off, per the user, checking one by one: "once power toggle is
   off, it means engine is off. but i want you to check one by one: why

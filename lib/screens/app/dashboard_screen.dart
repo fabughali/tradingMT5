@@ -76,8 +76,21 @@ class DashboardScreen extends ConsumerWidget {
                         // swap use - several "wrong reading" reports that
                         // day traced back to this, not a logic bug. Same
                         // light pattern as Engine/MT5/TradingView above.
+                        //
+                        // 2026-10-18, per the user, right after the other
+                        // three lights were fixed to go gray when Power is
+                        // off: "why ram still green while power is off???"
+                        // - [EngineStatus.ramOk] defaults TRUE when the
+                        // reading is null (by design: "never treated as
+                        // low" on a transient read failure), but that same
+                        // null-safe default also made this light green
+                        // with no engine running at all to back it, unlike
+                        // Engine/MT5/TradingView which all gate on
+                        // liveness. Now requires [s.running] too, so "off"
+                        // looks the same here as everywhere else on this
+                        // card.
                         ReuseStatusLight(
-                          on: s.ramOk,
+                          on: s.running && s.ramOk,
                           label: s.ramAvailableMb != null
                               ? 'RAM free: ${s.ramAvailableMb} MB'
                                     '${s.ramUsedPercent != null ? ' (${s.ramUsedPercent}% used)' : ''}'
