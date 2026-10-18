@@ -139,6 +139,10 @@ class DashboardScreen extends ConsumerWidget {
                 ref.read(controlRepositoryProvider).ignitePair(tvSymbol);
                 ref.invalidate(autoTradesProvider);
               },
+              onFavorite: (tvSymbol, favorite) {
+                ref.read(controlRepositoryProvider).toggleFavorite(tvSymbol, favorite);
+                ref.invalidate(autoTradesProvider);
+              },
               historyPnlSince: historyPnlSince,
               pnlSinceTimestamp: pnlSince,
               onResetPnlSince: () => ref.read(pnlSinceProvider.notifier).reset(),

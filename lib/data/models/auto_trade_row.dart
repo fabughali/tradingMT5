@@ -25,6 +25,7 @@ class AutoTradeRow {
     required this.isPaused,
     required this.isLastTagged,
     this.isIgnited = false,
+    this.isFavorite = false,
     this.direction,
     this.price,
     this.currentPrice,
@@ -158,6 +159,15 @@ class AutoTradeRow {
   /// gate's margin-level checks. Only meaningful for a non-running row -
   /// the icon itself is disabled once [status] is [AutoTradeStatus.running].
   final bool isIgnited;
+
+  /// Star-icon preference (2026-10-18, per the user: "add a star icon for
+  /// those waiting/unfilled cards where once this icon is clicked, app
+  /// will give those pairs priority in filling once margin is okay") -
+  /// true means the engine's per-cycle loop checks this pair before
+  /// non-favorited ones once margin genuinely allows an open. A standing
+  /// preference, not one-shot like [isIgnited] - stays true until
+  /// unstarred, and never bypasses the margin gate itself.
+  final bool isFavorite;
 
   /// The broker/MT5's own exact rejection text for the last failed open
   /// attempt (2026-09-29, per the user: "waiting pairs should reflect

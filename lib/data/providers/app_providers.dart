@@ -330,6 +330,13 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           .readJsonArrayStrict(storage.ignitedPairsFile)
           .map((e) => e.toString().toUpperCase())
           .toSet();
+      // 2026-10-18, per the user: star icon per waiting pair - this set
+      // backs its "starred" visual state, see [FavoritePairStore]'s own
+      // doc comment.
+      final favoriteBases = storage
+          .readJsonArrayStrict(storage.favoritePairsFile)
+          .map((e) => e.toString().toUpperCase())
+          .toSet();
       final entrySignalsRaw =
           storage.readJsonObject(storage.entrySignalFile) ?? const {};
       // 2026-10-14, per the user: "keep an eye on currently running
@@ -599,6 +606,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               isPaused: isPaused,
               isLastTagged: isLastTagged,
               isIgnited: ignitedBases.contains(tvSymbol),
+              isFavorite: favoriteBases.contains(tvSymbol),
               direction: position['action'] as String?,
               price: positionPriceOpen,
               currentPrice: positionCurrentPrice,
@@ -657,6 +665,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               isPaused: isPaused,
               isLastTagged: isLastTagged,
               isIgnited: ignitedBases.contains(tvSymbol),
+              isFavorite: favoriteBases.contains(tvSymbol),
               desiredVolume: desiredVolume,
               currentVolume: tradeVolumes.lastApplied(volKey),
               volumeMin: volumeMinForRow,
@@ -692,6 +701,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               isPaused: isPaused,
               isLastTagged: isLastTagged,
               isIgnited: ignitedBases.contains(tvSymbol),
+              isFavorite: favoriteBases.contains(tvSymbol),
               waitingReason: reasonEntry?['reason'] as String?,
               desiredVolume: desiredVolume,
               currentVolume: tradeVolumes.lastApplied(volKey),

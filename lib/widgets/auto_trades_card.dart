@@ -21,6 +21,7 @@ class AutoTradesCard extends StatefulWidget {
     required this.onChangeVolume,
     required this.onAddCopy,
     required this.onIgnite,
+    required this.onFavorite,
     required this.historyPnlSince,
     required this.pnlSinceTimestamp,
     required this.onResetPnlSince,
@@ -73,6 +74,14 @@ class AutoTradesCard extends StatefulWidget {
   /// user). Only ever called for a non-running row - the icon is disabled
   /// in the UI for a running row.
   final void Function(String) onIgnite;
+
+  /// tvSymbol, new starred state (2026-10-18, per the user: "add a star
+  /// icon for those waiting/unfilled cards where once this icon is
+  /// clicked, app will give those pairs priority in filling once margin
+  /// is okay"). A standing toggle, not one-shot like [onIgnite] - only
+  /// ever shown on a waiting card, since a running trade has nothing left
+  /// to be prioritized for.
+  final void Function(String, bool) onFavorite;
 
   /// Realized (history-based, NOT live) P&L summed since [pnlSinceTimestamp]
   /// (2026-09-30, per the user). Null timestamp means "since the
@@ -451,11 +460,34 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  row.mt5Symbol,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w700),
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        row.mt5Symbol,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
+                    ),
+                    // Star icon (2026-10-18, per the user: "add a star
+                    // icon for those waiting/unfilled cards where once
+                    // this icon is clicked, app will give those pairs
+                    // priority in filling once margin is okay") - sits
+                    // with the title, not the action row below, since
+                    // it's a standing identity preference rather than a
+                    // transient per-cycle action.
+                    IconButton(
+                      icon: Icon(row.isFavorite ? Icons.star : Icons.star_border, size: 20),
+                      color: row.isFavorite ? Colors.amber : scheme.onSurfaceVariant,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                      tooltip: row.isFavorite
+                          ? 'Favorited - checked first among waiting pairs once margin allows'
+                          : 'Favorite - give this pair priority once margin allows',
+                      onPressed: () => widget.onFavorite(row.tvSymbol, !row.isFavorite),
+                    ),
+                  ],
                 ),
                 const SizedBox(height: 6),
                 Expanded(

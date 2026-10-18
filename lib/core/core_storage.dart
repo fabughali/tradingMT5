@@ -273,6 +273,16 @@ class CoreStorage {
   /// See [IgnitedPairStore]'s own doc comment.
   String get ignitedPairsFile => p.join(logsDir, 'ignited-pairs.json');
 
+  /// Bases the user starred via a waiting card's star icon (2026-10-18,
+  /// per the user: "add a star icon for those waiting/unfilled cards
+  /// where once this icon is clicked, app will give those pairs priority
+  /// in filling once margin is okay"). Unlike [ignitedPairsFile], this is
+  /// a STANDING preference, not one-shot - it only changes which waiting
+  /// pair the engine's per-cycle loop reaches first once margin genuinely
+  /// allows an open; it never bypasses the margin gate itself. See
+  /// [FavoritePairStore]'s own doc comment.
+  String get favoritePairsFile => p.join(logsDir, 'favorite-pairs.json');
+
   /// Marker for the one-time retroactive SL fix run once after the
   /// 2026-10-17 SLL redesign (TP/SL now fixed at the 60/40 model's own
   /// levels, never modified again - see

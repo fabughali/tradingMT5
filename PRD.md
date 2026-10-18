@@ -1980,6 +1980,37 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Favorite pairs: a star icon on waiting/unfilled cards,
+  per the user: "add a star icon for those waiting/unfilled cards where
+  once this icon is clicked, app will give those pairs priority in
+  filling once margin is okay. now: app choosing to fill pairs randomly
+  ... but if there is a toll where user can make the app list favorite
+  pairs to start with, it would be better." Investigated first: the
+  per-cycle loop (`EngineService`'s main sweep) actually iterates
+  `AutoManagedStore.loadAutoManagedBases()` in a fixed alphabetical
+  order every cycle - not literally random, just arbitrary from the
+  user's own perspective, with no way for them to influence it. Asked
+  the user to confirm the key risk question before building: should a
+  starred pair bypass the margin gate the way the existing one-shot
+  Ignite feature does, or only get priority ORDERING once margin
+  genuinely clears on its own - confirmed: order-only, margin gate
+  behavior stays completely untouched. New `FavoritePairStore`
+  (`lib/data/identity/favorite_pair_store.dart`), mirroring
+  `IgnitedPairStore`'s shape but as a STANDING toggle, not one-shot -
+  starring stays on until unstarred, there's no `consume()`. The
+  per-cycle loop now partitions each category's bases into
+  `[...favorites, ...everyone else]` (both groups keeping their own
+  alphabetical order) right before iterating, so a starred pair is
+  always checked - and therefore gets first crack at opening - before
+  non-starred ones once `RiskGate.gate()` naturally allows a new open.
+  `AutoTradeRow.isFavorite` (new, mirrors `isIgnited`) flows through
+  `app_providers.dart`'s `autoTradesProvider` the same way the ignited
+  set already does; the star itself sits next to the symbol title in
+  `_buildWaitingCard`'s upper section (not the action-icon row below,
+  since it's a standing identity preference, not a transient per-cycle
+  action) - amber filled star when favorited, outline otherwise, same
+  visual language as the thunder icon.
+
 - **2026-10-18** — Backtester busy-state and stale-result fixes, per the
   user: "once user click on execute, loading indicator should be still
   loading until report viewed in app. one user click on back button,

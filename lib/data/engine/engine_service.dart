@@ -26,6 +26,7 @@ import '../models/backtest_row.dart';
 import '../identity/add_copy_result_store.dart';
 import '../identity/manual_copy_pending_order_store.dart';
 import '../identity/copy_position_store.dart';
+import '../identity/favorite_pair_store.dart';
 import '../identity/ignited_pair_store.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
@@ -134,6 +135,7 @@ class EngineService {
     backtestRequests = BacktestRequestStore(storage);
     backtestResults = BacktestResultStore(storage);
     ignitedPairs = IgnitedPairStore(storage);
+    favoritePairs = FavoritePairStore(storage);
     waitingReasons = WaitingReasonStore(storage);
     lastCheckedStore = LastCheckedStore(storage);
     pendingSignals = PendingSignalStore(storage);
@@ -227,6 +229,7 @@ class EngineService {
   late final ManualCopyPendingOrderStore manualCopyPendingOrders;
   late final CopyPositionStore copyPositions;
   late final IgnitedPairStore ignitedPairs;
+  late final FavoritePairStore favoritePairs;
   late final BacktestRequestStore backtestRequests;
   late final BacktestResultStore backtestResults;
   late final WaitingReasonStore waitingReasons;
@@ -1511,7 +1514,24 @@ class EngineService {
         continue;
       }
       final store = autoManagedByCategory[category]!;
-      for (final tvSymbol in store.loadAutoManagedBases()) {
+      // 2026-10-18, per the user: "add a star icon for those
+      // waiting/unfilled cards where once this icon is clicked, app will
+      // give those pairs priority in filling once margin is okay. now:
+      // app choosing to fill pairs randomly" - [loadAutoManagedBases] is
+      // actually a fixed alphabetical order every cycle, which looks
+      // arbitrary to a human with no say in it. Starred pairs are now
+      // checked first (alphabetically among themselves), everyone else
+      // after (also alphabetical) - this ONLY changes which waiting pair
+      // the loop reaches first once margin genuinely allows an open; the
+      // margin gate itself (RiskGate.gate) is completely untouched, see
+      // [FavoritePairStore]'s own doc comment.
+      final bases = store.loadAutoManagedBases();
+      final favorites = favoritePairs.loadFavorites();
+      final orderedBases = [
+        ...bases.where(favorites.contains),
+        ...bases.where((b) => !favorites.contains(b)),
+      ];
+      for (final tvSymbol in orderedBases) {
         if (retired.isRetiredBase(tvSymbol)) continue;
         // 2026-10-09, per the user: "paused pair is still an auto pair but
         // the current status is paused so engine will not take any action

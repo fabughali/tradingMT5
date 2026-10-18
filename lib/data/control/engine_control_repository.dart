@@ -14,6 +14,7 @@ import '../identity/add_copy_request_store.dart';
 import '../identity/add_copy_result_store.dart';
 import '../identity/backtest_request_store.dart';
 import '../identity/backtest_result_store.dart';
+import '../identity/favorite_pair_store.dart';
 import '../identity/ignited_pair_store.dart';
 import '../models/backtest_row.dart';
 import '../identity/terminate_request_store.dart';
@@ -51,6 +52,7 @@ class EngineControlRepository {
       _supertrendPending = SupertrendPendingStore(_storage),
       _paused = PausedPairStore(_storage),
       _ignited = IgnitedPairStore(_storage),
+      _favorites = FavoritePairStore(_storage),
       _unpauseRequests = UnpauseCheckRequestStore(_storage),
       _symbolResolve = SymbolResolveStore(_storage),
       _logger = AppLogger(_storage);
@@ -69,6 +71,7 @@ class EngineControlRepository {
   final SupertrendPendingStore _supertrendPending;
   final PausedPairStore _paused;
   final IgnitedPairStore _ignited;
+  final FavoritePairStore _favorites;
   final UnpauseCheckRequestStore _unpauseRequests;
   final SymbolResolveStore _symbolResolve;
 
@@ -325,6 +328,25 @@ class EngineControlRepository {
   }
 
   bool isIgnited(String tvSymbol) => _ignited.isIgnited(tvSymbol);
+
+  /// Waiting card's star icon (2026-10-18, per the user: "add a star icon
+  /// for those waiting/unfilled cards where once this icon is clicked,
+  /// app will give those pairs priority in filling once margin is okay").
+  /// A standing preference, not one-shot like Ignite - stays starred until
+  /// unstarred, and never bypasses the margin gate: it only changes the
+  /// ORDER the engine's per-cycle loop reaches waiting pairs in once
+  /// margin genuinely allows an open. See [FavoritePairStore]'s own doc
+  /// comment.
+  void toggleFavorite(String tvSymbol, bool favorite) {
+    _favorites.toggleFavorite(tvSymbol, favorite);
+    _logUserAction(
+      '${favorite ? 'Starred' : 'Unstarred'} $tvSymbol (Dashboard) - '
+      '${favorite ? 'now prioritized' : 'no longer prioritized'} when the '
+      'engine checks waiting pairs each cycle.',
+    );
+  }
+
+  bool isFavorite(String tvSymbol) => _favorites.isFavorite(tvSymbol);
 
   /// Dashboard volume +/- (2026-10-03, per the user) — sets the target
   /// volume for [tvSymbol]'s NEXT open (fresh or recycled). Never touches a
