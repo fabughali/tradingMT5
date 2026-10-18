@@ -113,6 +113,26 @@ void main() async {
   void onStopSignal(String signal) {
     logger.log('$signal received — shutting down.');
     engine.stop();
+    // 2026-10-18, per the user, after a real incident: Power toggled off
+    // but the Dashboard's Engine/MT5/TradingView lights stayed green.
+    // Root cause (two-layered, this is the second layer - see
+    // [EngineControlRepository.status]'s own doc comment for the first):
+    // this force-exit watchdog firing is actually the COMMON case, not a
+    // rare edge case (confirmed live, repeatedly, across this whole
+    // session's own deploy cycles) - and `exit(0)` terminates the process
+    // immediately, so the ONLY cleanup that used to run on a clean
+    // `engine.run()` return (deleting [pidFile]/[heartbeatFile] below)
+    // almost never actually executed in practice. [heartbeatFile]'s
+    // staleness is exactly what [EngineControlRepository.engineRunning]
+    // uses to decide whether the Dashboard's lights should show live data
+    // at all - a file that outlives the process it claims to represent
+    // defeats that check entirely. Deleting both files HERE, the instant
+    // the signal is caught (not after whatever's left of the current
+    // cycle iteration finishes, and not gated on the graceful path
+    // succeeding), guarantees a stop is reflected immediately regardless
+    // of which of the two exit paths below actually ends up firing.
+    storage.deleteFileIfExists(storage.pidFile);
+    storage.deleteFileIfExists(storage.heartbeatFile);
     Timer(forceExitAfter, () {
       logger.log(
         'Graceful shutdown did not finish within '

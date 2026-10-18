@@ -1980,6 +1980,47 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Fixed Dashboard status lights freezing green after
+  Power off, per the user, checking one by one: "once power toggle is
+  off, it means engine is off. but i want you to check one by one: why
+  trading view still show connected??? why mt5 still showing
+  connected??? why engine still showing green???" then "why ram still
+  showing percentage... while those things are done by engine".
+  Investigated each light individually before changing anything.
+  Confirmed Power off genuinely does stop the whole engine process
+  (`systemctl --user stop`/SIGTERM, per [EngineControlRepository.pause]'s
+  own doc comment) - this was never "the engine secretly keeps running."
+  The real bug: `logs/status.json` (the file every one of these four
+  readings comes from - Engine/MT5 connected/TradingView connected/RAM)
+  is only ever written WHILE the engine's loop is actually running,
+  and nothing rewrites or deletes it on shutdown - the file just
+  freezes at its last values (typically all green, whatever RAM % was
+  last measured) and the GUI kept re-displaying that frozen snapshot
+  forever, with no way to tell it apart from a live reading. Fixed in
+  `EngineControlRepository.status()`: now checks `engineRunning` (the
+  heartbeat file, touched every single cycle - already the engine's
+  own trusted liveness signal, previously only used for its GUI-closed
+  safety net) FIRST: if the process isn't actually alive, every light
+  reports `EngineStatus.disconnected` (all off, RAM fields null so the
+  stale percentage doesn't display either) instead of replaying
+  whatever the last real reading happened to be. Second, deeper layer
+  found while testing the above live: `heartbeat`/`engine.pid` were
+  only ever deleted after `engine.run()` returned NATURALLY, but
+  `bin/engine.dart`'s own force-exit watchdog (`exit(0)` after a 10s
+  timeout) turned out to be the COMMON shutdown path in practice, not
+  the rare one its own doc comment assumed - confirmed live, repeatedly,
+  across this session's own deploy cycles ("Graceful shutdown did not
+  finish within 10s — forcing exit" showed up almost every time). Since
+  `exit(0)` terminates immediately, the cleanup code after
+  `engine.run()` almost never actually ran, so the heartbeat file
+  outlived the process it was supposed to represent - defeating the fix
+  above. Moved the `pidFile`/`heartbeatFile` deletion into
+  `onStopSignal` itself, run the instant SIGINT/SIGTERM is caught,
+  before either exit path (clean or forced) - a stop is now reflected
+  immediately either way. Verified live: stopped the engine via
+  `systemctl --user stop`, confirmed the heartbeat file was gone and
+  `is-active` showed `inactive`.
+
 - **2026-10-18** — Favorite-pair star now also shown on a RUNNING row,
   per the user: "please make sure that fav pairs stay in fav even if
   they filled and then running. so once they are closed under any

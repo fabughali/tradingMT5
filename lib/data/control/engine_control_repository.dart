@@ -443,7 +443,22 @@ class EngineControlRepository {
 
   Duration get statusPollInterval => const Duration(seconds: 5);
 
+  /// 2026-10-18, per the user, after a real incident: Power toggled off
+  /// but Engine/MT5 connected/TradingView connected/RAM all stayed green
+  /// on the Dashboard. Root cause: `status.json` is only ever written
+  /// WHILE the engine's own loop is running (see [EngineService._writeStatus])
+  /// and is never rewritten or deleted on shutdown - Power off kills the
+  /// whole process via SIGTERM (see [pause]'s own doc comment), so the
+  /// file just freezes at whatever it last said, typically all-green,
+  /// forever, until the engine starts again. [engineRunning] (the
+  /// heartbeat file, touched every single cycle and already the
+  /// engine's own trusted "am I actually alive" signal used elsewhere
+  /// for its GUI-closed safety net) is checked FIRST now - if the
+  /// process isn't actually alive, every light reports off/unknown
+  /// ([EngineStatus.disconnected]) instead of replaying a stale
+  /// snapshot from whenever it last ran.
   Future<EngineStatus> status() async {
+    if (!engineRunning) return EngineStatus.disconnected;
     final json = _storage.readJsonObject(_storage.statusFile);
     if (json == null) return EngineStatus.disconnected;
     return EngineStatus.fromJson(json);
