@@ -5320,30 +5320,72 @@ class EngineService {
     final cutoff = DateTime.now().toUtc().subtract(Duration(days: days)).millisecondsSinceEpoch ~/ 1000;
     await requestMoreChartHistory(cdp);
 
-    final barsRaw = await cdp.evaluate('''(function() {
-      try {
-        var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
-        var series = chart.model().mainSeries();
-        var bars = series.bars();
-        var size = bars.size();
-        if (size === 0) return { error: 'no bars loaded' };
-        var first = bars.firstIndex();
-        var last = bars.lastIndex();
-        var out = [];
-        for (var i = first; i <= last; i++) {
-          var v = bars.valueAt(i);
-          if (v) out.push(v);
+    Future<List<List<dynamic>>> readBarsOnce() async {
+      final raw = await cdp.evaluate('''(function() {
+        try {
+          var chart = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget;
+          var series = chart.model().mainSeries();
+          var bars = series.bars();
+          var size = bars.size();
+          if (size === 0) return { error: 'no bars loaded' };
+          var first = bars.firstIndex();
+          var last = bars.lastIndex();
+          var out = [];
+          for (var i = first; i <= last; i++) {
+            var v = bars.valueAt(i);
+            if (v) out.push(v);
+          }
+          return { bars: out };
+        } catch (e) {
+          return { error: String(e && e.message || e) };
         }
-        return { bars: out };
-      } catch (e) {
-        return { error: String(e && e.message || e) };
+      })()''') as Map<String, dynamic>?;
+      if (raw?['error'] != null) {
+        throw StateError('could not read historical bars: ${raw!['error']}');
       }
-    })()''') as Map<String, dynamic>?;
-    if (barsRaw?['error'] != null) {
-      throw StateError('could not read historical bars: ${barsRaw!['error']}');
+      final list = ((raw?['bars'] as List?) ?? const []).cast<List<dynamic>>();
+      if (list.isEmpty) throw StateError('no historical bars available for $tvSymbol');
+      return list;
     }
-    final barsList = ((barsRaw?['bars'] as List?) ?? const []).cast<List<dynamic>>();
-    if (barsList.isEmpty) throw StateError('no historical bars available for $tvSymbol');
+
+    // 2026-10-18, per a real confirmed bug - the Heikin Ashi style switch
+    // just above (`ensureChartStyle`) only confirms the chart's STYLE
+    // FLAG changed, not that the HA-derived OHLC values across the whole
+    // loaded history have finished recomputing from the underlying
+    // regular candles - that recalculation isn't instant for a multi-week
+    // history. Confirmed live: two back-to-back backtests for the exact
+    // same symbol/period/historical bar returned two DIFFERENT close
+    // prices for it (69.39 vs 71.56, ~3% apart) - impossible for fixed
+    // historical data, same class of bug as the already-fixed signal
+    // settle race, just hitting the price series instead of the
+    // indicator's own plot data. Same fix: re-read until two consecutive
+    // reads agree on the FULL bar list before trusting it.
+    var barsList = await readBarsOnce();
+    var barsStable = false;
+    for (var attempt = 0; attempt < 6; attempt++) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      final recheck = await readBarsOnce();
+      final agree = barsList.length == recheck.length &&
+          barsList.last[0] == recheck.last[0] &&
+          barsList.last[4] == recheck.last[4] &&
+          barsList.first[0] == recheck.first[0] &&
+          barsList.first[4] == recheck.first[4];
+      barsList = recheck;
+      if (agree) {
+        barsStable = true;
+        break;
+      }
+      logger.log(
+        'BACKTEST $tvSymbol: bar data still settling after the Heikin Ashi '
+        'switch (attempt ${attempt + 1}/6) - retrying.',
+      );
+    }
+    if (!barsStable) {
+      throw StateError(
+        '$tvSymbol bar data never stabilized after the Heikin Ashi switch - '
+        'refusing to run a backtest on possibly-stale price data',
+      );
+    }
 
     final barTimes = <int>[];
     final barClose = <double>[];

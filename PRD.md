@@ -1980,6 +1980,40 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — CRITICAL, backtester data-integrity bug: two
+  back-to-back backtests for the exact same symbol/period returned a
+  DIFFERENT `entry_price` for the exact same historical trade (69.39 vs
+  71.56, ~3% apart) - impossible for fixed historical data, discovered
+  while independently verifying the commission fix above by comparing
+  two runs at different volumes. Root cause: `_runBacktest` reads the
+  main series' historical bars (`barTimes`/`barClose`, used for every
+  `entryPrice`/`exitPrice`) immediately after switching the chart to
+  Heikin Ashi style - but that switch only confirms the STYLE FLAG
+  changed, not that the HA-derived OHLC values across the whole loaded
+  history have finished recomputing from the underlying regular candles,
+  which isn't instant for a multi-week history. Same class of bug as the
+  already-fixed signal-settle race (2026-10-17/18 entries below), just
+  hitting the price series instead of the indicator's own plot data, and
+  not previously caught because the bars read happens BEFORE the
+  signal-settle retry loop, so that fix never covered it. Same mechanism
+  applied here: re-read the full bar list until two consecutive reads
+  agree before trusting it. Verified fixed by rerunning the exact same
+  volume=1/volume=2 comparison - all 6 closed trades now show byte-
+  identical entry/exit prices and correctly-scaled P&L across repeated
+  runs; the one remaining difference was the still-running trade's exit
+  price, which legitimately uses the live price at each run's own
+  moment.
+
+- **2026-10-18** — Waiting-card redesign, per the user's own iterative
+  follow-ups while reviewing the card split above: split into two
+  explicit sections - an upper section (pair title + the FULL status
+  text, no more ellipsis truncation, wrapped/scrollable instead) taller
+  than a fixed-size bottom section (the volume stepper, then
+  Pause/Ignite/Power/Last in one row - Last added per "include last
+  toggle also ... with power, pause, ignite", the table's own Switch
+  scaled down to fit). Purely a layout change - every control still
+  calls the exact same callback it always did.
+
 - **2026-10-18** — Waiting-card polish, per the user's two immediate
   follow-ups to the card split above: (1) "width and height of all cards
   should be identical" - a long broker rejection reason used to push one
