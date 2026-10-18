@@ -421,11 +421,16 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     // the bottom section (volume stepper + action icons) stays a small,
     // fixed size identical on every card regardless of what's above it.
     const upperHeight = 120.0;
-    const bottomHeight = 90.0;
+    const bottomHeight = 100.0;
+    const cardPadding = 10.0;
     return Container(
       width: 180,
-      height: upperHeight + bottomHeight + 10,
-      padding: const EdgeInsets.all(10),
+      // 2026-10-18, per the user: content was overlapping the card's
+      // bottom edge - the fixed height previously left out the
+      // Container's own top+bottom padding, so the two inner sections
+      // never actually fit inside it.
+      height: upperHeight + bottomHeight + 10 + cardPadding * 2,
+      padding: const EdgeInsets.all(cardPadding),
       decoration: BoxDecoration(
         border: Border.all(color: scheme.outlineVariant),
         borderRadius: BorderRadius.circular(8),
@@ -471,11 +476,14 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
           ),
           const SizedBox(height: 10),
           // Bottom section: volume row, then the action-icon row - fixed
-          // size, identical on every card.
+          // size, identical on every card. 2026-10-18, per the user: the
+          // gap between these two rows should be smaller - a tight,
+          // explicit gap instead of spaceBetween stretching it to fill
+          // the section's full fixed height.
           SizedBox(
             height: bottomHeight,
             child: Column(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              mainAxisAlignment: MainAxisAlignment.start,
               children: [
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
@@ -529,6 +537,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 4),
                 // 2026-10-18, per the user: "make a spacing between each
                 // row and next row in the card so user not pressing any
                 // icon by mistake since icons you are using are too
@@ -563,6 +572,17 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                           : 'Ignite - bypass margin level for this pair\'s next signal',
                       onPressed: () => widget.onIgnite(row.tvSymbol),
                     ),
+                    Tooltip(
+                      message: 'Last',
+                      child: Transform.scale(
+                        scale: 0.75,
+                        child: Switch(
+                          value: row.isLastTagged,
+                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                          onChanged: (on) => widget.onToggleLast(row.tvSymbol, on),
+                        ),
+                      ),
+                    ),
                     IconButton(
                       icon: const Icon(Icons.power_settings_new, size: 20),
                       color: Colors.orange,
@@ -570,16 +590,6 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                       tooltip: 'Cancel this pair\'s pending attempt',
                       onPressed: () => widget.onTerminate(row.tvSymbol),
-                    ),
-                    Tooltip(
-                      message: 'Last',
-                      child: Transform.scale(
-                        scale: 0.75,
-                        child: Switch(
-                          value: row.isLastTagged,
-                          onChanged: (on) => widget.onToggleLast(row.tvSymbol, on),
-                        ),
-                      ),
                     ),
                   ],
                 ),

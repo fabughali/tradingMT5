@@ -1980,6 +1980,16 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Waiting-card fixes, per the user's two immediate
+  follow-ups to the two-section redesign: (1) the fixed outer `height`
+  never accounted for the `Container`'s own top+bottom padding, so the
+  two inner sections didn't actually fit and the bottom row overlapped
+  the card's own border - height now correctly adds the padding back in.
+  (2) Action row reordered to Pause, Ignite, Last, Power (was Pause,
+  Ignite, Power, Last), and the gap between the volume row and the
+  action row tightened from a stretched `spaceBetween` to an explicit
+  4px gap.
+
 - **2026-10-18** — CRITICAL, backtester data-integrity bug: two
   back-to-back backtests for the exact same symbol/period returned a
   DIFFERENT `entry_price` for the exact same historical trade (69.39 vs
