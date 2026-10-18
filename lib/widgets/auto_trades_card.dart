@@ -390,10 +390,140 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     return '${d.inSeconds}s';
   }
 
+  /// Compact per-pair card for the waiting/unfilled section below the main
+  /// table (2026-10-18, per the user: "make the waiting trades (unfilled)
+  /// in a card not in table. so auto table contains filled trades and
+  /// running trades. and below that table wrapped cards of waiting
+  /// unfilled trades sorted by name a-z") - only the controls that still
+  /// mean anything for a pair with no real position yet: status, the
+  /// next-open volume stepper, Auto play/pause, Ignite, and
+  /// Power/terminate (cancels the resting pending order, if any). Reuses
+  /// the exact same callbacks/logic as the table's own cells so behavior
+  /// never diverges between the two presentations of the same row.
+  Widget _buildWaitingCard(BuildContext context, AutoTradeRow row) {
+    final scheme = Theme.of(context).colorScheme;
+    final (label, color) = _statusLabel(row, scheme);
+    final effective = row.desiredVolume ?? row.currentVolume ?? row.volumeMin;
+    final hasCurrent = row.currentVolume != null;
+    final current = row.currentVolume ?? effective;
+    final showPending = row.desiredVolume != null &&
+        hasCurrent &&
+        (row.desiredVolume! - row.currentVolume!).abs() > 1e-9;
+    return Container(
+      width: 180,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        border: Border.all(color: scheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(row.mt5Symbol, style: const TextStyle(fontWeight: FontWeight.w700)),
+          const SizedBox(height: 6),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: color.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Text(
+              label,
+              softWrap: true,
+              style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 12),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              IconButton(
+                icon: const Icon(Icons.remove_circle_outline, size: 16),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                tooltip: 'Decrease next-open volume',
+                onPressed: () => widget.onChangeVolume(
+                  row.tvSymbol,
+                  (effective - row.volumeStep).clamp(row.volumeMin, row.volumeMax).toDouble(),
+                ),
+              ),
+              Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    _fmtVolume(current),
+                    style: TextStyle(
+                      fontWeight: FontWeight.w600,
+                      decoration: showPending ? TextDecoration.lineThrough : null,
+                      color: showPending ? scheme.onSurfaceVariant : null,
+                    ),
+                  ),
+                  if (showPending)
+                    Text(
+                      _fmtVolume(effective),
+                      style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 12),
+                    ),
+                ],
+              ),
+              IconButton(
+                icon: const Icon(Icons.add_circle_outline, size: 16),
+                visualDensity: VisualDensity.compact,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                tooltip: 'Increase next-open volume',
+                onPressed: () => widget.onChangeVolume(
+                  row.tvSymbol,
+                  (effective + row.volumeStep).clamp(row.volumeMin, row.volumeMax).toDouble(),
+                ),
+              ),
+            ],
+          ),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              IconButton(
+                icon: Icon(row.isPaused ? Icons.play_arrow : Icons.pause),
+                color: row.isPaused ? Colors.green : scheme.onSurfaceVariant,
+                visualDensity: VisualDensity.compact,
+                tooltip: row.isPaused
+                    ? 'Resume — engine will act on this pair again'
+                    : 'Pause — engine will take no action on this pair',
+                onPressed: () => widget.onTogglePause(row.tvSymbol, !row.isPaused),
+              ),
+              IconButton(
+                icon: Icon(row.isIgnited ? Icons.bolt : Icons.bolt_outlined),
+                color: row.isIgnited ? Colors.amber : scheme.onSurfaceVariant,
+                visualDensity: VisualDensity.compact,
+                tooltip: row.isIgnited
+                    ? 'Ignited - will open regardless of margin level once triggered'
+                    : 'Ignite - bypass margin level for this pair\'s next signal',
+                onPressed: () => widget.onIgnite(row.tvSymbol),
+              ),
+              IconButton(
+                icon: const Icon(Icons.power_settings_new),
+                color: Colors.orange,
+                visualDensity: VisualDensity.compact,
+                tooltip: 'Cancel this pair\'s pending attempt',
+                onPressed: () => widget.onTerminate(row.tvSymbol),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final rows = _sorted(widget.rows);
+    // Table holds only real running (filled) positions; every waiting/
+    // unfilled pair moves to its own card below instead (2026-10-18, per
+    // the user). Card order is always alphabetical, independent of the
+    // table's own cycling sort mode.
+    final rows = _sorted(widget.rows.where((r) => r.status == AutoTradeStatus.running).toList());
+    final waitingRows = widget.rows.where((r) => r.status != AutoTradeStatus.running).toList()
+      ..sort((a, b) => a.tvSymbol.compareTo(b.tvSymbol));
     // The original trade in a copy group is whichever ticket is LOWEST -
     // MT5 assigns tickets sequentially as trades open, and a copy can only
     // ever be opened AFTER its original already exists (2026-10-15, per
@@ -407,9 +537,9 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
       final current = minTicketBySymbol[r.mt5Symbol];
       if (current == null || t < current) minTicketBySymbol[r.mt5Symbol] = t;
     }
-    final running = rows.where((r) => r.status == AutoTradeStatus.running).length;
-    final pending = rows.where((r) => r.status == AutoTradeStatus.waitingPending).length;
-    final noSignal = rows.where((r) => r.status == AutoTradeStatus.waitingNoSignal).length;
+    final running = rows.length;
+    final pending = waitingRows.where((r) => r.status == AutoTradeStatus.waitingPending).length;
+    final noSignal = waitingRows.where((r) => r.status == AutoTradeStatus.waitingNoSignal).length;
 
     return Card(
       margin: const EdgeInsets.all(16),
@@ -513,11 +643,13 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
               ),
             ),
             const SizedBox(height: 12),
-            if (rows.isEmpty)
+            if (rows.isEmpty && waitingRows.isEmpty)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 12),
                 child: Text('No symbols configured yet.'),
               )
+            else if (rows.isEmpty)
+              const SizedBox.shrink()
             else
               SingleChildScrollView(
                 scrollDirection: Axis.horizontal,
@@ -1150,6 +1282,18 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                   ],
                 ),
               ),
+            if (waitingRows.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              Text('Waiting (unfilled)', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                children: [
+                  for (final row in waitingRows) _buildWaitingCard(context, row),
+                ],
+              ),
+            ],
           ],
         ),
       ),

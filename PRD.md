@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Auto-Managed Trades table split into two presentations,
+  per the user: "make the waiting trades (unfilled) in a card not in
+  table. so auto table contains filled trades and running trades. and
+  below that table wrapped cards of waiting unfilled trades sorted by
+  name a-z." The main `DataTable` now holds only real running (filled)
+  positions; every waiting/unfilled pair (no fill yet, pending order or
+  no signal) gets its own compact card in a `Wrap` below, always sorted
+  alphabetically regardless of the table's own cycling sort mode. Each
+  card shows status, the next-open volume stepper, Auto play/pause,
+  Ignite, and Power/terminate - the same callbacks/row data the table
+  already used, just a lighter presentation for a pair with nothing else
+  meaningful to show yet (no SL/TP/P&L/leverage/etc.).
+
 - **2026-10-18** — Backtester commission fix, per the user ("broker Equiti
   is deducting $0.1 per each new trade, mock up the calculations in MT5").
   Verified directly against this broker's real trade history via
