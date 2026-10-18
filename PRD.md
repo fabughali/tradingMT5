@@ -1980,6 +1980,31 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Favorite-pair star now also shown on a RUNNING row,
+  per the user: "please make sure that fav pairs stay in fav even if
+  they filled and then running. so once they are closed under any
+  scenario, then will take priority" again. Verified first, before
+  changing anything: `FavoritePairStore` has no `consume()` method at
+  all (confirmed via grep - every `consume()` call in the engine
+  belongs to `ignitedPairs`, none to `favoritePairs`) and `isFavorite`
+  was already wired into all three `AutoTradeRow` construction sites in
+  `app_providers.dart`, including the `running` one - so the underlying
+  guarantee the user asked for was already true: filling, running, and
+  closing (under ANY scenario - signal close, manual terminate, SL/TP)
+  never touch the favorite flag, only an explicit unstar does, and the
+  engine's per-cycle loop re-reads the persisted set fresh every cycle
+  regardless of trade state, so a favorited pair resumes its priority
+  the moment it's back to waiting. The one real gap was purely visual:
+  the star icon only ever rendered on a waiting CARD, so once a pair
+  filled and moved into the main running-trades DataTable, there was no
+  on-screen confirmation the favorite survived. Added a small amber
+  star next to the symbol in that table's own Symbol cell
+  (`auto_trades_card.dart`) whenever `row.isFavorite` is true - same
+  color/icon language as the waiting card's own star, just inline with
+  the text instead of a separate tappable button (re-starring a running
+  trade isn't meaningful; there's nothing left to prioritize until it
+  closes).
+
 - **2026-10-18** — Fixed Windows RAM reporting, per the user: "check why
   ram is not showing same thing in exe as linex in engine card".
   Investigated first: the Dashboard's RAM light was never showing a

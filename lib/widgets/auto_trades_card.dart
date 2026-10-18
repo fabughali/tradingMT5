@@ -870,7 +870,28 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                           _copyGroupColor(row, isOriginal: row.ticket == minTicketBySymbol[row.mt5Symbol]),
                         ),
                         cells: [
-                          DataCell(Text(row.mt5Symbol)),
+                          // 2026-10-18, per the user: "make sure that fav
+                          // pairs stay in fav even if they filled and
+                          // then running" - the underlying flag already
+                          // survives fill/close unconditionally (see
+                          // [FavoritePairStore]'s own doc comment, no
+                          // consume() exists), this star is just the
+                          // visual confirmation of that for a RUNNING
+                          // row - the waiting cards' own star icon isn't
+                          // reachable once a pair fills and leaves that
+                          // view.
+                          DataCell(
+                            Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                if (row.isFavorite) ...[
+                                  const Icon(Icons.star, size: 14, color: Colors.amber),
+                                  const SizedBox(width: 4),
+                                ],
+                                Text(row.mt5Symbol),
+                              ],
+                            ),
+                          ),
                           // 2026-09-30, per the user: "add one column in
                           // auto trade table for trade number 'trade id'.
                           // this number also should be in history too" -
