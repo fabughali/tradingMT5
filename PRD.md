@@ -1980,6 +1980,43 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-18** — Consolidated Supertrend Plus and Signal Flip onto
+  worm_10_26, per the user: "check supertrend plus technique.. and
+  signal flipping technique... while i updated all indicators in tv.
+  now worm 10 is include supertrend plus signal... so there is no need
+  for supertrend plus indicator anymore. also signal flipping technique
+  can use worm 10 too & spy 9 .. so there is no need for worm 9
+  anymore" - then, mid-change: "check summary screens too per each...
+  please dont touch anything in hybrid decision". Investigated first:
+  `readWorm10Signals` already extracts both signals these two
+  techniques need, in the EXACT same `BuySellCheck` shape their own old
+  dedicated readers produced (`.supertrend` = what `readSupertrendSignals`
+  used to return, `.zigzag` = what `readSwingOscillatorSignals` used to
+  return) - this was a call-site redirect, not new reading logic.
+  `_checkOneSymbolSupertrend` and `_checkOneSymbol` (Signal Flip) now
+  call `readWorm10Signals`/`_readConfirmedRange(scriptIdPart:
+  worm10Script.scriptIdPart)` instead of their own old readers against
+  `supertrendPlusScript`/`customScripts[0]` (worm_9_26) - each
+  technique's own decision logic (triple-read confirmation, retroactive
+  audit, extra-candle wait, first-open-wait, etc.) is completely
+  unchanged, only the data source moved. `_indicatorsReadyFor` and the
+  enforce dispatch in `EngineService` now require the identical
+  worm_10_26 + spy_9_26 pair and Heikin Ashi candles for all three
+  techniques (one shared `enforceWorm10`/`isWorm10Present` call) -
+  Signal Flip used to require regular candles for its OWN now-retired
+  script; worm_10_26 needs Heikin Ashi regardless of which technique is
+  reading it, same chart, same script, one candle type behind every
+  signal it computes. Updated the Technique Summary ("How it works")
+  screen's "What it watches" text for both techniques to describe
+  worm_10_26 as the actual source. The old reader functions
+  (`readSupertrendSignals`, `readSwingOscillatorSignals`,
+  `enforceSupertrendPlus`, `enforceCustomScripts`) are left in place,
+  unused, as a rollback path - not deleted in this same change given the
+  stakes. Confirmed, per the user's explicit requirement: zero changes
+  to `_checkOneSymbolWorm10`, `enforceWorm10`, `readWorm10Signals`, or
+  `worm10_decision.dart` - Hybrid Decision's own code path is completely
+  untouched.
+
 - **2026-10-18** — Fixed the REAL cause of MT5 opening with Power off,
   per the user, after the previous fix (directly below) turned out not
   to be the actual culprit: "hey still mt5 opens while power toggle

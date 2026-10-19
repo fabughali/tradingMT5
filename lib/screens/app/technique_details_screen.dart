@@ -153,14 +153,17 @@ class TechniqueDetailsScreen extends StatelessWidget {
       icon: Icons.visibility_outlined,
       title: 'What it watches',
       body:
-          'Two things on the TradingView chart: the "Supertrend Plus" '
-          'indicator, set to Heikin Ashi candles instead of regular ones. '
-          'That indicator marks just two events — a "Buy" and a "Sell" — '
-          'and nothing else is read from it. A second indicator '
-          '("worm_9_26") stays loaded alongside it, but only for its range '
-          'data, used to work out where to put the stop-loss and '
-          'take-profit — it has no say in when a trade opens or closes '
-          'under this technique.',
+          'The "worm_10_26" indicator on the TradingView chart, set to '
+          'Heikin Ashi candles instead of regular ones - it carries this '
+          'technique\'s own "Buy"/"Sell" signal built in (2026-10-18: '
+          'this technique used to read a separate "Supertrend Plus" '
+          'indicator plus "worm_9_26" for range data; both are now one '
+          'single script). Nothing else from it is read for entries/exits '
+          '- its other plots (HH/LL/BUY/SELL, RSI zones) belong to the '
+          'other techniques, not this one. The same script\'s own range '
+          'data is used to work out where to put the stop-loss and '
+          'take-profit. A second indicator ("spy_9_26") stays loaded '
+          'alongside it but isn\'t read by this technique at all.',
     ),
     const _Section(
       icon: Icons.alt_route_outlined,
@@ -289,10 +292,13 @@ class TechniqueDetailsScreen extends StatelessWidget {
       icon: Icons.visibility_outlined,
       title: 'What it watches',
       body:
-          'One indicator on the TradingView chart, four signals: '
-          '"New Higher High" (HH), "New Lower Low" (LL), BUY, and SELL. '
-          'Nothing else on the chart is read — no other indicator, no '
-          'price pattern, nothing you haven\'t put on that chart yourself.',
+          'The "worm_10_26" indicator on the TradingView chart, four '
+          'signals from it: "New Higher High" (HH), "New Lower Low" (LL), '
+          'BUY, and SELL (2026-10-18: this technique used to read its own '
+          'separate "worm_9_26" indicator; that script\'s signal is now '
+          'built into worm_10_26 instead, same four signals). A second '
+          'indicator ("spy_9_26") stays loaded alongside it but isn\'t '
+          'read by this technique at all.',
     ),
     const _Section(
       icon: Icons.alt_route_outlined,

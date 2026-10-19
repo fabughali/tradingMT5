@@ -1761,26 +1761,28 @@ class EngineService {
   }
 
   /// Checks the indicator(s) + candle style the ACTIVE technique needs are
-  /// in place - branches between the two techniques' own, separately-tuned
-  /// enforcement functions (see [enforceSupertrendPlus]'s own doc comment
-  /// for why this isn't a single generic function).
+  /// in place. 2026-10-18, per the user: "worm 10 is include supertrend
+  /// plus signal... now it will need to check worm 10 indicator. so there
+  /// is no need for supertrend plus indicator anymore" and "signal
+  /// flipping technique can use worm 10 too... so there is no need for
+  /// worm 9 anymore" - the user updated their TradingView Pine Scripts so
+  /// worm_10_26 now internally contains both the old Supertrend-Plus-only
+  /// signal AND the old worm_9_26-only zigzag signal (plus its own
+  /// range data), alongside spy_9_26's RSI zones - exactly what all
+  /// three techniques need, already proven by Worm10's own technique
+  /// reading all three pieces out of this exact pair of scripts (see
+  /// [readWorm10Signals]). All three techniques now require the
+  /// IDENTICAL pair of scripts and the identical Heikin Ashi candle
+  /// style Worm10 itself has always required for this same script -
+  /// one chart, one script, one candle type behind every signal it
+  /// computes, so Signal Flip reading worm_10_26 needs heikinAshi too,
+  /// same as Supertrend Plus does already (this supersedes a 2026-10-06
+  /// note that used to live here about Signal Flip needing regular
+  /// candles - that was true back when it read a genuinely different
+  /// script).
   Future<bool> _indicatorsReadyFor(DecisionTechnique technique, CdpClient client) async {
-    if (technique.id == DecisionTechnique.supertrendPlus.id) {
-      final styleOk = await ensureChartStyle(client, ChartStyle.heikinAshi);
-      return styleOk && await isSupertrendPresent(client);
-    }
-    if (technique.id == DecisionTechnique.worm10.id) {
-      final styleOk = await ensureChartStyle(client, ChartStyle.heikinAshi);
-      return styleOk && await isWorm10Present(client);
-    }
-    // Revert to regular candles (2026-10-06, per the user: "make sure once
-    // user switch from supertrend to worm/spy, app need to load regular
-    // candles not heiken ashi") - without this, switching back to Signal
-    // Flip after a stint on Supertrend Plus left the chart stuck on Heikin
-    // Ashi forever, since nothing ever set it back. Cheap no-op once
-    // already on regular candles (see [ensureChartStyle]).
-    final styleOk = await ensureChartStyle(client, ChartStyle.candles);
-    return styleOk && await areIndicatorsPresent(client);
+    final styleOk = await ensureChartStyle(client, ChartStyle.heikinAshi);
+    return styleOk && await isWorm10Present(client);
   }
 
   /// Guards [_ensureCdpUp] against overlapping calls (2026-10-06 - found
@@ -1882,20 +1884,10 @@ class EngineService {
         message: 'Loading indicators',
         connected: true,
       );
-      final isSupertrend = technique.id == DecisionTechnique.supertrendPlus.id;
-      final isWorm10 = technique.id == DecisionTechnique.worm10.id;
-      final needsHeikinAshi = isSupertrend || isWorm10;
-      final enforceResult = isSupertrend
-          ? await enforceSupertrendPlus(host, port)
-          : isWorm10
-          ? await enforceWorm10(host, port)
-          : await enforceCustomScripts(host, port);
-      // All three techniques need exactly two scripts open now -
-      // Supertrend Plus needs itself AND worm_9_26 (for its zigzag range
-      // data, see enforceSupertrendPlus's own doc comment), worm_10_26
-      // needs itself AND spy_9_26 (its own range data is built in, no
-      // third script needed), Signal Flip needs worm_9_26 AND spy_9_26.
-      // Same shape either way.
+      // 2026-10-18, per the user: all three techniques now read the same
+      // worm_10_26 + spy_9_26 pair (see [_indicatorsReadyFor]'s own doc
+      // comment) - one shared enforcement function for all of them.
+      final enforceResult = await enforceWorm10(host, port);
       final ok = enforceResult.finalMsb && enforceResult.finalRsi;
       if (!ok) {
         client.close();
@@ -1907,7 +1899,7 @@ class EngineService {
           '${enforceResult.error}',
         );
       }
-      if (needsHeikinAshi) await ensureChartStyle(client, ChartStyle.heikinAshi);
+      await ensureChartStyle(client, ChartStyle.heikinAshi);
     }
     _consecutiveStuckAttempts = 0;
     _cdp = client;
@@ -2068,7 +2060,17 @@ class EngineService {
     await _ensureCdpUp();
     final cdp = _cdp!;
 
-    final range = await _readConfirmedRange(cdp, category, tvSymbol, immediate: immediate);
+    // 2026-10-18, per the user: "signal flipping technique can use worm
+    // 10 too... so there is no need for worm 9 anymore" - worm_10_26
+    // carries this same zigzag range data built in (the same reason
+    // [_checkOneSymbolWorm10] already reads its range this exact way).
+    final range = await _readConfirmedRange(
+      cdp,
+      category,
+      tvSymbol,
+      immediate: immediate,
+      scriptIdPart: worm10Script.scriptIdPart,
+    );
     if (range == null) return;
 
     // 2026-10-17 - found live, root-caused from a real financial loss: this
@@ -2095,21 +2097,29 @@ class EngineService {
       );
       return;
     }
-    var check = await readSwingOscillatorSignals(
+    // 2026-10-18, per the user: worm_10_26 already exposes this exact
+    // HH/LL/BUY/SELL signal as its own `zigzag` field (same BuySellCheck
+    // shape [readSwingOscillatorSignals] used to produce - see
+    // [readWorm10Signals]'s own doc comment) - this technique's own
+    // decision logic below (retroactive audit, triple-read, etc.) is
+    // otherwise completely unchanged, only the data source moved.
+    var check = (await readWorm10Signals(
       cdp,
       tvSymbol,
-      customScripts[0].scriptIdPart,
+      worm10Script.scriptIdPart,
+      customScripts[1].scriptIdPart,
       onDebugError: (msg) => logger.log('$tvSymbol ($category) signal: $msg'),
-    );
+    )).zigzag;
     // Same extra-retry treatment as the range read above, same reasoning.
     for (var i = 0; i < 2 && (check.latest == null || check.latestBarTime == null) && immediate; i++) {
       await Future<void>.delayed(const Duration(seconds: 5));
-      check = await readSwingOscillatorSignals(
+      check = (await readWorm10Signals(
         cdp,
         tvSymbol,
-        customScripts[0].scriptIdPart,
+        worm10Script.scriptIdPart,
+        customScripts[1].scriptIdPart,
         onDebugError: (msg) => logger.log('$tvSymbol ($category) signal retry: $msg'),
-      );
+      )).zigzag;
     }
     final latest = check.latest;
     if (latest == null || check.latestBarTime == null) {
@@ -2290,12 +2300,13 @@ class EngineService {
               '(${signalTagToWire(trueStart.tag)}@${trueStart.time}) - closing and recycling.',
               level: 'WARNING',
             );
-            final recheck = await readSwingOscillatorSignals(
+            final recheck = (await readWorm10Signals(
               cdp,
               tvSymbol,
-              customScripts[0].scriptIdPart,
+              worm10Script.scriptIdPart,
+              customScripts[1].scriptIdPart,
               onDebugError: (msg) => logger.log('$tvSymbol ($category) audit recheck: $msg'),
-            );
+            )).zigzag;
             final stillThere = recheck.signals.any((s) => s.tag == trueStart.tag && s.time == trueStart.time);
             if (!stillThere) {
               logger.log(
@@ -2348,12 +2359,13 @@ class EngineService {
     // gets a clean re-check next cycle instead of acting on a flicker.
     for (var i = 0; i < 2; i++) {
       await Future<void>.delayed(const Duration(seconds: 10));
-      final recheck = await readSwingOscillatorSignals(
+      final recheck = (await readWorm10Signals(
         cdp,
         tvSymbol,
-        customScripts[0].scriptIdPart,
+        worm10Script.scriptIdPart,
+        customScripts[1].scriptIdPart,
         onDebugError: (msg) => logger.log('$tvSymbol ($category) signal recheck: $msg'),
-      );
+      )).zigzag;
       final recheckLatest = recheck.latest;
       if (recheckLatest == null ||
           recheckLatest.tag != latest.tag ||
@@ -2648,16 +2660,29 @@ class EngineService {
     await _ensureCdpUp();
     final cdp = _cdp!;
 
-    // TP/SL range - "keep using old method" (2026-10-06, per the user): the
-    // SAME 60/40 zigzag model, reading worm_9_26's own range data (kept
-    // attached alongside Supertrend Plus purely for this - see
-    // [enforceSupertrendPlus]'s own doc comment). Identical triple-read
-    // confirmation to [_checkOneSymbol]'s own range read - literally the
-    // same shared [_readConfirmedRange] helper.
-    final range = await _readConfirmedRange(cdp, category, tvSymbol, immediate: immediate);
+    // TP/SL range - 2026-10-18, per the user: worm_10_26 now carries its
+    // own range/zigzag data built in (the same reason [_checkOneSymbolWorm10]
+    // already reads its range this exact way) - no more separate worm_9_26
+    // script needed just for this. Identical triple-read confirmation to
+    // [_checkOneSymbol]'s own range read - literally the same shared
+    // [_readConfirmedRange] helper, just pointed at a different script now.
+    final range = await _readConfirmedRange(
+      cdp,
+      category,
+      tvSymbol,
+      immediate: immediate,
+      scriptIdPart: worm10Script.scriptIdPart,
+    );
     if (range == null) return;
 
-    // Supertrend Plus's own Buy/Sell entry signal.
+    // Supertrend Plus's own Buy/Sell entry signal - 2026-10-18, per the
+    // user: "worm 10 is include supertrend plus signal... so there is no
+    // need for supertrend plus indicator anymore". worm_10_26 already
+    // exposes this exact signal as its own `supertrend` field (same
+    // BuySellCheck shape [readSupertrendSignals] used to produce - see
+    // [readWorm10Signals]'s own doc comment) - this technique's own
+    // decision logic below is otherwise completely unchanged, only the
+    // data source moved.
     // 2026-10-17 - same unchecked-result bug fixed everywhere else this
     // exact call appears - see [_checkOneSymbol]'s own matching fix for
     // the full root-cause reasoning (confirmed live: a whole sweep
@@ -2673,23 +2698,25 @@ class EngineService {
       );
       return;
     }
-    final check = await readSupertrendSignals(
+    final check = await readWorm10Signals(
       cdp,
       tvSymbol,
-      supertrendPlusScript.scriptIdPart,
+      worm10Script.scriptIdPart,
+      customScripts[1].scriptIdPart,
       onDebugError: (msg) => logger.log('$tvSymbol ($category) supertrend signal: $msg'),
     );
-    var latest = check.latest;
+    var latest = check.supertrend.latest;
     // Same extra-retry treatment as the range read above, same reasoning.
     for (var i = 0; i < 2 && latest == null && immediate; i++) {
       await Future<void>.delayed(const Duration(seconds: 5));
-      final retryCheck = await readSupertrendSignals(
+      final retryCheck = await readWorm10Signals(
         cdp,
         tvSymbol,
-        supertrendPlusScript.scriptIdPart,
+        worm10Script.scriptIdPart,
+        customScripts[1].scriptIdPart,
         onDebugError: (msg) => logger.log('$tvSymbol ($category) supertrend signal retry: $msg'),
       );
-      latest = retryCheck.latest;
+      latest = retryCheck.supertrend.latest;
     }
     if (latest == null) {
       logger.log('$tvSymbol ($category): no supertrend signal yet, skipping cycle.');
@@ -2700,13 +2727,14 @@ class EngineService {
     // [_checkOneSymbol]'s own signal read.
     for (var i = 0; i < 2; i++) {
       await Future<void>.delayed(const Duration(seconds: 10));
-      final recheck = await readSupertrendSignals(
+      final recheck = await readWorm10Signals(
         cdp,
         tvSymbol,
-        supertrendPlusScript.scriptIdPart,
+        worm10Script.scriptIdPart,
+        customScripts[1].scriptIdPart,
         onDebugError: (msg) => logger.log('$tvSymbol ($category) supertrend recheck: $msg'),
       );
-      final recheckLatest = recheck.latest;
+      final recheckLatest = recheck.supertrend.latest;
       if (recheckLatest == null || recheckLatest.tag != latest.tag || recheckLatest.time != latest.time) {
         logger.log(
           '$tvSymbol ($category): SUPERTREND SIGNAL FLICKER (read ${i + 2}/3) - first '
