@@ -4995,6 +4995,24 @@ class EngineService {
         unpauseRequests.clear(base);
         continue;
       }
+      // 2026-10-19, per the user: "then force to apply full reverse
+      // check" - without this, a running position's retroactive audit
+      // (the full forward-replay-from-Start block in [_checkOneSymbol]/
+      // [_checkOneSymbolWorm10]) only fires once per ticket per GUI-
+      // reopen/hour (see [_auditedTickets]'s own doc comment) -
+      // unrelated to pause/unpause at all, so an unpause landing after
+      // that gate had already fired this hour silently got the LIGHTER
+      // check instead (compare latest signal to running direction, no
+      // full history re-derivation). Clearing this ticket's own gate
+      // right before the immediate check guarantees the full audit
+      // actually runs every time a pair is unpaused, not just
+      // sometimes. Harmless no-op for Supertrend Plus, which has no
+      // separate audit gate to clear (every cycle already re-reads the
+      // latest signal directly).
+      final existingForAudit = await _findAppPosition(mapping.mt5Symbol, AutoCategory.oneHour, mapping.tradingViewSymbol);
+      final auditTicketToForce = _parseTicket(existingForAudit?['position_id']);
+      if (auditTicketToForce != null) _auditedTickets.remove(auditTicketToForce);
+
       try {
         if (technique.id == DecisionTechnique.supertrendPlus.id) {
           await _checkOneSymbolSupertrend(AutoCategory.oneHour, mapping, immediate: true);

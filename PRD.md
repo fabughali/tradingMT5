@@ -1980,6 +1980,27 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-19** — Unpause now always forces the full retroactive
+  audit, per the user: "once user pause off any auto pair and then
+  unpause , does app pply reverse cehck?" then, after being told it was
+  inconsistent (only sometimes, depending on an unrelated gate): "then
+  force to apply full reverese check". Root cause of the inconsistency:
+  `_processAllPendingUnpauseChecks` already calls the pair's normal
+  check method with `immediate: true` on unpause, but the full forward-
+  replay-from-Start audit block inside `_checkOneSymbol`/
+  `_checkOneSymbolWorm10` is independently gated by `_auditedTickets`,
+  which only clears once per GUI-reopen or once per hour - completely
+  unrelated to pause/unpause. If a ticket had already been audited that
+  hour before being paused, unpausing silently got only the lighter
+  "compare latest signal to running direction" check, not a full
+  re-derivation of the true signal chain. Fixed: before the immediate
+  check runs, the pair's own open position's ticket (if any) is now
+  removed from `_auditedTickets`, guaranteeing the full audit fires
+  every time a pair is unpaused - not just when it happens to coincide
+  with an unrelated gate being unset. Harmless no-op for Supertrend
+  Plus, which has no separate audit gate (every cycle already re-reads
+  the latest signal directly, by design).
+
 - **2026-10-18** — Consolidated Supertrend Plus and Signal Flip onto
   worm_10_26, per the user: "check supertrend plus technique.. and
   signal flipping technique... while i updated all indicators in tv.
