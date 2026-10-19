@@ -671,7 +671,22 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
           children: [
             Row(
               children: [
-                Text('Auto-Managed Trades', style: Theme.of(context).textTheme.titleMedium),
+                // 2026-10-19, found by finally running this project's own
+                // widget test for the first time all session: a
+                // RenderFlex overflow in this exact Row, pre-existing (not
+                // caused by anything edited today) and never caught since
+                // nothing had run `flutter test` against it before. The
+                // title is the one piece safe to truncate on a narrow
+                // window - the live summary stats and P&L figures to its
+                // right matter more moment-to-moment and must stay fully
+                // visible.
+                Flexible(
+                  child: Text(
+                    'Auto-Managed Trades',
+                    style: Theme.of(context).textTheme.titleMedium,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
                 const SizedBox(width: 4),
                 IconButton(
                   icon: Icon(_sortMode.icon, size: 18),

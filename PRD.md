@@ -1980,6 +1980,42 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-19** — First real unit test suite, plus two pre-existing
+  bugs it immediately caught, per the user: "is there any tool or any
+  skill i need to add to claude and can help me testing this app...
+  without any bugs and ready for live run?" then "first make backup
+  folder for the app and then yes ignite". Added test coverage for the
+  four genuinely pure, zero-I/O decision/math functions the PRD itself
+  calls out as safety-critical: `highestSlRatchetThresholdCrossed`/
+  `slRatioForThreshold` (`test/sl_ratchet_ladder_test.dart`),
+  `detectZigzagRange`/`zigzagRangeAsOf` (`test/zigzag_range_test.dart`),
+  `deriveWorm10Events`/`worm10DecisionFor` (`test/worm10_decision_test.dart`
+  - the most complex one, covering the case-1 RSI+Supertrend confluence
+  gating, the sparse-forward Supertrend-direction lookup, and the
+  first-of-run vs last-of-run swing-coalescing distinction between
+  zigzagBuy/zigzagSell and buyOpen1/sellOpen1), and `RiskGate`'s pure
+  static margin-tier helpers (`test/risk_gate_static_test.dart`) -
+  `RiskGate.gate()` itself needs a real CoreStorage-backed state file
+  and is left for a later integration-style test. 46 new tests, all
+  passing against the real implementation.
+
+  Actually running `flutter test` for the first time all session (the
+  project's only prior test, a Dashboard smoke test, had apparently
+  never been run against this branch) immediately surfaced two
+  pre-existing bugs, neither caused by anything edited today: (1) a
+  genuine `RenderFlex` overflow in the Auto-Managed Trades card's
+  header row - the title had no way to shrink, fixed by wrapping it in
+  `Flexible` with `TextOverflow.ellipsis` (the original `Spacer()` that
+  pushes the live summary stats/P&L to the right edge was restored
+  after an intermediate edit accidentally dropped it); (2) the smoke
+  test itself only overrode 3 of the Dashboard's 9 polling
+  `StreamProvider`s, leaving the other 6 (`botHistoryProvider`,
+  `autoManagedTvBasesProvider`, `addCopyResultsProvider`,
+  `backtestResultProvider`, `autoTradesProvider`, `accountInfoProvider`)
+  as real, un-overridden `Future.delayed` loops that `flutter_test`'s
+  end-of-test pending-timer check correctly rejected - fixed by
+  overriding all 9. `flutter test` is now fully green (47/47).
+
 - **2026-10-19** — Coalesced overlapping audit-cache clear triggers,
   per the user: "if one case occures independent.. then app will apply
   a reverse check. if more than one case occures at same time, still
@@ -3244,12 +3280,23 @@ this section captures the larger inflection points.
 
 ## 22. Testing and verification approach
 
-There is no automated trading-logic test suite (`flutter test` covers only
-default template smoke tests) — every feature and fix in this app is
-verified against **live, real-money behavior**, not simulated data, per the
-project's own operating philosophy (§3). The standing verification
-discipline, applied consistently throughout development:
+2026-10-19: a real unit test suite now exists (`test/sl_ratchet_ladder_test.dart`,
+`test/zigzag_range_test.dart`, `test/worm10_decision_test.dart`,
+`test/risk_gate_static_test.dart`, 46 tests) covering the pure, zero-I/O
+decision/math functions - the SL ratchet ladder, the zigzag range
+detector, `deriveWorm10Events`/`worm10DecisionFor`, and `RiskGate`'s pure
+static margin-tier helpers. Everything that still needs a real MT5/
+TradingView connection (`RiskGate.gate()` itself, the full engine cycle,
+every GUI screen beyond the one smoke test) has no automated coverage
+yet and still relies entirely on the verification discipline below -
+every feature and fix in this app is verified against **live, real-money
+behavior**, not simulated data, per the project's own operating
+philosophy (§3). The standing verification discipline, applied
+consistently throughout development:
 
+- **`flutter test`** run clean before every deploy, alongside analyze -
+  catches a real regression in the pure decision logic immediately,
+  rather than only live, after the fact.
 - **`flutter analyze`** run clean (zero new issues beyond a small, stable
   set of pre-existing info-level lints) before every deploy.
 - **Compile verification** (`dart compile exe` for the engine, `flutter

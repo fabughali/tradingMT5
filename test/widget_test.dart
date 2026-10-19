@@ -11,10 +11,20 @@ void main() {
         // These all otherwise poll forever on a real Future.delayed loop
         // (watchedSymbolsProvider also making a real MT5 network call),
         // which leaves a pending Timer flutter_test's end-of-test invariant
-        // check rejects.
+        // check rejects. 2026-10-19, found by finally running this test for
+        // the first time all session: only 3 of the Dashboard's 9 polling
+        // providers were overridden here - the other 6 left exactly the
+        // pending-timer failure this comment already warned about for the
+        // first 3, just not caught until the test was actually run.
         overrides: [
+          botHistoryProvider.overrideWith((ref) => const Stream.empty()),
+          autoManagedTvBasesProvider.overrideWith((ref) => const Stream.empty()),
           engineStatusProvider.overrideWith((ref) => const Stream.empty()),
+          addCopyResultsProvider.overrideWith((ref) => const Stream.empty()),
+          backtestResultProvider.overrideWith((ref) => const Stream.empty()),
           watchedSymbolsProvider.overrideWith((ref) => const Stream.empty()),
+          autoTradesProvider.overrideWith((ref) => const Stream.empty()),
+          accountInfoProvider.overrideWith((ref) => const Stream.empty()),
           controlToggleStateProvider.overrideWith((ref) => const Stream.empty()),
         ],
         child: const TradingMt5App(),
