@@ -944,6 +944,23 @@ class EngineService {
         'Health: ${_lastHealth.name} -> ${state.name}.',
         level: state == PowerHealthState.ready ? 'INFO' : 'ERROR',
       );
+      // 2026-10-19, per the user, closing the one gap in the
+      // retroactive-audit coverage table ("apply 5/5" - Power off/on,
+      // app off/on, an engine restart under any cause, and pause/unpause
+      // already guaranteed a full audit; recovering from a genuine
+      // internet outage did not, since the engine process itself never
+      // restarts and `_runCycle` simply resumes with whatever the audit
+      // cache already held from before the outage). Internet coming back
+      // now re-arms the cache too, same as every other "something was
+      // down, now it's back" transition already does (GUI reopen, hourly
+      // re-arm).
+      if (_lastHealth == PowerHealthState.internetProblem && state == PowerHealthState.ready) {
+        logger.log(
+          'Internet recovered - clearing the retroactive audit cache to '
+          're-check every running ticket against the full signal history.',
+        );
+        _auditedTickets.clear();
+      }
     }
     _lastHealth = state;
     return state;

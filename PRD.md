@@ -1980,6 +1980,22 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-19** — Closed the last gap in retroactive-audit coverage:
+  internet recovery, per the user, after being given a full scenario-by-
+  scenario table confirmed against the code ("Power toggle off then on",
+  "wifi/internet is off then on", "engine stopped under any case then
+  on", "app off then on then power on", "pause then un pause" - 4 of 5
+  already guaranteed a full audit, internet recovery was the one real
+  gap) then: "apply 5/5". Root cause: a genuine internet outage just
+  pauses cycling (`health != ready` skips `_runCycle()` entirely) - the
+  engine process itself never restarts, so `_auditedTickets` carries
+  over unchanged once connectivity returns, and cycling just resumes
+  with whatever tickets were already marked audited before the outage.
+  Fixed in `_finishHealthCheck`: recovering from `internetProblem` back
+  to `ready` now clears `_auditedTickets`, the same "something was down,
+  now it's back" re-arm every other recovery path (GUI reopen, hourly
+  pre-candle) already does.
+
 - **2026-10-19** — Unpause now always forces the full retroactive
   audit, per the user: "once user pause off any auto pair and then
   unpause , does app pply reverse cehck?" then, after being told it was
