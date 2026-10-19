@@ -1980,6 +1980,30 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-19** — Coalesced overlapping audit-cache clear triggers,
+  per the user: "if one case occures independent.. then app will apply
+  a reverse check. if more than one case occures at same time, still
+  one time reverse check will apply ... so app will not do duble
+  reverse check". The three blanket clear triggers for `_auditedTickets`
+  (GUI reopen, hourly pre-candle, internet recovery) are each
+  genuinely independent, but not mutually exclusive in time - e.g. the
+  GUI reopening right as the hourly window opens, or internet
+  recovering right as the GUI reopens after both being down together
+  (a believable real scenario: away with WiFi off and the app closed,
+  then both come back around the same moment). Without coordination,
+  two triggers landing close together but processed on separate engine
+  cycles could each clear the cache and each cause their own full
+  audit for the same running ticket - a literal double reverse-check.
+  New shared `_clearAuditCache(reason)` debounces all three blanket
+  triggers against each other (2-minute window, generous for any
+  realistic overlap, short enough to never delay a genuinely unrelated
+  later trigger) - the second of two triggers landing within that
+  window logs that it's skipping a redundant clear instead of
+  re-arming the cache again. The per-ticket unpause force
+  (`_processAllPendingUnpauseChecks`'s own `.remove()`) stays
+  independent of this debounce on purpose - it's a deliberate single-
+  pair user action, not a passive environmental re-arm.
+
 - **2026-10-19** — Closed the last gap in retroactive-audit coverage:
   internet recovery, per the user, after being given a full scenario-by-
   scenario table confirmed against the code ("Power toggle off then on",

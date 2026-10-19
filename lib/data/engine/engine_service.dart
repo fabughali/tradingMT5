@@ -261,6 +261,51 @@ class EngineService {
   /// running ticket is exactly that reverse-reading practice.
   final Set<int> _auditedTickets = {};
 
+  /// When [_auditedTickets] was last actually cleared, by ANY of its three
+  /// independent triggers (GUI reopen, hourly pre-candle, internet
+  /// recovery) - 2026-10-19, per the user: "if more than one case occures
+  /// at same time, still one time reverse check will apply ... so app
+  /// will not do duble reverse check". Each trigger has its own genuine,
+  /// independent reason to want a fresh audit, but they're not mutually
+  /// exclusive in time - e.g. the GUI reopening right as the hourly
+  /// window opens, or internet recovering right as the GUI reopens after
+  /// both being down together. Without this, two triggers landing close
+  /// together but on separate cycles could each clear the cache and each
+  /// cause their own full audit for the same ticket - see
+  /// [_clearAuditCache]'s own doc comment for how this coalesces that
+  /// into one.
+  DateTime? _lastAuditCacheClearAt;
+
+  /// How close together two of [_auditedTickets]'s clear triggers have to
+  /// land to count as "the same occurrence" rather than two genuinely
+  /// separate ones - generous enough to cover any realistic overlap
+  /// between the GUI/hourly/internet triggers (none of which fire more
+  /// than once within many seconds of each other under normal operation),
+  /// short enough to never meaningfully delay a trigger that's actually
+  /// unrelated to a recent one.
+  static const _auditCacheClearDebounce = Duration(minutes: 2);
+
+  /// Shared by all three blanket clear triggers (GUI reopen, hourly pre-
+  /// candle, internet recovery) - the per-ticket unpause force
+  /// ([_processAllPendingUnpauseChecks]'s own `.remove()`) is a
+  /// deliberate single-pair user action, not a passive environmental
+  /// re-arm, and stays independent of this debounce on purpose. See
+  /// [_lastAuditCacheClearAt]'s own doc comment for why this exists.
+  void _clearAuditCache(String reason) {
+    final now = DateTime.now();
+    if (_lastAuditCacheClearAt != null && now.difference(_lastAuditCacheClearAt!) < _auditCacheClearDebounce) {
+      logger.log(
+        '$reason - retroactive audit cache was already cleared '
+        '${now.difference(_lastAuditCacheClearAt!).inSeconds}s ago by '
+        'another trigger; not clearing again for the same occurrence.',
+      );
+      return;
+    }
+    logger.log('$reason - clearing the retroactive audit cache to re-check every running ticket against the full signal history.');
+    _auditedTickets.clear();
+    _lastAuditCacheClearAt = now;
+  }
+
   /// The UTC epoch-hour [_auditedTickets] was last cleared for the hourly
   /// pre-candle re-arm below (2026-10-06, per the user: agreed to re-run
   /// the retroactive audit every 1H cycle, not just on a GUI reopen) - null
@@ -858,12 +903,7 @@ class EngineService {
       final guiOpen = _isGuiOpen();
       if (guiOpen != _guiWasOpen) {
         if (guiOpen) {
-          logger.log(
-            'GUI: reopened — resuming, and clearing the retroactive audit '
-            'cache to re-check every running ticket against the full '
-            'signal history.',
-          );
-          _auditedTickets.clear();
+          _clearAuditCache('GUI: reopened — resuming');
         }
         _guiWasOpen = guiOpen;
       }
@@ -887,11 +927,7 @@ class EngineService {
       final epochHour = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 3600000;
       if (timeUntilNextHourlyCandle() <= _hourlyAuditLeadTime &&
           _lastHourlyAuditEpochHour != epochHour) {
-        logger.log(
-          'Hourly pre-candle audit: clearing the retroactive audit cache '
-          'to re-check every running ticket before the next 1H candle.',
-        );
-        _auditedTickets.clear();
+        _clearAuditCache('Hourly pre-candle audit');
         _lastHourlyAuditEpochHour = epochHour;
       }
 
@@ -955,11 +991,7 @@ class EngineService {
       // down, now it's back" transition already does (GUI reopen, hourly
       // re-arm).
       if (_lastHealth == PowerHealthState.internetProblem && state == PowerHealthState.ready) {
-        logger.log(
-          'Internet recovered - clearing the retroactive audit cache to '
-          're-check every running ticket against the full signal history.',
-        );
-        _auditedTickets.clear();
+        _clearAuditCache('Internet recovered');
       }
     }
     _lastHealth = state;
