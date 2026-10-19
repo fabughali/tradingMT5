@@ -165,6 +165,40 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     if (confirmed == true) widget.onResetPnlSince();
   }
 
+  /// 2026-10-19, per the Impeccable design critique (P0): the running-row
+  /// power icon fired `onTerminate` straight from `onPressed` for a LIVE
+  /// trade - the exact same one-tap cost as the Pause toggle right next
+  /// to it, with no undo anywhere in the app. The far lower-stakes
+  /// "Reset P&L tracking" action above already gets a confirm dialog;
+  /// closing a real position with real money didn't. Only gates the
+  /// RUNNING case - cancelling a merely pending/waiting attempt (the
+  /// orange variant, tooltip "Cancel this pair's pending attempt") stays
+  /// a direct one-tap action, since there's no live position to lose.
+  Future<void> _confirmTerminate(BuildContext context, AutoTradeRow row) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Terminate ${row.mt5Symbol}?'),
+        content: const Text(
+          'This closes the running position right now, at the current market '
+          'price. This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Terminate'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) widget.onTerminate(row.tvSymbol);
+  }
+
   /// SLL column's (i) icon (2026-10-13, per the user: "once user click on
   /// this icon... app will show the sll percent category setup in a
   /// dialog") - the exact ladder `highestSlRatchetThresholdCrossed`/
@@ -1431,7 +1465,9 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                               tooltip: row.status == AutoTradeStatus.running
                                   ? 'Terminate this pair\'s trade'
                                   : 'Cancel this pair\'s pending attempt',
-                              onPressed: () => widget.onTerminate(row.tvSymbol),
+                              onPressed: () => row.status == AutoTradeStatus.running
+                                  ? _confirmTerminate(context, row)
+                                  : widget.onTerminate(row.tvSymbol),
                             ),
                           ),
                         ],

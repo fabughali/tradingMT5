@@ -1980,6 +1980,29 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-19** — Confirm dialog before terminating a live trade, per a
+  formal Impeccable design critique of the Dashboard + Auto-Managed
+  Trades screens (dual isolated sub-agents - a design review plus a
+  mechanical/detector pass; the deterministic scanner confirmed non-
+  applicable to Dart source, since its rules target CSS/web syntax that
+  structurally can't appear here - substituted direct screenshot +
+  source-line evidence instead). Score: 23/40 (Acceptable). Top finding,
+  P0: the running-row power icon fired `onTerminate` straight from
+  `onPressed` for a LIVE position - the exact same one-tap cost as the
+  Pause toggle right next to it, in a confirmed 28-36px action row (none
+  of the reviewed tap targets reach the 44x44dp guideline), with no undo
+  anywhere in the app. The far lower-stakes "Reset P&L tracking" action
+  already had a confirm dialog; closing a real position with real money
+  didn't. Fixed: `_confirmTerminate` (mirrors the existing
+  `_confirmResetPnlSince` AlertDialog pattern) now gates the table row's
+  power icon specifically when `row.status == AutoTradeStatus.running` -
+  cancelling a merely pending/waiting attempt (the orange variant) stays
+  a direct one-tap action, since there's no live position to lose there.
+  User chose to address the P0 only this round, not the P1/P2 findings
+  (raw retcode copy, near-liquidation visual weight, waiting-grid
+  severity sort, color palette reuse) - those remain open in
+  `.impeccable/critique/` for a future pass.
+
 - **2026-10-19** — First real unit test suite, plus two pre-existing
   bugs it immediately caught, per the user: "is there any tool or any
   skill i need to add to claude and can help me testing this app...
