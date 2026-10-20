@@ -58,6 +58,7 @@ import '../tradingview/chart_state.dart';
 import '../tradingview/enforce.dart';
 import '../tradingview/launch.dart';
 import '../tradingview/signals_reader.dart';
+import 'candle_closed.dart';
 import 'sl_ratchet_ladder.dart';
 import 'volume_step.dart';
 import 'worm10_decision.dart';
@@ -2439,7 +2440,11 @@ class EngineService {
     // tag+bar - that alone proves the candle after it came up empty, no
     // separate "inspect candle B directly" check needed.
     final latestWire = signalTagToWire(latest.tag);
-    if (!immediate && (pending == null || pending.tag != latestWire || pending.barTime != latest.time)) {
+    // See [isCandleClosed]'s doc comment (2026-10-20, per the user): an
+    // immediate check only skips the extra-candle wait for a signal whose
+    // own candle has already closed.
+    final actNow = _immediateMayActOn(immediate, latest.time, category, tvSymbol, latestWire);
+    if (!actNow && (pending == null || pending.tag != latestWire || pending.barTime != latest.time)) {
       // Either the very first time this signal is being seen, or a newer
       // one has replaced whatever was pending - either way, this becomes
       // the new candidate and must itself survive one full extra candle
@@ -2452,7 +2457,8 @@ class EngineService {
       );
       return;
     }
-    if (immediate) {
+    if (immediate && !actNow && _extraCandleWaitStillRunning(pending!.barTime, category)) return;
+    if (actNow) {
       logger.log(
         '$tvSymbol ($category): technique switch reverse check - '
         '$latestWire@${latest.time} triple-confirmed, acting immediately.',
@@ -2803,7 +2809,11 @@ class EngineService {
     // currently-running trade - see this method's own doc comment above on
     // [skipExtraCandleWait] for why).
     final latestWire = signalTagToWire(latest.tag);
-    if (!immediate && !skipExtraCandleWait &&
+    // See [isCandleClosed] (2026-10-20). [skipExtraCandleWait] - the
+    // separate, user-specified running-trade rule for this technique - is
+    // deliberately left exactly as it was.
+    final actNow = _immediateMayActOn(immediate, latest.time, category, tvSymbol, 'supertrend $latestWire');
+    if (!actNow && !skipExtraCandleWait &&
         (pending == null || pending.tag != latestWire || pending.barTime != latest.time)) {
       supertrendPending.set(barKey, latestWire, latest.time);
       logger.log(
@@ -2812,7 +2822,10 @@ class EngineService {
       );
       return;
     }
-    if (immediate) {
+    if (immediate && !actNow && !skipExtraCandleWait && _extraCandleWaitStillRunning(pending!.barTime, category)) {
+      return;
+    }
+    if (actNow) {
       logger.log(
         '$tvSymbol ($category): technique switch reverse check - '
         'supertrend $latestWire@${latest.time} triple-confirmed, acting immediately.',
@@ -3384,7 +3397,10 @@ class EngineService {
     // "Survive one full extra candle" wait gate - same shape as every
     // other technique's own, against [worm10Pending].
     final latestWire = worm10EventKindToWire(latest.kind);
-    if (!immediate && (pending == null || pending.kind != latest.kind || pending.barTime != latest.time)) {
+    // See [isCandleClosed] (2026-10-20) - this exact gate is where the live
+    // BTC flip on a 2-minute-old candle went through.
+    final actNow = _immediateMayActOn(immediate, latest.time, category, tvSymbol, 'worm10 $latestWire');
+    if (!actNow && (pending == null || pending.kind != latest.kind || pending.barTime != latest.time)) {
       worm10Pending.set(barKey, latest.kind, latest.time);
       logger.log(
         '$tvSymbol ($category): worm10 $latestWire@${latest.time} triple-confirmed - '
@@ -3392,7 +3408,8 @@ class EngineService {
       );
       return;
     }
-    if (immediate) {
+    if (immediate && !actNow && _extraCandleWaitStillRunning(pending!.barTime, category)) return;
+    if (actNow) {
       logger.log(
         '$tvSymbol ($category): technique switch reverse check - '
         'worm10 $latestWire@${latest.time} triple-confirmed, acting immediately.',
@@ -3879,6 +3896,34 @@ class EngineService {
       firstOpen.markOpened('${category.wireValue}|$tvSymbol');
     }
     return chosen;
+  }
+
+  /// Whether an [immediate] check may skip the "survive one full extra
+  /// candle" wait for a signal on the bar opened at [barTimeSec] - only if
+  /// that candle has already closed (2026-10-20, per the user - see
+  /// [isCandleClosed]'s doc comment for the live BTC incident). Non-
+  /// immediate checks never skip the wait, exactly as before. Logs when an
+  /// immediate check is held back, so the deferral is visible.
+  bool _immediateMayActOn(bool immediate, int barTimeSec, AutoCategory category, String tvSymbol, String what) {
+    if (!immediate) return false;
+    if (isCandleClosed(barTimeSec, category.candlePeriod, DateTime.now())) return true;
+    logger.log(
+      '$tvSymbol ($category): reverse check - $what@$barTimeSec is on the '
+      'still-forming candle - NOT acting immediately; it goes through the '
+      'normal one-extra-candle wait instead.',
+    );
+    return false;
+  }
+
+  /// The normal cycle's own wait rule (see [_checkOneSymbol]'s early
+  /// "skipped ENTIRELY until ... the end of the candle immediately after
+  /// the candidate's own bar" gate), re-applied for an immediate check that
+  /// [_immediateMayActOn] held back: immediate checks bypass that early
+  /// gate, so without this a candidate that was ALREADY pending (registered
+  /// by an earlier normal cycle) would be acted on right away, mid-wait.
+  bool _extraCandleWaitStillRunning(int pendingBarTimeSec, AutoCategory category) {
+    final checkAt = pendingBarTimeSec + category.candlePeriod.inSeconds * 2;
+    return DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000 < checkAt;
   }
 
   double _roundToDigits(double v, int digits) {

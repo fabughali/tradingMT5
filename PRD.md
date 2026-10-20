@@ -1980,6 +1980,26 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-20 (v1.6.27+75)** — CRITICAL, real-money: "immediate" checks
+  no longer act on the still-forming candle. Found live: Power-on at 19:54
+  ran the reverse-check sweep, which skips the "survive one full extra
+  candle" wait by design (2026-10-06 spec); it flipped a confirmed BTC
+  SHORT (SELL_OPEN1, 17:00 candle) to LONG on a ZIGZAG_BUY on the 20:00
+  candle when that candle was 2 minutes old (-$0.34, ticket 1661496480 ->
+  1661502601), while the engine's own audit 20s earlier was correctly
+  deferring the same signal. User chose option 3 of three ("keep as is" /
+  "always wait" / "immediate only on closed candles"): an immediate check
+  (Power-on/technique-switch sweep AND a pair's un-pause check) now skips
+  the wait only when the signal's own candle has closed
+  ([isCandleClosed], lib/data/engine/candle_closed.dart); otherwise it
+  logs "still-forming candle - NOT acting immediately" and goes through the
+  normal wait, including the normal "until the end of the next candle"
+  hold for an already-pending candidate. Applied identically to Signal
+  Flip, Supertrend Plus and Hybrid (worm10). Supertrend Plus's separate
+  running-trade `skipExtraCandleWait` rule is untouched. Also includes
+  v1.6.26's single-instance fix (never installed separately). Tests: +4
+  `candle_closed_test.dart` (incl. the exact BTC timestamps); 65/65 pass.
+
 - **2026-10-20 (v1.6.26+74)** — v1.6.25's single-instance lock did NOT work
   in the real release build: verified live right after installing it - a
   second launch started normally, overwrote `gui.pid` and ran the Power-OFF

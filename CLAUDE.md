@@ -155,6 +155,12 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Key architecture decisions already made (do not re-litigate without reason)
 
+- **Immediate checks act only on closed candles** (2026-10-20, user's choice, v1.6.27):
+  the Power-on / technique-switch reverse-check sweep and the un-pause check skip the
+  "survive one extra candle" wait ONLY for a signal whose own candle has closed. Any
+  restart of the engine runs this sweep over every open position — before v1.6.27 it
+  flipped BTC on a 2-minute-old candle. Treat every restart as a trading event.
+
 - **Worm10 consolidation**: "Supertrend Plus" and "Signal Flip" decision techniques both
   now read off the `worm_10_26` TradingView indicator (via `readWorm10Signals`), not
   their own old indicators (`supertrend`, `worm_9_26`/zigzag). The old reader functions
