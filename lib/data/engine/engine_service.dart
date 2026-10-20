@@ -894,6 +894,7 @@ class EngineService {
       logger.log(
         'One-time cleanup: cleared stale volume step-downs for '
         '${cleared.isEmpty ? 'no pairs' : cleared.join(', ')} - next opens use each card\'s volume again.',
+        level: 'INFO',
       );
     }
     // Replaced 2026-10-05, per the user's new spec ("make app closing
@@ -1557,6 +1558,16 @@ class EngineService {
     await _maybeRefreshMarginGate();
 
     await _reconcileClosedPositions();
+
+    // MT5 Market Watch self-heal (2026-10-20, per the user: "if in any case
+    // there is a pair added in app while it is not there in mt5, then app
+    // has to add it in mt5 market watch"). NOT the TradingView Red-list
+    // automation the note below forbids - that was cosmetic; this is
+    // functional: a symbol missing from Market Watch has no bid/ask at
+    // all, so it can never trade (found live: SOL/TRX/XRP were added on
+    // Linux, this machine's MT5 never had them, and ignited orders for
+    // them silently never went out).
+    await _ensureAppPairsInMarketWatch();
 
     // 2026-10-04, per the user: "dont let app to add, remove pairs from
     // redlist ... in simple words, dont let app to do cosmetic work" -
@@ -3948,6 +3959,47 @@ class EngineService {
     return chosen;
   }
 
+  DateTime? _lastMarketWatchEnsureAt;
+
+  /// Adds every app pair (config.json symbols) that's missing from MT5's
+  /// Market Watch - see the call site's comment in [_runCycle]. Visibility
+  /// only (`add_marketwatch_symbol` never places/modifies/cancels orders).
+  /// Throttled to once per 10 minutes unless [force]d; never removes
+  /// anything from Market Watch.
+  Future<void> _ensureAppPairsInMarketWatch({bool force = false}) async {
+    final now = DateTime.now();
+    if (!force &&
+        _lastMarketWatchEnsureAt != null &&
+        now.difference(_lastMarketWatchEnsureAt!) < const Duration(minutes: 10)) {
+      return;
+    }
+    _lastMarketWatchEnsureAt = now;
+    try {
+      final visible = (await mt5.getWatchedSymbols())
+          .map((s) => (s['symbol'] as String? ?? '').toUpperCase())
+          .toSet();
+      for (final m in _loadSymbolsFresh()) {
+        if (visible.contains(m.mt5Symbol.toUpperCase())) continue;
+        await _addToMarketWatch(m.mt5Symbol, m.tradingViewSymbol);
+      }
+    } catch (e) {
+      logger.log('MARKET WATCH: check failed: $e', level: 'ERROR');
+    }
+  }
+
+  Future<void> _addToMarketWatch(String mt5Symbol, String tvSymbol) async {
+    try {
+      await mt5.addMarketWatchSymbol(mt5Symbol);
+      logger.log(
+        'MARKET WATCH: $mt5Symbol ($tvSymbol) is an app pair but was missing from '
+        'MT5 Market Watch - added it.',
+        level: 'INFO',
+      );
+    } catch (e) {
+      logger.log('MARKET WATCH: could not add $mt5Symbol ($tvSymbol) to MT5 Market Watch: $e', level: 'ERROR');
+    }
+  }
+
   /// Whether an [immediate] check may skip the "survive one full extra
   /// candle" wait for a signal on the bar opened at [barTimeSec] - only if
   /// that candle has already closed (2026-10-20, per the user - see
@@ -4029,8 +4081,27 @@ class EngineService {
     double rangeTop,
     double rangeBottom,
   ) async {
-    final symbolInfoResult = await mt5.getMarketWatchSymbol(mt5Symbol);
-    final symbols = (symbolInfoResult['symbols'] as List?) ?? const [];
+    var symbolInfoResult = await mt5.getMarketWatchSymbol(mt5Symbol);
+    var symbols = (symbolInfoResult['symbols'] as List?) ?? const [];
+    bool hasQuote(List s) =>
+        s.isNotEmpty &&
+        ((s.first as Map<String, dynamic>)['bid'] as num?) != null &&
+        ((s.first as Map<String, dynamic>)['ask'] as num?) != null;
+    if (!hasQuote(symbols)) {
+      // Just-in-time Market Watch self-heal (2026-10-20, per the user - see
+      // [_ensureAppPairsInMarketWatch]): no quote almost always means the
+      // symbol isn't in this MT5's Market Watch. Add it, give MT5 a moment
+      // to start streaming prices, and read once more before giving up.
+      final tvSymbol = _loadSymbolsFresh()
+              .where((m) => m.mt5Symbol.toUpperCase() == mt5Symbol.toUpperCase())
+              .map((m) => m.tradingViewSymbol)
+              .firstOrNull ??
+          mt5Symbol;
+      await _addToMarketWatch(mt5Symbol, tvSymbol);
+      await Future<void>.delayed(const Duration(seconds: 3));
+      symbolInfoResult = await mt5.getMarketWatchSymbol(mt5Symbol);
+      symbols = (symbolInfoResult['symbols'] as List?) ?? const [];
+    }
     if (symbols.isEmpty) {
       logger.log('$mt5Symbol: not found in Market Watch, cannot open.', level: 'ERROR');
       return null;

@@ -1980,6 +1980,24 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-20 (v1.6.30+78)** — MT5 Market Watch self-heal, per the user
+  ("why app cant add them to market watch? ... if in any case there is a
+  pair added in app while it is not there in mt5, then app has to add it in
+  mt5 market watch"). Found live: SOL/TRX/XRP were added to the app on
+  Linux (whose MT5 got them via the Add Pair flow), but this machine's MT5
+  never had them in Market Watch - so no bid/ask, ignited orders silently
+  never went out, and the volume stepper had no real limits. Now
+  `_ensureAppPairsInMarketWatch` (every cycle, throttled to 10 min) adds any
+  config.json pair missing from Market Watch, and `_computeTargetLevels`
+  adds + re-reads once (3s) just-in-time when a pair has no quote. Uses the
+  existing `add_marketwatch_symbol` MCP tool (visibility only, never
+  touches orders); never removes anything. Not the 2026-10-04 TradingView
+  Red-list automation the user banned as cosmetic - Market Watch is
+  functional. Also: the Auto card's "x running · y pending · z waiting
+  ±P&L" summary now hugs the top-right instead of sitting mid-card (a
+  Spacer beside the Flexible title was splitting the free space 50/50),
+  and the one-time cleanup / Market Watch messages log as INFO, not ERROR.
+
 - **2026-10-20 (v1.6.29+77)** — Volume fixes, per the user ("why all waiting
   trades were at volume 3 but once they start, volume becomes 1" / "once
   volume is minimum, still - button ... makes the volume less than what mt5

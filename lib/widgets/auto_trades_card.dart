@@ -757,38 +757,56 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                   visualDensity: VisualDensity.compact,
                   onPressed: () => setState(() => _sortMode = _sortMode.next),
                 ),
-                const Spacer(),
-                Text(
-                  '$running running · $pending pending · $noSignal waiting',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
-                ),
-                // Live P&L (2026-10-06, per the user: "i want p&L in auto
-                // is similar as in engine" / "same number" / "i need only
-                // one number. engine number") - this IS now the Engine
-                // status section's own equity-balance number, replacing
-                // the card's former separate figure (sum of this card's
-                // own rows' profit) entirely rather than sitting next to
-                // it. The "Since timestamp" realized tracker below is a
-                // different, untouched thing - "dont touch p&l for history
-                // timestamp".
-                if (widget.liveAccountPnl != null) ...[
-                  const SizedBox(width: 10),
-                  Text(
-                    '${widget.liveAccountPnl! >= 0 ? '+' : ''}'
-                    '${widget.liveAccountPnl!.toStringAsFixed(2)}',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: widget.liveAccountPnl! < 0
-                          ? Colors.red
-                          : widget.liveAccountPnl! > 0
-                          ? Colors.green
-                          : Colors.amber,
-                      fontWeight: FontWeight.w700,
-                      fontFeatures: const [FontFeature.tabularFigures()],
+                // 2026-10-20, per the user: "this text should be to the
+                // right top .. currently it looks like it is in the center"
+                // - a Spacer next to the Flexible title split the free
+                // space 50/50, so the stats started mid-card. The stats +
+                // P&L group now takes all remaining space and hugs the
+                // right edge (scaling down rather than overflowing on a
+                // very narrow window).
+                Expanded(
+                  child: Align(
+                    alignment: Alignment.centerRight,
+                    child: FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerRight,
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '$running running · $pending pending · $noSignal waiting',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: scheme.onSurfaceVariant,
+                            ),
+                          ),
+                          // Live P&L (2026-10-06, per the user: "i want p&L
+                          // in auto is similar as in engine" / "same number"
+                          // / "i need only one number. engine number") - the
+                          // Engine status section's own equity-balance
+                          // number. The "Since timestamp" realized tracker
+                          // below is a different, untouched thing - "dont
+                          // touch p&l for history timestamp".
+                          if (widget.liveAccountPnl != null) ...[
+                            const SizedBox(width: 10),
+                            Text(
+                              '${widget.liveAccountPnl! >= 0 ? '+' : ''}'
+                              '${widget.liveAccountPnl!.toStringAsFixed(2)}',
+                              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: widget.liveAccountPnl! < 0
+                                    ? Colors.red
+                                    : widget.liveAccountPnl! > 0
+                                    ? Colors.green
+                                    : Colors.amber,
+                                fontWeight: FontWeight.w700,
+                                fontFeatures: const [FontFeature.tabularFigures()],
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
                     ),
                   ),
-                ],
+                ),
               ],
             ),
             // P&L-since tracker (2026-09-30, per the user: "add a new text
