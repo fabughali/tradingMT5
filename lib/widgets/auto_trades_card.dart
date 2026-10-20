@@ -732,7 +732,19 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            // 2026-10-20, per the user: "this text should be to the right
+            // top .. currently it looks like it is in the center". Root
+            // cause: the title was a Flexible, which is ALLOTTED a share of
+            // the free space but only uses its own text width - Flutter
+            // leaves the unused remainder at the END of the Row, so the
+            // stats group always ended mid-card (a first fix that only
+            // right-aligned inside an Expanded still did; caught by
+            // test/auto_trades_card_layout_test.dart, which measures it).
+            // Now: title+sort icon as one left group, stats+P&L as one
+            // right group, and spaceBetween pushes ALL leftover space
+            // between them - the right group always ends at the card edge.
             Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 // 2026-10-19, found by finally running this project's own
                 // widget test for the first time all session: a
@@ -744,27 +756,29 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                 // right matter more moment-to-moment and must stay fully
                 // visible.
                 Flexible(
-                  child: Text(
-                    'Auto-Managed Trades',
-                    style: Theme.of(context).textTheme.titleMedium,
-                    overflow: TextOverflow.ellipsis,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          'Auto-Managed Trades',
+                          style: Theme.of(context).textTheme.titleMedium,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(width: 4),
+                      IconButton(
+                        icon: Icon(_sortMode.icon, size: 18),
+                        tooltip: _sortMode.label,
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => setState(() => _sortMode = _sortMode.next),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 4),
-                IconButton(
-                  icon: Icon(_sortMode.icon, size: 18),
-                  tooltip: _sortMode.label,
-                  visualDensity: VisualDensity.compact,
-                  onPressed: () => setState(() => _sortMode = _sortMode.next),
-                ),
-                // 2026-10-20, per the user: "this text should be to the
-                // right top .. currently it looks like it is in the center"
-                // - a Spacer next to the Flexible title split the free
-                // space 50/50, so the stats started mid-card. The stats +
-                // P&L group now takes all remaining space and hugs the
-                // right edge (scaling down rather than overflowing on a
-                // very narrow window).
-                Expanded(
+                const SizedBox(width: 8),
+                // Scales down rather than overflowing on a very narrow window.
+                Flexible(
                   child: Align(
                     alignment: Alignment.centerRight,
                     child: FittedBox(

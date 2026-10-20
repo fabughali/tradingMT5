@@ -1980,6 +1980,18 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-20 (v1.6.31+79)** — v1.6.30's Auto-card header fix did NOT
+  work: verified on the real screen after install, the summary was still
+  mid-card. Real cause: the title was a Flexible, allotted half the free
+  space but using only its text width, and Flutter leaves that unused share
+  at the END of the Row - right-aligning inside the other half couldn't
+  reach the edge. Fixed with title+sort icon as one left group, stats+P&L
+  as one right group, `MainAxisAlignment.spaceBetween`. New
+  test/auto_trades_card_layout_test.dart measures it (P&L within 40px of
+  the card's right edge, summary in the right half) at 700/1000/1400px -
+  it failed on v1.6.30's layout (P&L 371px short at 1400) before the fix
+  and passes after. 81/81 tests pass.
+
 - **2026-10-20 (v1.6.30+78)** — MT5 Market Watch self-heal, per the user
   ("why app cant add them to market watch? ... if in any case there is a
   pair added in app while it is not there in mt5, then app has to add it in
