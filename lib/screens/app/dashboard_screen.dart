@@ -149,7 +149,7 @@ class DashboardScreen extends ConsumerWidget {
                 ref.invalidate(autoTradesProvider);
               },
               onIgnite: (tvSymbol) {
-                ref.read(controlRepositoryProvider).ignitePair(tvSymbol);
+                ref.read(controlRepositoryProvider).toggleIgnite(tvSymbol);
                 ref.invalidate(autoTradesProvider);
               },
               onFavorite: (tvSymbol, favorite) {

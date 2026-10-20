@@ -267,3 +267,22 @@ Worm10Decision worm10DecisionFor(TradeDirection? current, Worm10EventKind kind) 
       return const Worm10Decision(action: Worm10Action.none, resultDirection: null);
   }
 }
+
+/// Ignite = fill on the CURRENT signal (2026-10-20, per the user: "once
+/// pair is ignited, this pair will be filled according to current signal.
+/// app will not wait for new signal to occur ... decide what is the signal
+/// direction, then make the filling"). Only ever changes the outcome for a
+/// FLAT ignited pair whose latest event is a bare zigzag (which
+/// [worm10DecisionFor] deliberately never opens on) - it opens in that
+/// event's direction instead. Everything else (running trades, OPEN1
+/// events, non-ignited pairs) is returned unchanged.
+Worm10Decision worm10DecisionWithIgnite(TradeDirection? current, Worm10EventKind kind, {required bool ignited}) {
+  final base = worm10DecisionFor(current, kind);
+  if (!ignited || current != null || base.action != Worm10Action.none) return base;
+  return Worm10Decision(
+    action: Worm10Action.openFresh,
+    resultDirection: kind == Worm10EventKind.zigzagBuy || kind == Worm10EventKind.buyOpen1
+        ? TradeDirection.long
+        : TradeDirection.short,
+  );
+}

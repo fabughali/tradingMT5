@@ -1980,6 +1980,31 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-20 (v1.6.28+76)** — Ignite redefined, per the user:
+  (1) "once ignite occurs, this button becomes unignited ... ignition will
+  only take place one time" - every open path already consumed it when
+  `_openPosition` returned true, but on this broker most opens are a stop
+  order that fills AFTER the 20s window (returns false) and is registered
+  later by reconciliation, which never consumed it (live: BTC filled 19:32,
+  ignite stayed armed until an unrelated flip at 20:02). New
+  `_consumeIgniteOnLateFill` in both late-registration paths.
+  (2) "once user click on active ignite.. the ignition deactivated. if trade
+  still not filled, then it will not be filled ... user can only unignite
+  the waiting unfilled trades" - the thunder icon is now a toggle
+  (`toggleIgnite`; still disabled on running rows). The margin gate's
+  resting-order cancellation now exempts an ignited pair's resting order;
+  un-igniting removes the exemption.
+  (3) "once pair is ignited, this pair will be filled according to current
+  signal. app will not wait for new signal to occur ... make a reverse check
+  and decide what is the signal direction, then make the filling" - igniting
+  queues the same instant re-check un-pausing uses, and
+  `worm10DecisionWithIgnite` opens a FLAT ignited pair in its latest
+  event's direction even on a bare ZIGZAG_BUY/SELL (normally update/flip
+  only). Still respects the v1.6.27 closed-candle rule and the margin
+  bypass; running trades unaffected; non-ignited pairs unchanged (strict
+  OPEN1-only entry, per the user). Hybrid (worm10) only - the active
+  technique. Tests: +4 ignited_pair_store, +5 worm10_ignite; 74/74 pass.
+
 - **2026-10-20 (v1.6.27+75)** — CRITICAL, real-money: "immediate" checks
   no longer act on the still-forming candle. Found live: Power-on at 19:54
   ran the reverse-check sweep, which skips the "survive one full extra

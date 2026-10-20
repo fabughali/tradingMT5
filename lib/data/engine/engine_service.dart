@@ -831,6 +831,23 @@ class EngineService {
         // genuinely still pending (confirmed live: ticket 1660701907 on
         // LTCUSD.lv was cancelled this exact way at 92.9% margin before
         // this exemption existed).
+        // 2026-10-20, per the user: an ignited pair "will open regardless
+        // of margin level once triggered" - so its resting order must not
+        // be cancelled by this sweep either. Un-igniting it (Dashboard)
+        // removes the exemption: "if trade still not filled, then it will
+        // not be filled".
+        final ignitedBase = _loadSymbolsFresh()
+            .where((m) => m.mt5Symbol.toUpperCase() == symbol.toUpperCase())
+            .map((m) => m.tradingViewSymbol)
+            .where(ignitedPairs.isIgnited)
+            .firstOrNull;
+        if (ignitedBase != null) {
+          logger.log(
+            'MARGIN GATE: leaving resting pending order $orderTicket ($symbol) alone - '
+            '$ignitedBase is ignited (margin level bypassed until it fills or is un-ignited).',
+          );
+          continue;
+        }
         if (manualCopyPendingOrders.isPending(orderTicket)) {
           logger.log(
             'MARGIN GATE: leaving resting pending order $orderTicket ($symbol) alone - '
@@ -1180,6 +1197,11 @@ class EngineService {
         '$mt5Symbol ($category): found untracked position ticket=$ticket with our '
         'own comment tag during reconciliation - registering it now.',
       );
+      for (final m in _loadSymbolsFresh()) {
+        if (m.mt5Symbol.toUpperCase() == mt5Symbol.toUpperCase()) {
+          _consumeIgniteOnLateFill(m.tradingViewSymbol, mt5Symbol, ticket);
+        }
+      }
     }
 
     final tracked = openPositions.listAppPositions();
@@ -3419,7 +3441,22 @@ class EngineService {
     final currentDirection = existing == null
         ? null
         : ((existing['action'] as String?) == 'sell' ? TradeDirection.short : TradeDirection.long);
-    final decision = worm10DecisionFor(currentDirection, latest.kind);
+    // Ignite = fill on the CURRENT signal - see [worm10DecisionWithIgnite]
+    // (2026-10-20). Still subject to the closed-candle rule above and still
+    // one-shot (consumed on fill).
+    final plainDecision = worm10DecisionFor(currentDirection, latest.kind);
+    final decision = worm10DecisionWithIgnite(
+      currentDirection,
+      latest.kind,
+      ignited: ignitedPairs.isIgnited(tvSymbol),
+    );
+    if (decision.action != plainDecision.action) {
+      logger.log(
+        '$tvSymbol ($category): IGNITED - opening on the current signal $latestWire@${latest.time} '
+        '(${decision.resultDirection == TradeDirection.long ? 'BUY' : 'SELL'}) without waiting '
+        'for a new OPEN1 event.',
+      );
+    }
 
     // A synthetic [Signal] matching [decision.resultDirection]/[latest.time]
     // - [_openPosition] requires one positionally, but never actually reads
@@ -3879,6 +3916,7 @@ class EngineService {
           'must have triggered after the post-placement registration '
           'window gave up).',
         );
+        _consumeIgniteOnLateFill(tvSymbol, mt5Symbol, ticket);
       }
       if (openPositions.isAppOpened(ticket)) {
         if (copyPositions.isCopy(ticket)) {
@@ -3913,6 +3951,23 @@ class EngineService {
       'normal one-extra-candle wait instead.',
     );
     return false;
+  }
+
+  /// Ignite is one-shot: "once ignite occurs, this button becomes
+  /// unignited" (2026-10-20, per the user). Every open path already
+  /// consumes it when [_openPosition] returns true, but on this broker most
+  /// opens are a stop order that fills AFTER [_openPosition]'s 20s window
+  /// (it returns false) and is only registered later, here - so the ignite
+  /// used to stay armed after the trade had actually filled (confirmed live:
+  /// BTC filled 19:32, its ignite stayed armed until an unrelated flip at
+  /// 20:02 consumed it). Called wherever a late fill gets registered.
+  void _consumeIgniteOnLateFill(String tvSymbol, String mt5Symbol, int ticket) {
+    if (!ignitedPairs.isIgnited(tvSymbol)) return;
+    ignitedPairs.consume(tvSymbol);
+    logger.log(
+      '$mt5Symbol: ignited pair filled (ticket=$ticket) - ignite used up, '
+      'thunder icon back to off.',
+    );
   }
 
   /// The normal cycle's own wait rule (see [_checkOneSymbol]'s early

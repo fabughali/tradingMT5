@@ -323,13 +323,39 @@ class EngineControlRepository {
   /// for the one-shot margin-level-bypass semantics.
   void ignitePair(String tvSymbol) {
     _ignited.ignite(tvSymbol);
+    // 2026-10-20, per the user: ignite fills on the CURRENT signal without
+    // waiting for a new one - queue the same instant re-check un-pausing
+    // uses, so the engine evaluates this pair right away instead of at its
+    // next hourly turn (see EngineService._checkOneSymbolWorm10's IGNITED
+    // branch).
+    _unpauseRequests.request(tvSymbol);
     _logUserAction(
-      'Ignited $tvSymbol (Dashboard) - its next real signal will open '
-      'regardless of margin level.',
+      'Ignited $tvSymbol (Dashboard) - queued an instant check; it fills on its '
+      'current signal regardless of margin level (once that signal\'s candle has closed).',
     );
   }
 
   bool isIgnited(String tvSymbol) => _ignited.isIgnited(tvSymbol);
+
+  /// Clicking an ACTIVE (yellow) ignite cancels it (2026-10-20, per the
+  /// user: "once user click on active ignite.. the ignition deactivated. if
+  /// trade still not filled, then it will not be filled ... user can only
+  /// unignite the waiting unfilled trades"). The thunder icon is disabled
+  /// for running rows, so this only ever reaches a waiting pair; a filled
+  /// ignite is already consumed by the engine. Once cleared, the pair's
+  /// resting pending order (if any) is no longer exempt from the margin
+  /// gate's resting-order cancellation.
+  void toggleIgnite(String tvSymbol) {
+    if (_ignited.isIgnited(tvSymbol)) {
+      _ignited.consume(tvSymbol);
+      _logUserAction(
+        'Un-ignited $tvSymbol (Dashboard) - margin-level bypass cancelled; '
+        'if not filled yet, it now follows the normal margin rules.',
+      );
+    } else {
+      ignitePair(tvSymbol);
+    }
+  }
 
   /// Waiting card's star icon (2026-10-18, per the user: "add a star icon
   /// for those waiting/unfilled cards where once this icon is clicked,

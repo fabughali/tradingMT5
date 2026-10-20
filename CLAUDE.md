@@ -155,6 +155,11 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Key architecture decisions already made (do not re-litigate without reason)
 
+- **Ignite (thunder icon), v1.6.28, user's spec:** one-shot margin-level bypass that
+  fills a WAITING pair right away on its CURRENT signal direction (even a bare zigzag),
+  respecting the closed-candle rule; consumed the moment it fills (incl. late stop-order
+  fills); clicking a yellow icon on a waiting pair cancels it; disabled on running rows.
+  Entry for non-ignited pairs stays strictly OPEN1-only — the user explicitly wants that.
 - **Immediate checks act only on closed candles** (2026-10-20, user's choice, v1.6.27):
   the Power-on / technique-switch reverse-check sweep and the un-pause check skip the
   "survive one extra candle" wait ONLY for a signal whose own candle has closed. Any

@@ -637,7 +637,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                       tooltip: row.isIgnited
-                          ? 'Ignited - will open regardless of margin level once triggered'
+                          ? 'Ignited - will open regardless of margin level once triggered. Click to cancel.'
                           : 'Ignite - bypass margin level for this pair\'s next signal',
                       onPressed: () => widget.onIgnite(row.tvSymbol),
                     ),
@@ -1434,7 +1434,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                               tooltip: row.status == AutoTradeStatus.running
                                   ? 'Only available for a waiting pair'
                                   : row.isIgnited
-                                  ? 'Ignited - will open regardless of margin level once triggered'
+                                  ? 'Ignited - will open regardless of margin level once triggered. Click to cancel.'
                                   : 'Ignite - bypass margin level for this pair\'s next signal',
                               onPressed: row.status == AutoTradeStatus.running
                                   ? null
