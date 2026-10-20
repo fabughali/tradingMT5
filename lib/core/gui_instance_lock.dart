@@ -14,10 +14,31 @@ class GuiInstanceLock {
 
   /// Held for the whole process lifetime - never closed. The OS drops the
   /// lock when the process exits, including on a crash, so a stale lock
-  /// can't block the next launch. Never read - its only job is to keep the
-  /// open, locked handle alive (same pattern as main.dart's _exitListener).
-  // ignore: unused_field
+  /// can't block the next launch.
+  ///
+  /// MUST stay genuinely read (see [release]) - found live in v1.6.25: when
+  /// this field was write-only, the release (AOT) build's tree-shaker
+  /// dropped the store, the open handle became unreachable, GC finalized it
+  /// (closing the file and releasing the lock) within seconds of startup,
+  /// and a second launch got the lock anyway. The unit tests (JIT) never
+  /// saw it. A real read here keeps the handle reachable for the process
+  /// lifetime.
   static RandomAccessFile? _held;
+
+  /// Explicit release on a graceful GUI exit (the OS would do it anyway) -
+  /// also the read that keeps [_held] from being optimized away.
+  static void release() {
+    final held = _held;
+    _held = null;
+    if (held == null) return;
+    try {
+      held.unlockSync();
+      held.closeSync();
+    } catch (_) {}
+  }
+
+  /// Whether this process currently holds the lock.
+  static bool get isHeld => _held != null;
 
   /// True if this process now owns the GUI lock (or the lock couldn't be
   /// set up at all - failing open, so a filesystem problem never stops the

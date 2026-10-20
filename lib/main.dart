@@ -134,6 +134,7 @@ Future<void> main() async {
   _exitListener = AppLifecycleListener(
     onExitRequested: () async {
       await _controlRepo.pause();
+      GuiInstanceLock.release();
       return AppExitResponse.exit;
     },
   );
@@ -145,6 +146,7 @@ Future<void> main() async {
   for (final signal in signals) {
     signal.watch().listen((_) async {
       await _controlRepo.pause();
+      GuiInstanceLock.release();
       exit(0);
     });
   }

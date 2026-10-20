@@ -1980,6 +1980,20 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-20 (v1.6.26+74)** — v1.6.25's single-instance lock did NOT work
+  in the real release build: verified live right after installing it - a
+  second launch started normally, overwrote `gui.pid` and ran the Power-OFF
+  step again (harmless only because Power was already off), and a probe
+  showed the running GUI no longer held `gui.lock` at all. Root cause: the
+  lock handle lived in a write-only static field, which the AOT
+  tree-shaker drops; the handle became unreachable and GC's finalizer
+  closed it (releasing the lock) within seconds. JIT unit tests can't see
+  this, and a two-process plain-Dart test proved the OS locking itself is
+  fine. Fix: `GuiInstanceLock.release()` (called on graceful exit / SIGINT)
+  genuinely reads the field, keeping the handle reachable. Verification
+  this time is against the CI-built exe itself, two launches against an
+  isolated `TRADING_MT5_HOME`, not unit tests alone.
+
 - **2026-10-20 (v1.6.25+73)** — Two GUI bugs found live the same evening, per
   the user ("do the recommended"):
   (1) **GUI kept a rotated MT5 key forever** - `watchedSymbolsProvider`,
