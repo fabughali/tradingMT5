@@ -13,16 +13,22 @@
 /// here, per the user's own confirmed table.
 library;
 
-/// Highest rung (5, 10, 15, 20, 25, ...) [pnlPercent] has crossed, or null
-/// if still below the first rung (+5%) or at a loss.
-int? highestSlRatchetThresholdCrossed(double pnlPercent) {
-  if (pnlPercent < 5) return null;
-  return (pnlPercent ~/ 5) * 5;
+///
+/// 2026-10-20 (v1.6.32), per the user: the ladder is now keyed off live
+/// PROFIT IN DOLLARS, not P&L% of notional - same rung table, so +$5 locks
+/// +$2, +$10 locks +$5, +$15 locks +$10, ... The functions below are unit-
+/// agnostic; the engine feeds them dollars.
+
+/// Highest rung (5, 10, 15, 20, 25, ...) [pnl] has crossed, or null if
+/// still below the first rung (+5) or at a loss.
+int? highestSlRatchetThresholdCrossed(double pnl) {
+  if (pnl < 5) return null;
+  return (pnl ~/ 5) * 5;
 }
 
-/// The floating-P&L percentage to lock the stop-loss to once [threshold]
-/// has been crossed. +5% is the one special case (locks to +2%, not 0% —
-/// matches tradingPionex's own "+10% locks to +5%, not 0%" precedent for
-/// its first rung); every rung from +10% on is just threshold-5.
+/// The profit to lock in once [threshold] has been crossed. +5 is the one
+/// special case (locks to +2, not 0 — matches tradingPionex's own "+10%
+/// locks to +5%, not 0%" precedent for its first rung); every rung from
+/// +10 on is just threshold-5.
 double slRatioForThreshold(int threshold) =>
     threshold == 5 ? 2 : (threshold - 5).toDouble();

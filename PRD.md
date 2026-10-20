@@ -1980,6 +1980,34 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-21 (v1.6.32+80)** — Protection fixes; the user said "once you
+  fix and finish .. install" without picking options, so Claude's stated
+  recommendations were applied (user may revise):
+  (1) **SLL is now a DOLLAR ladder** ("for many times this trade 1661519159
+  passed 5$ and still sll set at -5$"): the % ladder needed ~+$36.60 on
+  ETH 0.3 before its first rung. Same rung table in $: +$5 locks +$2,
+  +$10 -> +$5, +$15 -> +$10, ... (-$5 baseline unchanged; rung state was
+  empty, no migration). SLL column + info dialog show $.
+  (2) **SLL coverage gaps** ("investigate if sll is working every 30sec"):
+  the sweep was skipped for the whole time health was not `ready` (e.g.
+  only TradingView down) and while global Auto was paused - open trades had
+  no -$5/ratchet protection then. Now it runs in both cases whenever MT5 is
+  reachable (still skipped for the 90s post-start grace). Kept sequential,
+  NOT on a concurrent timer: the sweep closes positions and the shared MT5
+  session/state would let a per-symbol check act on a just-closed trade -
+  so the real interval is 30s up to ~one per-symbol check (~45-60s). New
+  5-minute `SLL heartbeat` log line records the worst gap actually seen.
+  (3) **Spread guard**: no open (normal/ignited/flip/recycle/copy) when the
+  spread alone would cost > $1 at the volume sent; waiting reason shown,
+  retried next cycle. Live trigger: XRP SELL 100 at 00:19 after the daily
+  rollover, 0.06 spread = instant -$6.00, closed by the -$5 baseline.
+  (4) **Copy SL survivability**: a 1-lot copy is refused when its -$1 SL
+  distance doesn't exceed spread + broker minimum stop distance. Live
+  trigger: ETH copy at 23:57, $1 SL inside the spread, broker SL fired after
+  11s and slipped to -$2.70. Also fixed the copy path's hard `bid as num`
+  cast (same crash class as v1.6.24) and the false "could not add" ERROR
+  for successful Market Watch adds. Tests: +10 spread_guard_test; 91/91.
+
 - **2026-10-20 (v1.6.31+79)** — v1.6.30's Auto-card header fix did NOT
   work: verified on the real screen after install, the summary was still
   mid-card. Real cause: the title was a Flexible, allotted half the free

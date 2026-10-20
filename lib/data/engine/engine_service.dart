@@ -60,6 +60,7 @@ import '../tradingview/launch.dart';
 import '../tradingview/signals_reader.dart';
 import 'candle_closed.dart';
 import 'sl_ratchet_ladder.dart';
+import 'spread_guard.dart';
 import 'volume_step.dart';
 import 'worm10_decision.dart';
 
@@ -468,13 +469,43 @@ class EngineService {
   DateTime _lastSlRatchetAt = DateTime.fromMillisecondsSinceEpoch(0);
   static const _slRatchetInterval = Duration(seconds: 30);
 
+  DateTime? _lastSlHeartbeatAt;
+  Duration _maxSlGapSinceHeartbeat = Duration.zero;
+
+  /// Runs the SLL sweep at most every [_slRatchetInterval]. Called from the
+  /// main loop at every cycle start and every per-symbol boundary, plus
+  /// (2026-10-20) whenever the cycle itself is skipped but MT5 is reachable
+  /// and while global Auto is paused - always sequentially, never on its
+  /// own concurrent timer: the sweep CLOSES positions, and running it in
+  /// parallel with a per-symbol check could let that check act on a
+  /// position the sweep just closed. Real interval is therefore 30s up to
+  /// about one per-symbol check (~45-60s); the heartbeat below records the
+  /// worst gap actually seen so this is verifiable, not assumed.
   Future<void> _maybeApplySlRatchet() async {
-    if (DateTime.now().difference(_lastSlRatchetAt) < _slRatchetInterval) {
+    final now = DateTime.now();
+    final sinceLast = now.difference(_lastSlRatchetAt);
+    if (sinceLast < _slRatchetInterval) {
       return;
     }
-    _lastSlRatchetAt = DateTime.now();
+    if (_lastSlRatchetAt.millisecondsSinceEpoch > 0 && sinceLast > _maxSlGapSinceHeartbeat) {
+      _maxSlGapSinceHeartbeat = sinceLast;
+    }
+    _lastSlRatchetAt = now;
     try {
-      await _applySlRatchet();
+      final checked = await _applySlRatchet();
+      // Heartbeat (2026-10-20, per the user: "investigate if sll is
+      // working every 30sec") - the sweep logged nothing on success, so
+      // whether it was running at all couldn't be verified from the log.
+      // One line every 5 minutes, with the worst gap between sweeps.
+      if (_lastSlHeartbeatAt == null || now.difference(_lastSlHeartbeatAt!) >= const Duration(minutes: 5)) {
+        logger.log(
+          'SLL heartbeat: sweep ok - $checked app position(s) checked; longest gap between '
+          'sweeps since last heartbeat ${_maxSlGapSinceHeartbeat.inSeconds}s.',
+          level: 'INFO',
+        );
+        _lastSlHeartbeatAt = now;
+        _maxSlGapSinceHeartbeat = Duration.zero;
+      }
     } catch (e, st) {
       logger.log('SL ratchet sweep failed: $e\n$st', level: 'ERROR');
     }
@@ -498,7 +529,8 @@ class EngineService {
   /// trade is left completely untouched by this too, consistent with
   /// "paused means no action at all." A manually-opened MT5 position on a
   /// symbol this app doesn't manage is never touched.
-  Future<void> _applySlRatchet() async {
+  Future<int> _applySlRatchet() async {
+    var checked = 0;
     final symbols = _loadSymbolsFresh();
     final tvByMt5Symbol = {
       for (final m in symbols) m.mt5Symbol.toUpperCase(): m.tradingViewSymbol,
@@ -519,15 +551,7 @@ class EngineService {
     // dropped immediately, not linger until the next time something else
     // happens to be open.
     slRatchet.pruneClosed(stillOpenTickets);
-    if (positions.isEmpty) return;
-
-    // Bulk-fetched once per sweep (not per position) for contract size and
-    // quote-precision digits - the same live catalog data
-    // [AutoTradeRow.pnlPercent] already reads on the GUI side.
-    final watchedBySymbol = {
-      for (final w in await mt5.getWatchedSymbols())
-        (w['symbol'] as String).toUpperCase(): w,
-    };
+    if (positions.isEmpty) return 0;
 
     for (final position in positions) {
       final ticket = int.tryParse('${position['position_id']}');
@@ -553,12 +577,17 @@ class EngineService {
       if (profit == null || priceOpen == null || volume == null || direction == null) {
         continue;
       }
+      checked++;
 
-      final watched = watchedBySymbol[mt5Symbol.toUpperCase()];
-      final contractSize = (watched?['contract_size'] as num?)?.toDouble() ?? 1.0;
-      final notional = volume * contractSize * priceOpen;
-      if (notional == 0) continue;
-      final pnlPercent = profit / notional * 100;
+      // DOLLAR ladder (2026-10-20, per the user: "for many times this
+      // trade 1661519159 passed 5$ and still sll set at -5$"). The ladder
+      // used to be keyed off P&L% of notional (+5% rung), which for ETH 0.3
+      // (~$731 notional) meant ~$36.60 profit before the first lock - +$5
+      // never moved it. Same rung table, now in dollars of live profit:
+      // +$5 locks +$2, +$10 locks +$5, +$15 locks +$10, ... (threshold-5).
+      // The -$5 baseline before any rung is unchanged. Existing rung state
+      // was empty when this shipped (no trade had reached a % rung), so no
+      // migration was needed.
 
       // 2026-10-17 REDESIGN, per the user: "tp/sl should be fixed
       // according to 40/60 rules... app should take an action according
@@ -599,8 +628,8 @@ class EngineService {
           continue;
         }
       } else {
-        final lockPercent = slRatioForThreshold(existingThreshold);
-        if (pnlPercent <= lockPercent) {
+        final lockDollars = slRatioForThreshold(existingThreshold);
+        if (profit <= lockDollars) {
           try {
             await _closePosition(
               AutoCategory.oneHour,
@@ -608,12 +637,13 @@ class EngineService {
               mt5Symbol,
               position,
               stopReason: 'sll_ratchet',
-              detail: 'SLL: locked +$existingThreshold% rung reached '
-                  '(live P&L ${pnlPercent.toStringAsFixed(2)}%).',
+              detail: 'SLL: +\$$existingThreshold rung locked at +\$${lockDollars.toStringAsFixed(0)} - '
+                  'live P&L \$${profit.toStringAsFixed(2)}.',
             );
             logger.log(
-              'SLL: $tvSymbol ($mt5Symbol) closed at its locked +$existingThreshold% '
-              'rung (P&L ${pnlPercent.toStringAsFixed(2)}%).',
+              'SLL: $tvSymbol ($mt5Symbol) closed at its locked +\$${lockDollars.toStringAsFixed(0)} '
+              '(rung +\$$existingThreshold; P&L \$${profit.toStringAsFixed(2)}).',
+              level: 'INFO',
             );
           } catch (e) {
             logger.log(
@@ -625,16 +655,18 @@ class EngineService {
         }
       }
 
-      final newThreshold = highestSlRatchetThresholdCrossed(pnlPercent);
+      final newThreshold = highestSlRatchetThresholdCrossed(profit);
       if (newThreshold == null) continue;
       if (existingThreshold != null && newThreshold <= existingThreshold) continue;
 
       slRatchet.recordLock(ticket, newThreshold);
       logger.log(
-        'SLL: $tvSymbol ($mt5Symbol) crossed +$newThreshold% P&L - locking in '
-        '+${slRatioForThreshold(newThreshold).toStringAsFixed(0)}% (real TP/SL left untouched).',
+        'SLL: $tvSymbol ($mt5Symbol) profit reached +\$$newThreshold - locking in '
+        '+\$${slRatioForThreshold(newThreshold).toStringAsFixed(0)} (real TP/SL left untouched).',
+        level: 'INFO',
       );
     }
+    return checked;
   }
 
   /// One-time retroactive SL correction for positions already open when
@@ -977,6 +1009,15 @@ class EngineService {
       _lastHealthCheckAt = DateTime.now();
       if (health == PowerHealthState.ready) {
         await _runCycle();
+      } else if (_mt5Connected && DateTime.now().difference(_startedAt) >= _reconcileGracePeriod) {
+        // 2026-10-20, per the user ("investigate if sll is working every
+        // 30sec"): found that ANY non-ready health state - e.g. only
+        // TradingView down while MT5 is fine - skipped the whole cycle,
+        // SLL sweep included, leaving every open trade without its -$5
+        // baseline / ratchet protection. SLL is pure MT5, so it keeps
+        // running whenever MT5 itself is reachable. Sequential with the
+        // rest of this loop (never concurrent - see _maybeApplySlRatchet).
+        await _maybeApplySlRatchet();
       }
 
       storage.deleteFileIfExists(storage.checknowFile);
@@ -1507,6 +1548,13 @@ class EngineService {
 
   Future<void> _runCycle() async {
     if (storage.fileExists(storage.autoPausedFile)) {
+      // 2026-10-20: global Auto paused used to return BEFORE the SLL sweep
+      // below, so open trades lost their -$5 baseline / ratchet protection
+      // for as long as Auto stayed off. Pausing Auto stops new decisions,
+      // never the protection of trades already running.
+      if (DateTime.now().difference(_startedAt) >= _reconcileGracePeriod) {
+        await _maybeApplySlRatchet();
+      }
       _writeStatus(
         connected: true,
         message: 'Auto paused',
@@ -3989,7 +4037,15 @@ class EngineService {
 
   Future<void> _addToMarketWatch(String mt5Symbol, String tvSymbol) async {
     try {
-      await mt5.addMarketWatchSymbol(mt5Symbol);
+      try {
+        await mt5.addMarketWatchSymbol(mt5Symbol);
+      } on Mt5ClientException catch (e) {
+        // MT5's add tool reports SUCCESS as plain text ("market watch
+        // symbol added") that the client surfaces as an exception - found
+        // live 2026-10-20: every add logged "could not add" while MT5's own
+        // journal confirmed each symbol was added. Treat that text as OK.
+        if (!e.toString().contains('symbol added')) rethrow;
+      }
       logger.log(
         'MARKET WATCH: $mt5Symbol ($tvSymbol) is an app pair but was missing from '
         'MT5 Market Watch - added it.',
@@ -4305,6 +4361,19 @@ class EngineService {
     tryVolume = snapVolumeToStep(tryVolume, volumeMin: volumeMin, volumeStep: volumeStep);
     final point = (info['point'] as num?)?.toDouble() ?? 0.0;
     final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
+
+    // Spread guard (2026-10-20, per the user) - see [spreadTooWide]'s doc
+    // comment for the live XRP -$6 incident. Applies to every open path
+    // (normal, ignited, flip, recycle) since they all funnel through here.
+    final contractSizeForSpread = (info['contract_size'] as num?)?.toDouble() ?? 1.0;
+    if (spreadTooWide(bid: bid, ask: ask, volume: tryVolume, contractSize: contractSizeForSpread)) {
+      final cost = spreadCost(bid: bid, ask: ask, volume: tryVolume, contractSize: contractSizeForSpread);
+      final reason = 'spread too wide: \$${cost.toStringAsFixed(2)} to open $tryVolume '
+          '(limit \$${maxSpreadCostUsd.toStringAsFixed(2)}) - will retry next cycle';
+      logger.log('$mt5Symbol ($category): NOT opening - $reason.', level: 'WARNING');
+      waitingReasons.record(mapping.tradingViewSymbol, reason);
+      return false;
+    }
 
     // 2026-10-17 REDESIGN, per the user: "tp/sl should be fixed according
     // to 40/60 rules... app should take an action according to P&L.. but
@@ -4938,8 +5007,41 @@ class EngineService {
     final info = symbols.first as Map<String, dynamic>;
     final digits = (info['digits'] as num?)?.toInt() ?? 5;
     final contractSize = (info['contract_size'] as num?)?.toDouble() ?? 1.0;
-    final bid = (info['bid'] as num).toDouble();
-    final ask = (info['ask'] as num).toDouble();
+    // Nullable (2026-10-20) - the same hard `as num` cast that crashed the
+    // main open path on a symbol with no quote (fixed there in v1.6.24).
+    final bidRaw = (info['bid'] as num?)?.toDouble();
+    final askRaw = (info['ask'] as num?)?.toDouble();
+    if (bidRaw == null || askRaw == null || bidRaw <= 0 || askRaw <= 0) {
+      logger.log('$mt5Symbol ($category): $reasonLabel copy blocked - no usable quote.', level: 'ERROR');
+      return (success: false, failureReason: '$mt5Symbol has no live price in MT5 right now.');
+    }
+    final bid = bidRaw;
+    final ask = askRaw;
+    // Copy guards (2026-10-20, per the user) - see [spreadTooWide] and
+    // [copyStopLossSurvives] for the live ETH copy that lost -$2.70 eleven
+    // seconds after opening.
+    if (spreadTooWide(bid: bid, ask: ask, volume: copyVolume, contractSize: contractSize)) {
+      final cost = spreadCost(bid: bid, ask: ask, volume: copyVolume, contractSize: contractSize);
+      final reason = 'Spread too wide: \$${cost.toStringAsFixed(2)} to open a 1-lot copy '
+          '(limit \$${maxSpreadCostUsd.toStringAsFixed(2)}).';
+      logger.log('$mt5Symbol ($category): $reasonLabel copy blocked - $reason', level: 'WARNING');
+      return (success: false, failureReason: reason);
+    }
+    final copyPoint = (info['point'] as num?)?.toDouble() ?? 0.0;
+    final copyStopsLevel = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
+    if (!copyStopLossSurvives(
+      bid: bid,
+      ask: ask,
+      volume: copyVolume,
+      contractSize: contractSize,
+      point: copyPoint,
+      stopsLevelPoints: copyStopsLevel,
+    )) {
+      final reason = 'A 1-lot copy\'s -\$1 stop-loss would sit inside $mt5Symbol\'s spread/minimum '
+          'stop distance and close immediately at a bigger loss - copy refused.';
+      logger.log('$mt5Symbol ($category): $reasonLabel copy blocked - $reason', level: 'WARNING');
+      return (success: false, failureReason: reason);
+    }
     final entry = direction == TradeDirection.long ? ask : bid;
 
     final copySl = _baselineStopLoss(

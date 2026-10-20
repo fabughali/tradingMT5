@@ -155,6 +155,14 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Key architecture decisions already made (do not re-litigate without reason)
 
+- **SLL = dollar ladder (v1.6.32):** -$5 baseline; +$5 locks +$2, +$10 -> +$5, +$15 ->
+  +$10 ... Sweep is sequential with the main loop on purpose (it closes positions);
+  verify cadence from the `SLL heartbeat` log line, don't assume it.
+- **Spread guard (v1.6.32):** no open if spread cost at the sent volume > $1; 1-lot copies
+  refused when the -$1 SL can't clear spread + stops level. Limits are Claude's
+  recommendation applied on the user's "fix and finish" — user may revise.
+- **NEVER test a second GUI instance or click Power on the live machine** — a stray GUI
+  launch cost a real-money flip on 2026-10-20.
 - **Ignite (thunder icon), v1.6.28, user's spec:** one-shot margin-level bypass that
   fills a WAITING pair right away on its CURRENT signal direction (even a bare zigzag),
   respecting the closed-candle rule; consumed the moment it fills (incl. late stop-order

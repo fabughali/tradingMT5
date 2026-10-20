@@ -206,14 +206,15 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   /// `slRatioForThreshold` (§10.1) implement, spelled out so there's never
   /// any guessing about what a given rung actually means.
   void _showSllInfoDialog(BuildContext context) {
+    // Dollar ladder since v1.6.32 (2026-10-20, per the user).
     const rows = [
-      ('0% or below', '-\$5 flat (no percent)'),
-      ('+5%', '+2%'),
-      ('+10%', '+5%'),
-      ('+15%', '+10%'),
-      ('+20%', '+15%'),
-      ('+25%', '+20%'),
-      ('+30% and beyond', 'keeps going: threshold − 5'),
+      ('below +\$5', '-\$5 flat'),
+      ('+\$5', '+\$2'),
+      ('+\$10', '+\$5'),
+      ('+\$15', '+\$10'),
+      ('+\$20', '+\$15'),
+      ('+\$25', '+\$20'),
+      ('+\$30 and beyond', 'keeps going: threshold − \$5'),
     ];
     showDialog<void>(
       context: context,
@@ -227,7 +228,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
             children: [
               const Text(
                 'Tightening-only protection, keyed off each trade\'s own '
-                'live P&L% - never loosens once a rung is locked. The '
+                'live profit in dollars - never loosens once a rung is locked. The '
                 'real MT5 SL/TP stay fixed at the 60/40 model\'s levels '
                 'the whole time (2026-10-17 redesign) - this closes the '
                 'position directly once P&L crosses the rung, it never '
@@ -1178,7 +1179,9 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                                       // never accounting for a copy's own
                                       // tighter one.
                                       ? (row.isCopy ? '-\$1' : '-\$5')
-                                      : '+${row.slRatchetThreshold}%',
+                                      // Shows the LOCKED close level in $ (dollar
+                                      // ladder, v1.6.32): rung +$5 -> "+$2".
+                                      : '+\$${row.slRatchetThreshold == 5 ? 2 : row.slRatchetThreshold! - 5}',
                               style: TextStyle(
                                 color: row.status == AutoTradeStatus.running &&
                                         row.slRatchetThreshold != null
