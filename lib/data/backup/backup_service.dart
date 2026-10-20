@@ -74,6 +74,10 @@ class BackupService {
   bool _shouldExclude(String relativePath) {
     final name = p.basename(relativePath);
     if (name == 'heartbeat' || name == 'engine.pid') return true;
+    // 2026-10-20: the GUI single-instance lock + its PID (the lock file is
+    // byte-range locked on Windows - reading it while the GUI runs would
+    // throw), and the engine's transient Windows shutdown request.
+    if (name == 'gui.lock' || name == 'gui.pid' || name == 'SHUTDOWN_REQUEST') return true;
     if (RegExp(r'^engine(\..*)?\.log$').hasMatch(name)) return true;
     if (relativePath == '.env') return true;
     // Never zip up the backups folder itself - [CoreStorage.backupsDir]

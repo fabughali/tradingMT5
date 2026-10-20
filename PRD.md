@@ -1980,6 +1980,32 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-20 (v1.6.25+73)** — Two GUI bugs found live the same evening, per
+  the user ("do the recommended"):
+  (1) **GUI kept a rotated MT5 key forever** - `watchedSymbolsProvider`,
+  `autoTradesProvider` and `accountInfoProvider` read `.env` ONCE when they
+  started. After the user rotated the MCP key (19:35), an already-open GUI
+  got HTTP 401 on every poll and silently replayed its last good snapshot:
+  BNB SELL 0.3 (ticket 1661497400), opened by the engine at 19:37 from a
+  SELL_OPEN1 signal and fully tracked engine-side, never appeared in that
+  window's Auto table, and its P&L/margin froze. All three now re-read
+  `.env` every poll (the engine already did).
+  (2) **No single-instance guard** - a second `trading_mt5.exe` (here
+  launched by a Claude computer-use "open app" call meant only to focus the
+  window) ran main()'s "every GUI launch forces Power OFF" and stopped the
+  live engine at 19:41 with BTC + BNB open, leaving them unmanaged (no SL
+  ratchet) until Power was turned back on. New `GuiInstanceLock`
+  (lib/core/gui_instance_lock.dart): an exclusive OS file lock on
+  `logs/gui.lock`, taken FIRST in main(); a second launch logs a warning,
+  focuses the existing window (Windows, via its PID in `logs/gui.pid`) and
+  exits before touching Power, heartbeat or the watchdog. Fails open on a
+  filesystem error. `gui.lock`/`gui.pid`/`SHUTDOWN_REQUEST` excluded from
+  Backup exports. Side note from the same incident: that forced Power-off
+  was the first real Windows stop on v1.6.24 and logged
+  `Engine stop (Windows): graceful` in 11s - the v1.6.24 fix verified live.
+  Tests: +2 `gui_instance_lock_test.dart` (second acquire refused - Windows
+  only, POSIX locks are per-process); 61/61 pass.
+
 - **2026-10-20 (v1.6.24+72)** — Three fixes, one release, per the user ("go
   ahead with all three fixes as one release"):
   (1) **Null-bid crash** - `_computeTargetLevels` hard-cast `info['bid'] as

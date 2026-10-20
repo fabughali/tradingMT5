@@ -220,12 +220,15 @@ final watchedSymbolsProvider =
     StreamProvider.autoDispose<MarketWatchSnapshot>((ref) async* {
       final storage = ref.watch(storageProvider);
       final config = ref.watch(configProvider);
-      final env = storage.readEnvFile();
       var lastGood = const MarketWatchSnapshot(
         symbols: [],
         openPositionSides: {},
       );
       while (true) {
+        // Re-read every poll (2026-10-20) - see [autoTradesProvider]'s own
+        // comment on the same line: a key rotated while the GUI is open
+        // must take effect without a restart.
+        final env = storage.readEnvFile();
         final client = Mt5Client(
           apiKey: env['MT5_MCP_API_KEY'] ?? '',
           host: config.mt5.mcpHost,
@@ -287,10 +290,17 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
 ) async* {
   final storage = ref.watch(storageProvider);
   final config = ref.watch(configProvider);
-  final env = storage.readEnvFile();
   const tag = 'trading_mt5 ONE_HOUR';
   var lastGood = const <AutoTradeRow>[];
   while (true) {
+    // Re-read the API key every poll (2026-10-20, found live): it used to be
+    // read ONCE when this provider started, so after the user rotated the
+    // MT5 MCP key (MT5 Options -> MCP -> Generate + Settings), every call
+    // from an already-open GUI failed with HTTP 401 and this table kept
+    // replaying [lastGood] from before the rotation - a real BNB position
+    // (ticket 1661497400) opened 2 minutes later never appeared, and the
+    // P&L froze. The engine itself already re-reads it; now the GUI does too.
+    final env = storage.readEnvFile();
     final client = Mt5Client(
       apiKey: env['MT5_MCP_API_KEY'] ?? '',
       host: config.mt5.mcpHost,
@@ -743,9 +753,11 @@ final accountInfoProvider = StreamProvider.autoDispose<AccountSnapshot?>((
 ) async* {
   final storage = ref.watch(storageProvider);
   final config = ref.watch(configProvider);
-  final env = storage.readEnvFile();
   AccountSnapshot? lastGood;
   while (true) {
+    // Re-read every poll (2026-10-20) - see [autoTradesProvider]'s own
+    // comment on the same line.
+    final env = storage.readEnvFile();
     final client = Mt5Client(
       apiKey: env['MT5_MCP_API_KEY'] ?? '',
       host: config.mt5.mcpHost,

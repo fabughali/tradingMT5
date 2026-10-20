@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/core_router.dart';
 import 'core/core_storage.dart';
 import 'core/core_theme.dart';
+import 'core/gui_instance_lock.dart';
 import 'data/config/config_loader.dart';
 import 'data/control/engine_control_repository.dart';
 import 'data/logging/app_logger.dart';
@@ -26,7 +27,21 @@ final _controlRepo = EngineControlRepository(CoreStorage.instance);
 // ignore: unused_element
 AppLifecycleListener? _exitListener;
 
-void main() {
+Future<void> main() async {
+  // MUST stay first (2026-10-20) - see [GuiInstanceLock]: everything below
+  // (forcing Power OFF, the GUI heartbeat, the engine watchdog) would
+  // otherwise run a second time from a duplicate launch and stop a live
+  // engine out from under the window that started it.
+  if (!GuiInstanceLock.acquire(CoreStorage.instance)) {
+    AppLogger(CoreStorage.instance).log(
+      'GUI already running - this second launch is exiting without touching '
+      'Power/engine state (focusing the existing window instead).',
+      level: 'WARNING',
+    );
+    await GuiInstanceLock.focusExisting(CoreStorage.instance);
+    exit(0);
+  }
+
   runApp(const ProviderScope(child: TradingMt5App()));
 
   // Fire-and-forget, not awaited before runApp — the UI should show

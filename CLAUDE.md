@@ -99,8 +99,14 @@ log tail instead. To stop the engine, use the Power toggle (or close the GUI) ra
 a raw `taskkill`, so the `PAUSE` intent is recorded too.
 
 **Inspecting the GUI**
+- **NEVER call computer-use `open_application("TradingMT5")` to focus the window** — on
+  2026-10-20 it launched a SECOND GUI, which forced Power OFF and stopped the live engine
+  with 2 positions open (fixed in v1.6.25 by a single-instance lock, but don't rely on
+  it). Focus the existing one instead:
+  `(New-Object -ComObject WScript.Shell).AppActivate((Get-Process trading_mt5).Id)`.
 - Claude Desktop's computer-use tools: `request_access(["TradingMT5"])`, then
-  `screenshot`. Other windows (MT5, TradingView, browsers) are masked unless also
+  `screenshot`. Toggling Power via a click is blocked by the auto-mode safety
+  classifier — ask the user to do it. Other windows (MT5, TradingView, browsers) are masked unless also
   granted. Window title is `trading_mt5`. View-only unless the user asks for clicks —
   the Dashboard has live Power/Auto/trade controls.
 - The GUI's own Logs tab shows the same `engine.log`.
@@ -185,9 +191,10 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Current state (keep this updated)
 
-- Version: repo `1.6.24+72` (2026-10-20: null-bid crash, Windows stop cleanup,
-  volume-step snapping). Installed: Windows still `1.6.23+71` (not redeployed - the
-  user said leave Power alone); Linux not redeployed from Windows (no SSH).
+- Version: repo `1.6.25+73` (2026-10-20: GUI key re-read + single-instance lock; 1.6.24
+  = null-bid crash, Windows stop cleanup, volume-step snapping). Windows install status:
+  see the latest PRD §20 entry / ask. Linux not redeployed from Windows (no SSH) - still
+  1.6.23 there.
 - Linux engine: currently **stopped** (`inactive (dead)`) — Windows is the live
   instance as of now (MT5 balance ≈ 34.76 on 1013734072 there).
 - Unit tests: `test/sl_ratchet_ladder_test.dart`, `zigzag_range_test.dart`,
@@ -204,6 +211,12 @@ the actual cross-machine source of truth — the backups folder is a local-only 
     toolbar **Algo Trading** button was OFF (red) on 2026-10-20. Account login itself is
     a full trading login (`trading has been enabled - hedging mode`). "deal ... done"
     lines in the Windows MT5 journal are fills of orders placed by OTHER terminals.
+  - **Root cause found + fixed by the user 2026-10-20 19:30:** MT5 → Tools → Options →
+    **AI Assistant → Trading** was `Manual confirmation`; set to `Enabled` + MT5 restart →
+    MCP trade calls accepted. First-ever Windows fill: BTCUSD.lv SELL 0.003 @ 82617.02
+    (deal #1658888893, via the Invalid-fill → sell-stop fallback). If "trading is not
+    permitted" ever returns, check this setting first. MCP key rotated 19:35 (MT5 restart
+    required; engine re-reads `.env` and reconnected within ~5s, a few 401s meanwhile).
   - Other IPs authorize on 1013734072 between Windows sessions (212.34.x, 188.123.x,
     57.129.12.220 — Windows itself is 176.29.x); not attributed to a device yet.
   - Null cast: `_computeTargetLevels` hard-cast `info['bid'] as num`; MT5 returns no

@@ -65,6 +65,13 @@ class CoreStorage {
   /// other process.
   String get guiHeartbeatFile => p.join(logsDir, 'gui-heartbeat');
 
+  /// GUI single-instance lock (2026-10-20) - see [GuiInstanceLock]. Held
+  /// with an exclusive OS lock for the GUI process's whole lifetime; the OS
+  /// releases it automatically if the GUI crashes. [guiPidFile] is separate
+  /// because a locked region can't be read by another process on Windows.
+  String get guiLockFile => p.join(logsDir, 'gui.lock');
+  String get guiPidFile => p.join(logsDir, 'gui.pid');
+
   /// Power-off INTENT marker, toggled by the Dashboard's Power switch via
   /// [EngineControlRepository.pause]/[resume]. No longer read by the
   /// engine itself (2026-10-05) — the engine process only exists at all
