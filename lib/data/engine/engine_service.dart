@@ -59,6 +59,7 @@ import '../tradingview/enforce.dart';
 import '../tradingview/launch.dart';
 import '../tradingview/signals_reader.dart';
 import 'sl_ratchet_ladder.dart';
+import 'volume_step.dart';
 import 'worm10_decision.dart';
 
 /// Thrown by [EngineService._ensureCdpUpImpl] when TradingView genuinely
@@ -3912,8 +3913,23 @@ class EngineService {
     }
     final info = symbols.first as Map<String, dynamic>;
     final digits = (info['digits'] as num?)?.toInt() ?? 5;
-    final bid = (info['bid'] as num).toDouble();
-    final ask = (info['ask'] as num).toDouble();
+    // 2026-10-20 - found live on Windows: MT5's Market Watch record for
+    // SOLUSD.lv/TRXUSD.lv/XRPUSD.lv/GALAUSD.lv came back with no `bid`, and
+    // the old hard `as num` cast threw "type 'Null' is not a subtype of
+    // type 'num'" out of every open attempt for those pairs (24 times
+    // 2026-10-17..20). Per this function's own contract above, an
+    // unreadable quote means "can't tell right now" - return null, never
+    // throw and never guess a price.
+    final bid = (info['bid'] as num?)?.toDouble();
+    final ask = (info['ask'] as num?)?.toDouble();
+    if (bid == null || ask == null || bid <= 0 || ask <= 0) {
+      logger.log(
+        '$mt5Symbol: no usable quote from Market Watch (bid=$bid, ask=$ask) - '
+        'cannot compute levels, leaving it alone this cycle.',
+        level: 'ERROR',
+      );
+      return null;
+    }
     final entry = direction == TradeDirection.long ? ask : bid;
 
     // Final sanity guard (2026-09-27, per the user - found live: a
@@ -4076,11 +4092,22 @@ class EngineService {
     // than introducing a new, separate clamp.
     final marginScale = RiskGate.marginSizeScaleFor(risk.marginLevel);
     final desiredVolumeRaw = tradeVolumes.desired(volKey) ?? volumeMin;
-    final desiredVolume = marginScale >= 1.0 ? desiredVolumeRaw : desiredVolumeRaw * marginScale;
+    // Snapped onto the broker's volume grid up front (2026-10-20, per the
+    // user) - see [snapVolumeToStep]'s own doc comment: margin scaling
+    // alone can turn a legal size into an off-grid one MT5 rejects with
+    // 10014 before the order is even considered.
+    final desiredVolume = snapVolumeToStep(
+      marginScale >= 1.0 ? desiredVolumeRaw : desiredVolumeRaw * marginScale,
+      volumeMin: volumeMin,
+      volumeStep: volumeStep,
+    );
     final floorVolume = tradeVolumes.lastApplied(volKey) ?? volumeMin;
     var tryVolume = tradeVolumes.attempt(volKey) ?? desiredVolume;
     if (tryVolume > desiredVolume) tryVolume = desiredVolume;
     if (tryVolume < floorVolume) tryVolume = floorVolume;
+    // Final snap on what's actually sent - a persisted attempt from before
+    // this fix (or a hand-edited Dashboard volume) may itself be off-grid.
+    tryVolume = snapVolumeToStep(tryVolume, volumeMin: volumeMin, volumeStep: volumeStep);
     final point = (info['point'] as num?)?.toDouble() ?? 0.0;
     final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
 
@@ -4181,7 +4208,11 @@ class EngineService {
         // [floorVolume] (the last volume that actually worked).
         const volumeRelatedRetcodes = {10019, 10014};
         if (volumeRelatedRetcodes.contains(retcode) && tryVolume > floorVolume) {
-          final stepped = (tryVolume - volumeStep).clamp(floorVolume, desiredVolume).toDouble();
+          final stepped = snapVolumeToStep(
+            (tryVolume - volumeStep).clamp(floorVolume, desiredVolume).toDouble(),
+            volumeMin: volumeMin,
+            volumeStep: volumeStep,
+          );
           tradeVolumes.setAttempt(volKey, stepped);
           logger.log(
             '$mt5Symbol ($category): volume-related rejection — stepping '

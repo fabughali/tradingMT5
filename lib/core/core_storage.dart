@@ -18,6 +18,10 @@ import '../data/models/auto_category.dart';
 class CoreStorage {
   CoreStorage._(this.rootDir);
 
+  /// A storage rooted at an explicit directory - for unit tests only
+  /// (2026-10-20); the app and engine always go through [instance].
+  CoreStorage.forRoot(this.rootDir);
+
   final String rootDir;
 
   static CoreStorage? _instance;
@@ -71,6 +75,15 @@ class CoreStorage {
   /// `systemctl`/heartbeat round-trip that reflects reality.
   String get pauseFile => p.join(rootDir, 'PAUSE');
   String get stopFile => p.join(rootDir, 'STOP');
+
+  /// Graceful-stop request from the GUI's Windows Power-off/GUI-close path
+  /// (2026-10-20, per the user, after confirming `taskkill` never lets the
+  /// engine run its own cleanup on Windows - see PRD §20). Deliberately NOT
+  /// [stopFile]: that one is also RiskGate's kill switch and nothing ever
+  /// clears it, so reusing it would leave every later start dead on
+  /// arrival. The engine polls this every second, consumes it, and runs its
+  /// normal shutdown; it also deletes a stale one left over at startup.
+  String get shutdownRequestFile => p.join(rootDir, 'SHUTDOWN_REQUEST');
   String get checknowFile => p.join(rootDir, 'CHECKNOW');
 
   /// Global Auto off — independent of Power: the engine still runs/

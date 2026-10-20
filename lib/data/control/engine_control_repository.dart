@@ -24,6 +24,8 @@ import '../logging/app_logger.dart';
 import '../models/app_config.dart';
 import '../models/auto_category.dart';
 import '../models/engine_status.dart';
+import '../platform/engine_process.dart';
+import 'windows_engine_stop.dart';
 
 /// GUI-facing control surface — never talks to MT5 directly, only reads the
 /// status file the engine writes and toggles the PAUSE/STOP/CHECKNOW/
@@ -458,13 +460,26 @@ class EngineControlRepository {
   /// ([EngineStatus.disconnected]) instead of replaying a stale
   /// snapshot from whenever it last ran.
   Future<EngineStatus> status() async {
-    if (!engineRunning) return EngineStatus.disconnected;
+    if (!await isEngineRunning()) return EngineStatus.disconnected;
     final json = _storage.readJsonObject(_storage.statusFile);
     if (json == null) return EngineStatus.disconnected;
     return EngineStatus.fromJson(json);
   }
 
-  bool get engineRunning => _storage.fileExists(_storage.heartbeatFile);
+  /// Whether the engine OS process is genuinely alive (2026-10-20, per the
+  /// user) - `engine.pid` must name a live `tradingmt5_engine` process
+  /// ([isEngineProcessAlive], the same PID-reuse-safe check the engine's
+  /// own single-instance lock uses). Replaces the old "heartbeat file
+  /// exists" test, which a hard kill or crash defeats entirely: the file
+  /// simply outlives the process (confirmed live on Windows, every single
+  /// Power-off - see PRD §20), so the Dashboard kept replaying a dead
+  /// engine's last status and the GUI's engine watchdog in main.dart never
+  /// saw anything to restart.
+  Future<bool> isEngineRunning() async {
+    final pid = int.tryParse((_storage.readString(_storage.pidFile) ?? '').trim());
+    if (pid == null) return false;
+    return isEngineProcessAlive(pid);
+  }
 
   /// The systemd --user unit the engine process runs as — see
   /// ~/.config/systemd/user/tradingmt5-engine.service. Not auto-started on
@@ -481,7 +496,7 @@ class EngineControlRepository {
   /// (see [EngineService.run] - there's no more internal PAUSE-file gate
   /// for it to sit behind). [isPowerOn] stays a plain, instant file read
   /// purely so the toggle reflects the user's INTENT the moment they click
-  /// it, without waiting on a shell round-trip - [engineRunning]/the
+  /// it, without waiting on a shell round-trip - [isEngineRunning]/the
   /// status poll reflect whether that intent has actually landed yet.
   bool get isPowerOn => !_storage.fileExists(_storage.pauseFile);
 
@@ -540,21 +555,27 @@ class EngineControlRepository {
     }
   }
 
-  /// Graceful-then-forceful stop, same philosophy as bin/engine.dart's own
-  /// `forceExitAfter` watchdog (sigterm isn't available on Windows at all,
-  /// so there's no graceful signal to send here - this just gives the
-  /// engine's OWN heartbeat-staleness/PAUSE-file self-stop a short window
-  /// before falling back to a hard kill).
+  /// Graceful-then-forceful stop - see [WindowsEngineStopper]'s own doc
+  /// comment (2026-10-20). Replaces a 2s wait followed by a bare
+  /// `taskkill /F`: that wait was for a PAUSE-file self-stop the engine
+  /// stopped implementing on 2026-10-05, and the hard kill never let the
+  /// engine delete its own pid/heartbeat files.
   Future<void> _stopEngineWindows() async {
-    final pidRaw = _storage.readString(_storage.pidFile);
-    final pid = int.tryParse((pidRaw ?? '').trim());
-    if (pid == null) return;
-    await Future<void>.delayed(const Duration(seconds: 2));
-    try {
-      await Process.run('taskkill', ['/F', '/PID', '$pid']);
-    } catch (e) {
-      _logger.log('Failed to stop the engine process (pid=$pid): $e', level: 'ERROR');
-    }
+    final outcome = await WindowsEngineStopper(
+      storage: _storage,
+      isAlive: isEngineProcessAlive,
+      forceKill: (pid) async {
+        final result = await Process.run('taskkill', ['/F', '/PID', '$pid']);
+        if (result.exitCode != 0) {
+          _logger.log(
+            'taskkill /F /PID $pid exited ${result.exitCode}: ${result.stderr}',
+            level: 'ERROR',
+          );
+        }
+      },
+      log: (message, {String level = 'INFO'}) => _logger.log(message, level: level),
+    ).stop();
+    _logger.log('Engine stop (Windows): ${outcome.name}.');
   }
 
   void stop() {

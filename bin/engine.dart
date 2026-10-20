@@ -6,6 +6,7 @@ import 'package:trading_mt5/data/config/config_loader.dart';
 import 'package:trading_mt5/data/engine/engine_service.dart';
 import 'package:trading_mt5/data/logging/app_logger.dart';
 import 'package:trading_mt5/data/models/app_config.dart';
+import 'package:trading_mt5/data/platform/engine_process.dart';
 
 // The long-lived engine process — mirrors tradingPionex's bin/engine.dart.
 // Start it once and leave it running on the same machine as MT5 (Wine),
@@ -17,49 +18,10 @@ import 'package:trading_mt5/data/models/app_config.dart';
 // Configure the data directory with TRADING_MT5_HOME (defaults to
 // ~/.tradingmt5).
 
-/// Confirmed live 2026-10-04, after a sudden power loss: `kill -0 <pid>`
-/// alone only proves SOME process currently holds that PID, not that it's
-/// OUR process - the OS recycles PIDs, and after an unclean shutdown (the
-/// crashed engine never got to delete its own pid file) the very next boot
-/// handed PID 4706 to `pipewire`, which made this check report "alive"
-/// forever and permanently refuse to start (every single restart attempt
-/// re-read the same stale pid file and hit the same false positive -
-/// confirmed via journalctl showing an unbroken crash-restart loop since
-/// boot). Checking `/proc/<pid>/cmdline` for our own binary name closes
-/// this: a process reusing the PID almost certainly isn't named
-/// `tradingmt5_engine`, so this can only match the real thing.
-bool _isProcessAlive(int candidatePid) {
-  if (Platform.isWindows) return _isProcessAliveWindows(candidatePid);
-  try {
-    final cmdlineFile = File('/proc/$candidatePid/cmdline');
-    if (!cmdlineFile.existsSync()) return false;
-    final cmdline = cmdlineFile.readAsStringSync();
-    return cmdline.contains('tradingmt5_engine');
-  } catch (_) {
-    return false;
-  }
-}
-
-/// Windows port (2026-10-07, UNTESTED against a real Windows machine) of
-/// the same PID-reuse guard above - no /proc on Windows, so ask `tasklist`
-/// for that specific PID and check the image name it reports matches ours,
-/// same "don't trust a bare PID match" reasoning as the Linux version's own
-/// doc comment.
-bool _isProcessAliveWindows(int candidatePid) {
-  try {
-    final result = Process.runSync('tasklist', [
-      '/FI',
-      'PID eq $candidatePid',
-      '/FO',
-      'CSV',
-      '/NH',
-    ]);
-    final out = result.stdout.toString();
-    return out.toLowerCase().contains('tradingmt5_engine.exe');
-  } catch (_) {
-    return false;
-  }
-}
+// The PID-reuse-safe liveness check this file's single-instance lock uses
+// moved to lib/data/platform/engine_process.dart (2026-10-20) so the GUI's
+// own "is the engine running" check shares the exact same definition - see
+// [isEngineProcessAliveSync]'s doc comment for the full history.
 
 void main() async {
   final storage = CoreStorage.instance;
@@ -87,7 +49,7 @@ void main() async {
   final existingPid = int.tryParse((existingPidRaw ?? '').trim());
   if (existingPid != null &&
       existingPid != pid &&
-      _isProcessAlive(existingPid)) {
+      isEngineProcessAliveSync(existingPid)) {
     logger.log(
       'REFUSING TO START: engine already running as PID $existingPid '
       'against this data directory (${storage.rootDir}). Stop it first if '
@@ -98,6 +60,10 @@ void main() async {
   }
 
   storage.writeString(storage.pidFile, '$pid\n');
+  // A shutdown request left behind by an earlier stop that ended in a hard
+  // kill (or a request that raced a fresh Power-on) was meant for THAT
+  // process, not this one - never let it stop a brand-new engine.
+  storage.deleteFileIfExists(storage.shutdownRequestFile);
 
   // Hard watchdog added 2026-10-05, per the user ("make app closing engine
   // instantly once power toggle off and once gui closed"): engine.stop()
@@ -110,7 +76,12 @@ void main() async {
   // `systemctl --user stop` (or any SIGTERM/SIGINT) gets this process
   // gone within _forceExitAfter of being sent, full stop.
   const forceExitAfter = Duration(seconds: 10);
+  var stopping = false;
   void onStopSignal(String signal) {
+    // Several stop sources now exist (signals + [shutdownRequestFile]) and
+    // can overlap - only the first one runs the shutdown sequence.
+    if (stopping) return;
+    stopping = true;
     logger.log('$signal received — shutting down.');
     engine.stop();
     // 2026-10-18, per the user, after a real incident: Power toggled off
@@ -133,6 +104,7 @@ void main() async {
     // of which of the two exit paths below actually ends up firing.
     storage.deleteFileIfExists(storage.pidFile);
     storage.deleteFileIfExists(storage.heartbeatFile);
+    storage.deleteFileIfExists(storage.shutdownRequestFile);
     Timer(forceExitAfter, () {
       logger.log(
         'Graceful shutdown did not finish within '
@@ -145,17 +117,30 @@ void main() async {
 
   ProcessSignal.sigint.watch().listen((_) => onStopSignal('SIGINT'));
   // sigterm isn't supported on Windows (2026-10-07, Windows port) - watching
-  // it there throws. [EngineControlRepository]'s Windows stop path (direct
-  // taskkill, no systemctl there) relies on the SAME force-exit watchdog
-  // above as its real backstop instead.
+  // it there throws.
   if (!Platform.isWindows) {
     ProcessSignal.sigterm.watch().listen((_) => onStopSignal('SIGTERM'));
   }
+  // Windows graceful stop (2026-10-20, per the user, after confirming live
+  // that `taskkill` - the old Windows stop path - runs NO handlers at all:
+  // 51 Power-offs, zero "shutting down" lines, pid/heartbeat files left
+  // behind every time). With no SIGTERM on Windows, the GUI now asks for a
+  // stop by writing [CoreStorage.shutdownRequestFile] and only hard-kills
+  // after ~10s. Polled on a timer rather than at the top of [EngineService.run]'s
+  // loop, since one full sweep iteration can run 10+ minutes; timers fire
+  // between the engine's awaits, so this lands within about a second.
+  // Harmless on Linux (nothing writes the file there).
+  Timer.periodic(const Duration(seconds: 1), (_) {
+    if (storage.fileExists(storage.shutdownRequestFile)) {
+      onStopSignal('SHUTDOWN_REQUEST');
+    }
+  });
 
   await engine.run();
 
   storage.deleteFileIfExists(storage.pidFile);
   storage.deleteFileIfExists(storage.heartbeatFile);
+  storage.deleteFileIfExists(storage.shutdownRequestFile);
   logger.log('Engine stopped cleanly.');
 
   // The ProcessSignal.watch() subscriptions above keep the isolate's event

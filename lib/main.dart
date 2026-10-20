@@ -71,8 +71,19 @@ void main() {
   // PAUSE-file delete is a harmless no-op when it's already absent, so
   // this is safe to call unconditionally whenever this condition is true.
   final watchdogLogger = AppLogger(storage);
-  Timer.periodic(const Duration(seconds: 15), (_) {
-    if (_controlRepo.isPowerOn && !_controlRepo.engineRunning) {
+  // 2026-10-20: now asks whether the engine PROCESS is alive
+  // ([EngineControlRepository.isEngineRunning]) instead of whether the
+  // heartbeat file exists - on Windows that file outlived every stop/crash,
+  // so this watchdog could never fire there (see PRD §20).
+  var watchdogBusy = false;
+  Timer.periodic(const Duration(seconds: 15), (_) async {
+    if (watchdogBusy) return;
+    watchdogBusy = true;
+    try {
+      if (!_controlRepo.isPowerOn || await _controlRepo.isEngineRunning()) return;
+      // Re-checked after the async process query: Power may have been
+      // switched off while it ran.
+      if (!_controlRepo.isPowerOn) return;
       // Logged distinctly from resume()'s own "[USER] Power turned ON" -
       // this is the watchdog acting automatically, not a real user click,
       // and that distinction matters for anyone reading the log later to
@@ -83,6 +94,8 @@ void main() {
         level: 'WARNING',
       );
       unawaited(_controlRepo.resume());
+    } finally {
+      watchdogBusy = false;
     }
   });
 

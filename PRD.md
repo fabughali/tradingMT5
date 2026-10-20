@@ -1980,6 +1980,78 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-20 (v1.6.24+72)** — Three fixes, one release, per the user ("go
+  ahead with all three fixes as one release"):
+  (1) **Null-bid crash** - `_computeTargetLevels` hard-cast `info['bid'] as
+  num`; MT5 returns no bid for SOLUSD.lv/TRXUSD.lv/XRPUSD.lv/GALAUSD.lv, so
+  every open attempt for those 4 threw (24x 2026-10-17..20, in both the
+  normal cycle and the technique-switch reverse check). Now nullable: an
+  unreadable or non-positive bid/ask logs a reason and returns null, per
+  the function's own "can't tell right now" contract; both callers already
+  treat null as leave-alone. Not the retroactive-audit path.
+  (2) **Windows stop cleanup** - the confirmed bug in the entry below, fixed
+  as proposed: `SHUTDOWN_REQUEST` file (not `STOP`), engine polls it every
+  1s and runs its normal `onStopSignal` cleanup (made run-once, since
+  several stop sources can now overlap) and deletes a stale one at startup;
+  new `WindowsEngineStopper` (lib/data/control/windows_engine_stop.dart)
+  waits up to 10s, then `taskkill /F`, then deletes `engine.pid` +
+  `heartbeat` itself once the process is confirmed gone - but only if
+  `engine.pid` still names the process it stopped, so a racing Power-on's
+  new engine is never made to look dead. `engineRunning` (heartbeat file
+  exists) replaced by async `isEngineRunning()` = `engine.pid` names a
+  live `tradingmt5_engine` process, via the PID-reuse-safe check moved
+  verbatim from bin/engine.dart into lib/data/platform/engine_process.dart
+  (now shared by the engine's single-instance lock and the GUI). The GUI
+  engine watchdog uses it too, with a busy guard. Trade-off: closing the
+  GUI can now take up to ~10s if the engine is mid-iteration (it waits for
+  a real exit instead of killing blind after 2s).
+  (3) **Volume-step alignment** - new pure `snapVolumeToStep`
+  (lib/data/engine/volume_step.dart): floors onto `volume_min + k *
+  volume_step` (never rounds up, below-min -> min, float-noise epsilon,
+  clean decimals). Applied in `_openPosition` to the margin-scaled desired
+  volume, to the final `tryVolume` before the FIRST send, and to the
+  10014/10019 step-down - previously 0.3 x a 0.66 margin scale = 0.198 on a
+  0.1 grid went straight to MT5. Copy-trade and manual paths untouched.
+  Tests: +6 `volume_step_test.dart`, +6 `windows_engine_stop_test.dart`
+  (graceful exit, kill only after the full 10s, still-alive keeps files,
+  stale-file cleanup, no-pid, racing new engine) - 59/59 pass. Still owed:
+  a real Windows Power-off on this build (heartbeat + engine.pid gone,
+  Dashboard lights off, `Engine stop (Windows): graceful` in the log).
+- **2026-10-20** — BUG CONFIRMED, fixed in v1.6.24 above (Windows only): Power-off /
+  GUI-close never runs the engine's shutdown cleanup on Windows, so
+  `logs/engine.pid` and `logs/heartbeat` outlive the engine process. Per the
+  user: "properly verify ... if confirmed, write it up as a real bug ... with
+  a proposed fix". Evidence: (1) live Windows `engine.log`, 2026-10-09 to
+  2026-10-20 - 51 Power events, zero `received — shutting down` and zero
+  `Graceful shutdown did not finish` lines, i.e. `onStopSignal` in
+  `bin/engine.dart` has never once run on Windows; (2) reproduction - a
+  compiled stand-in with `bin/engine.dart`'s exact pid/heartbeat/SIGINT
+  pattern, stopped with both `taskkill /PID` and `taskkill /F /PID`: process
+  gone, handler never ran, `engine.pid` + `heartbeat` both left behind.
+  Root cause: `_stopEngineWindows` (`engine_control_repository.dart`) uses
+  `taskkill /F` = TerminateProcess, which runs no handlers, and the engine
+  can't watch SIGTERM on Windows anyway; its 2s pre-kill delay waits for a
+  PAUSE-file self-stop the engine no longer implements (PAUSE stopped being
+  read 2026-10-05). Consequences (from code): `engineRunning` is just
+  "heartbeat file exists", so (a) after Power-off the Dashboard keeps
+  replaying the last `status.json` - the 2026-10-18 "lights stay green" fix
+  does not hold on Windows; (b) the 2026-10-17 GUI engine watchdog
+  (`isPowerOn && !engineRunning`) can never fire after any Windows stop or
+  crash, since the stale heartbeat makes it think the engine is alive.
+  Proposed fix: (1) a dedicated `SHUTDOWN_REQUEST` file (NOT `STOP`, which
+  is also RiskGate's kill switch and is never auto-cleared) written by
+  `_stopEngineWindows`; the engine polls it on a 1s `Timer.periodic` (fires
+  between awaits, so mid-cycle too - the loop-top check alone can be 10+
+  min away during a full sweep) and runs the same `onStopSignal` cleanup;
+  the engine deletes any stale `SHUTDOWN_REQUEST` at startup; (2) GUI waits
+  up to ~10s for the PID to disappear (`tasklist` image-name check, as
+  `_isProcessAliveWindows` does), then `taskkill /F` as the fallback;
+  (3) after confirming the process is gone either way, the GUI itself
+  deletes `engine.pid` + `heartbeat`; (4) on Windows, `engineRunning` should
+  also confirm `engine.pid` points at a live `tradingmt5_engine.exe`, not
+  just that the heartbeat file exists - covers crashes too. Needs a unit
+  test for the stop sequencing and a real Power-off check on Windows
+  (heartbeat gone, Dashboard lights off) before calling it fixed.
 - **2026-10-19** — Confirm dialog before terminating a live trade, per a
   formal Impeccable design critique of the Dashboard + Auto-Managed
   Trades screens (dual isolated sub-agents - a design review plus a

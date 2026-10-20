@@ -74,12 +74,15 @@ Startup-folder entry** (all checked). The GUI owns the engine process entirely:
   5s) goes stale; the GUI's 15s watchdog restarts the engine if Power is on but the
   `heartbeat` file is missing (logged as `ENGINE WATCHDOG`). The engine refuses to start
   if `engine.pid` points at a live `tradingmt5_engine.exe` (single-instance lock).
-- **Unverified, suspected Windows-only gap:** `taskkill /F` is a hard kill and the engine
-  doesn't watch SIGTERM on Windows, so the cleanup in `bin/engine.dart`'s
-  `onStopSignal` (deleting `engine.pid` + `heartbeat`) never runs on a Windows stop —
-  no `received — shutting down` line follows any Windows Power-off in engine.log. If
-  confirmed, the 2026-10-18 "Dashboard lights stay green after Power off" fix doesn't
-  hold on Windows. Check `logs\heartbeat` right after a Power-off before relying on it.
+- **Windows stop cleanup bug — confirmed 2026-10-20, fixed in v1.6.24** (PRD §20):
+  ≤ v1.6.23 used a bare `taskkill /F`, which runs no handlers, so `engine.pid` +
+  `heartbeat` survived every Windows stop. From v1.6.24 Power-off writes
+  `~\.tradingmt5\SHUTDOWN_REQUEST`, the engine exits by itself within ~1s
+  (`SHUTDOWN_REQUEST received — shutting down.`), `taskkill /F` only after 10s, and the
+  GUI logs `Engine stop (Windows): graceful|forceKilled|notRunning|stillAlive`.
+  "Engine running" = `engine.pid` names a live `tradingmt5_engine.exe`. Not yet
+  verified with a real Power-off on Windows — do that before trusting it. On a
+  v1.6.23 install, a present `heartbeat` file still does NOT mean the engine runs.
 
 **Is it running? (PowerShell, read-only)**
 ```powershell
@@ -182,19 +185,34 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Current state (keep this updated)
 
-- Version: `1.6.23+71`, both platforms.
+- Version: repo `1.6.24+72` (2026-10-20: null-bid crash, Windows stop cleanup,
+  volume-step snapping). Installed: Windows still `1.6.23+71` (not redeployed - the
+  user said leave Power alone); Linux not redeployed from Windows (no SSH).
 - Linux engine: currently **stopped** (`inactive (dead)`) — Windows is the live
   instance as of now (MT5 balance ≈ 34.76 on 1013734072 there).
 - Unit tests: `test/sl_ratchet_ladder_test.dart`, `zigzag_range_test.dart`,
-  `worm10_decision_test.dart`, `risk_gate_static_test.dart`, plus `widget_test.dart` —
-  all green. `RiskGate.gate()` itself (the stateful, I/O-backed core) still has no
+  `worm10_decision_test.dart`, `risk_gate_static_test.dart`, `volume_step_test.dart`,
+  `windows_engine_stop_test.dart`, plus `widget_test.dart` — 59/59 green (2026-10-20,
+  Windows, Flutter 3.47.7). `RiskGate.gate()` itself (the stateful, I/O-backed core) still has no
   coverage — only its pure static helpers do. This is a known, accepted gap.
 - 2026-10-20 (Windows, verified): engine running (PID 24092, started 17:28 local via
   Power ON), MT5 + TradingView connected, balance 34.76. Linux reported `inactive` by
-  the user. Live issues seen in engine.log / Dashboard, not yet investigated:
-  `trade_send_market_order ... trading is not permitted` (MT5-side refusal), a
-  `type 'Null' is not a subtype of type 'num'` in the technique-switch reverse check,
-  and many cards showing retcode 10014 (invalid volume) / 10016 (invalid stops) /
-  "no money".
+  the user. Investigated same day:
+  - **Windows MT5 has never accepted a single MCP trade request** (open/close/modify/
+    delete) since install — MT5's own journal logs `trading is not permitted, ... order
+    request failed` for every one (5,134 engine-side failures 2026-10-11..20). MT5's
+    toolbar **Algo Trading** button was OFF (red) on 2026-10-20. Account login itself is
+    a full trading login (`trading has been enabled - hedging mode`). "deal ... done"
+    lines in the Windows MT5 journal are fills of orders placed by OTHER terminals.
+  - Other IPs authorize on 1013734072 between Windows sessions (212.34.x, 188.123.x,
+    57.129.12.220 — Windows itself is 176.29.x); not attributed to a device yet.
+  - Null cast: `_computeTargetLevels` hard-cast `info['bid'] as num`; MT5 returns no
+    bid for SOLUSD.lv/TRXUSD.lv/XRPUSD.lv/GALAUSD.lv. Fixed in v1.6.24 (returns null +
+    logs) - those 4 still can't open until MT5 quotes them. Not the audit path.
+  - Dashboard 10014/10016/"no money" reasons are stale Linux data from the 2026-10-17
+    Backup import (`logs/waiting-reasons.json`), cleared only on a successful open.
+    Suspected 10014 cause (unconfirmed, needs Linux log): margin-scaled and stepped-down
+    volumes weren't on the `volume_step` grid - snapped before the first send from
+    v1.6.24 (`snapVolumeToStep`).
 - Known longstanding gaps, not yet addressed: GUI sustained CPU usage (~66-71%); the
   Windows build has only ever been CI-compiled, this is its first real live run.
