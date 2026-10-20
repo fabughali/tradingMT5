@@ -1980,6 +1980,16 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-21 (v1.6.33+81)** — SLL gap found by v1.6.32's own heartbeat
+  on its first real run: `longest gap between sweeps since last heartbeat
+  1236s` (01:29 -> 01:50). The ~20-minute Power-on / technique-switch
+  reverse-check sweep drained terminate/copy/backtest requests between
+  pairs but never called `_maybeApplySlRatchet`, so after every Power-on or
+  restart open trades had no -$5 / ratchet protection for ~20 minutes. Now
+  called between pairs in that sweep and in the instant-check (un-pause /
+  ignite) queue drain. Sequential, self-throttled to 30s. 91/91 tests pass;
+  verification is the next heartbeat's gap figure on the real machine.
+
 - **2026-10-21 (v1.6.32+80)** — Protection fixes; the user said "once you
   fix and finish .. install" without picking options, so Claude's stated
   recommendations were applied (user may revise):

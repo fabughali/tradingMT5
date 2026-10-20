@@ -2110,6 +2110,13 @@ class EngineService {
         // restart forces this "Power on" full sweep) - same fix as above.
         await _processPendingBacktestRequest();
         await retroactiveFix6040SlOnce();
+        // 2026-10-21 (v1.6.33) - found by v1.6.32's own SLL heartbeat
+        // ("longest gap between sweeps 1236s"): this ~20-minute Power-on
+        // sweep drained every other request between pairs but never ran the
+        // SLL check, so after EVERY Power-on/restart open trades had no -$5
+        // / ratchet protection for ~20 minutes. Self-throttled to 30s, same
+        // sequential call the normal per-symbol loop already makes.
+        await _maybeApplySlRatchet();
         try {
           final currentSymbols = _loadSymbolsFresh();
           final mapping = currentSymbols.firstWhere(
@@ -5355,6 +5362,10 @@ class EngineService {
   /// reality as [_processAllPendingTerminateRequests].
   Future<void> _processAllPendingUnpauseChecks(DecisionTechnique technique) async {
     for (final base in unpauseRequests.loadPending()) {
+      // Same SLL-gap fix as the Power-on sweep (v1.6.33): each queued
+      // instant check (un-pause / ignite) takes ~45s, so several queued at
+      // once must not starve the SLL protection either.
+      await _maybeApplySlRatchet();
       if (paused.isPaused(base)) {
         // Re-paused again before this request was ever processed - the
         // user's own later action wins; don't act on a stale request.
