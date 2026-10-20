@@ -62,6 +62,28 @@ class TradeVolumeStore {
     _write(map);
   }
 
+  /// Drops every in-progress step-down (`attempt`), keeping `desired` and
+  /// `last_applied` - returns the keys that had one. One-time cleanup
+  /// (2026-10-20, v1.6.29, per the user): the attempts on this machine
+  /// were all imported from the Linux backup (10-17), left over from
+  /// 10014 "Invalid volume" rejections of off-grid float sizes that
+  /// v1.6.24's volume snapping now prevents - Windows itself never stepped
+  /// anything down. If a size is genuinely too big, the normal step-down
+  /// simply happens again.
+  List<String> clearAllAttempts() {
+    final map = Map<String, dynamic>.from(_readRaw());
+    final cleared = <String>[];
+    for (final key in map.keys.toList()) {
+      final e = Map<String, dynamic>.from(map[key] as Map<String, dynamic>? ?? const {});
+      if (e.remove('attempt') != null) {
+        cleared.add(key);
+        map[key] = e;
+      }
+    }
+    if (cleared.isNotEmpty) _write(map);
+    return cleared;
+  }
+
   /// Wipes [desired]/[attempt]/[lastApplied] entirely (2026-10-06, per the
   /// user: a pair that was retired and later re-added fresh via "Start
   /// Auto Trade" should start at the broker minimum again, not silently

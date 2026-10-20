@@ -884,6 +884,18 @@ class EngineService {
   Future<void> run() async {
     _startedAt; // force initialization now, not lazily on first read
     logger.log('Engine starting.');
+    // One-time v1.6.29 cleanup of stale imported volume step-downs - see
+    // [TradeVolumeStore.clearAllAttempts]. A marker file makes sure it runs
+    // exactly once per data directory, never on later restarts.
+    final volumeMigrationMarker = '${storage.logsDir}${Platform.pathSeparator}migration-v1.6.29-volume-attempts';
+    if (!storage.fileExists(volumeMigrationMarker)) {
+      final cleared = tradeVolumes.clearAllAttempts();
+      storage.touchFile(volumeMigrationMarker);
+      logger.log(
+        'One-time cleanup: cleared stale volume step-downs for '
+        '${cleared.isEmpty ? 'no pairs' : cleared.join(', ')} - next opens use each card\'s volume again.',
+      );
+    }
     // Replaced 2026-10-05, per the user's new spec ("make app closing
     // engine instantly once power toggle off and once gui closed... once
     // user toggle power on, app will launch the engine"): Power is no
@@ -1199,7 +1211,7 @@ class EngineService {
       );
       for (final m in _loadSymbolsFresh()) {
         if (m.mt5Symbol.toUpperCase() == mt5Symbol.toUpperCase()) {
-          _consumeIgniteOnLateFill(m.tradingViewSymbol, mt5Symbol, ticket);
+          _onLateFill(m.tradingViewSymbol, mt5Symbol, ticket, category, (p['volume'] as num?)?.toDouble());
         }
       }
     }
@@ -3916,7 +3928,7 @@ class EngineService {
           'must have triggered after the post-placement registration '
           'window gave up).',
         );
-        _consumeIgniteOnLateFill(tvSymbol, mt5Symbol, ticket);
+        _onLateFill(tvSymbol, mt5Symbol, ticket, category, (map['volume'] as num?)?.toDouble());
       }
       if (openPositions.isAppOpened(ticket)) {
         if (copyPositions.isCopy(ticket)) {
@@ -3961,7 +3973,19 @@ class EngineService {
   /// used to stay armed after the trade had actually filled (confirmed live:
   /// BTC filled 19:32, its ignite stayed armed until an unrelated flip at
   /// 20:02 consumed it). Called wherever a late fill gets registered.
-  void _consumeIgniteOnLateFill(String tvSymbol, String mt5Symbol, int ticket) {
+  ///
+  /// Extended 2026-10-20 (v1.6.29, per the user - "waiting trades were at
+  /// volume 3 but once they start, volume becomes 1"): a late fill is a
+  /// SUCCESSFUL open, so it now gets the same bookkeeping [_openPosition]'s
+  /// own success path does - [TradeVolumeStore.recordApplied] with the size
+  /// that really filled (which also clears any step-down `attempt`, so the
+  /// NEXT open goes back to the card's volume instead of staying stuck on
+  /// a stepped-down size) and clearing the stale waiting reason.
+  void _onLateFill(String tvSymbol, String mt5Symbol, int ticket, AutoCategory category, double? filledVolume) {
+    if (filledVolume != null && filledVolume > 0) {
+      tradeVolumes.recordApplied('${category.wireValue}|$tvSymbol', filledVolume);
+    }
+    waitingReasons.clear(tvSymbol);
     if (!ignitedPairs.isIgnited(tvSymbol)) return;
     ignitedPairs.consume(tvSymbol);
     logger.log(

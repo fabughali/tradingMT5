@@ -657,6 +657,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               volumeMin: volumeMinForRow,
               volumeStep: volumeStepForRow,
               volumeMax: volumeMaxForRow,
+              volumeLimitsKnown: watched != null,
               investmentValue: notional,
               extraMargin: accountSnapshot?.marginFree,
               liquidationPrice: liquidationPriceForRow,
@@ -681,6 +682,8 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               volumeMin: volumeMinForRow,
               volumeStep: volumeStepForRow,
               volumeMax: volumeMaxForRow,
+              volumeLimitsKnown: watched != null,
+              attemptVolume: tradeVolumes.attempt(volKey),
               direction: (order['type'] as String?)?.contains('sell') == true
                   ? 'sell'
                   : 'buy',
@@ -718,6 +721,8 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               volumeMin: volumeMinForRow,
               volumeStep: volumeStepForRow,
               volumeMax: volumeMaxForRow,
+              volumeLimitsKnown: watched != null,
+              attemptVolume: tradeVolumes.attempt(volKey),
               startCandidateTag: candidateWireTag,
               startCandidateAt: candidateBarTime,
               startCandidateEta: candidateBarTime == null

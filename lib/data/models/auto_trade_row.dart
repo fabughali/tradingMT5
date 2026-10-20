@@ -50,6 +50,8 @@ class AutoTradeRow {
     required this.volumeMin,
     required this.volumeStep,
     required this.volumeMax,
+    this.volumeLimitsKnown = true,
+    this.attemptVolume,
     this.startCandidateTag,
     this.startCandidateAt,
     this.startCandidateEta,
@@ -215,6 +217,19 @@ class AutoTradeRow {
   final double volumeMin;
   final double volumeStep;
   final double volumeMax;
+
+  /// False when this symbol isn't in MT5's Market Watch, so [volumeMin]/
+  /// [volumeStep]/[volumeMax] are only placeholder defaults (2026-10-20,
+  /// found live: XRP's real minimum is 100, but with no Market Watch
+  /// record the stepper used a guessed 0.01 step and "-" produced 99.99).
+  /// The stepper is disabled instead of guessing.
+  final bool volumeLimitsKnown;
+
+  /// The stepped-down size the engine will ACTUALLY send next (a broker
+  /// size rejection made it step down from [desiredVolume]) - null when no
+  /// step-down is active. Shown on the Dashboard so the card never claims
+  /// one size while another is sent (2026-10-20, per the user).
+  final double? attemptVolume;
 
   /// The live view of a not-yet-confirmed candidate signal for a row with
   /// NO running position or resting order yet (2026-10-03, per the user:

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../data/models/auto_category.dart';
+import '../data/engine/volume_step.dart';
 import '../data/models/auto_trade_row.dart';
 import '../utilities/auto_cycle.dart';
 
@@ -383,6 +384,25 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   /// Trims trailing zeros rather than a fixed decimal count, since volume
   /// steps vary wildly by symbol (e.g. BTCUSD.lv 0.001 vs XRPUSD.lv 100 -
   /// see [WatchedSymbol]'s own doc comment).
+  /// One -/+ click (2026-10-20, per the user: "-" took XRP from its 100
+  /// minimum to 99.99): step, clamp to the broker's bounds, then snap onto
+  /// the broker's legal grid (volume_min + k*volume_step) - the same
+  /// [snapVolumeToStep] the engine applies before sending, so the stored
+  /// value is always one MT5 accepts, with no float noise like
+  /// 0.30000000000000004.
+  static double _steppedVolume(AutoTradeRow row, double effective, int direction) {
+    final raw = (effective + direction * row.volumeStep).clamp(row.volumeMin, row.volumeMax).toDouble();
+    return snapVolumeToStep(raw, volumeMin: row.volumeMin, volumeStep: row.volumeStep);
+  }
+
+  static String _volumeTooltip(AutoTradeRow row, String normal) => row.volumeLimitsKnown
+      ? normal
+      : '${row.mt5Symbol} is not in MT5 Market Watch - its real volume limits are '
+            'unknown. Add it in MT5 (Market Watch > Symbols > Show) to adjust volume.';
+
+  static bool _hasActiveStepDown(AutoTradeRow row, double effective) =>
+      row.attemptVolume != null && (row.attemptVolume! - effective).abs() > 1e-9;
+
   static String _fmtVolume(double v) {
     var s = v.toStringAsFixed(3);
     while (s.contains('.') && s.endsWith('0')) {
@@ -561,11 +581,10 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                       icon: const Icon(Icons.remove_circle_outline, size: 22),
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                      tooltip: 'Decrease next-open volume',
-                      onPressed: () => widget.onChangeVolume(
-                        row.tvSymbol,
-                        (effective - row.volumeStep).clamp(row.volumeMin, row.volumeMax).toDouble(),
-                      ),
+                      tooltip: _volumeTooltip(row, 'Decrease next-open volume'),
+                      onPressed: row.volumeLimitsKnown
+                          ? () => widget.onChangeVolume(row.tvSymbol, _steppedVolume(row, effective, -1))
+                          : null,
                     ),
                     SizedBox(
                       width: 56,
@@ -591,6 +610,17 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                               textAlign: TextAlign.center,
                               style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 12),
                             ),
+                          if (_hasActiveStepDown(row, effective))
+                            Tooltip(
+                              message: 'MT5 rejected a larger size earlier - the next order will be sent at this size',
+                              child: Text(
+                                'sends ${_fmtVolume(row.attemptVolume!)}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.center,
+                                style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.w700, fontSize: 11),
+                              ),
+                            ),
                         ],
                       ),
                     ),
@@ -598,11 +628,10 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                       icon: const Icon(Icons.add_circle_outline, size: 22),
                       padding: EdgeInsets.zero,
                       constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                      tooltip: 'Increase next-open volume',
-                      onPressed: () => widget.onChangeVolume(
-                        row.tvSymbol,
-                        (effective + row.volumeStep).clamp(row.volumeMin, row.volumeMax).toDouble(),
-                      ),
+                      tooltip: _volumeTooltip(row, 'Increase next-open volume'),
+                      onPressed: row.volumeLimitsKnown
+                          ? () => widget.onChangeVolume(row.tvSymbol, _steppedVolume(row, effective, 1))
+                          : null,
                     ),
                   ],
                 ),
@@ -1190,13 +1219,10 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                                             visualDensity: VisualDensity.compact,
                                             padding: EdgeInsets.zero,
                                             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                                            tooltip: 'Decrease next-open volume',
-                                            onPressed: () => widget.onChangeVolume(
-                                              row.tvSymbol,
-                                              (effective - row.volumeStep)
-                                                  .clamp(row.volumeMin, row.volumeMax)
-                                                  .toDouble(),
-                                            ),
+                                            tooltip: _volumeTooltip(row, 'Decrease next-open volume'),
+                                            onPressed: row.volumeLimitsKnown
+                                                ? () => widget.onChangeVolume(row.tvSymbol, _steppedVolume(row, effective, -1))
+                                                : null,
                                           ),
                                           SizedBox(
                                             width: 46,
@@ -1215,13 +1241,10 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                                             visualDensity: VisualDensity.compact,
                                             padding: EdgeInsets.zero,
                                             constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                                            tooltip: 'Increase next-open volume',
-                                            onPressed: () => widget.onChangeVolume(
-                                              row.tvSymbol,
-                                              (effective + row.volumeStep)
-                                                  .clamp(row.volumeMin, row.volumeMax)
-                                                  .toDouble(),
-                                            ),
+                                            tooltip: _volumeTooltip(row, 'Increase next-open volume'),
+                                            onPressed: row.volumeLimitsKnown
+                                                ? () => widget.onChangeVolume(row.tvSymbol, _steppedVolume(row, effective, 1))
+                                                : null,
                                           ),
                                         ],
                                       ),

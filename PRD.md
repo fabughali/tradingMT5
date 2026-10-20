@@ -1980,6 +1980,25 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-20 (v1.6.29+77)** — Volume fixes, per the user ("why all waiting
+  trades were at volume 3 but once they start, volume becomes 1" / "once
+  volume is minimum, still - button ... makes the volume less than what mt5
+  accepts, e.g. XRP minimum 100 -> 99.99"). Findings: (a) the DOT/FIL/ADA/
+  GALA/ICP/OP `attempt` step-downs were imported from Linux on 10-17 (each
+  matches a Linux 10014 "Invalid volume" rejection; Windows never stepped
+  anything down) and the card showed `desired` while the engine sent
+  `attempt`; (b) a late stop-order fill skipped the success bookkeeping,
+  so a step-down was never cleared even after a successful open (DOT filled
+  at 1, stayed at attempt 1); (c) XRP/SOL/TRX are not in MT5 Market Watch,
+  so the stepper fell back to a guessed 0.01 min/step (and those pairs get
+  no quote at all). Fixes: `_onLateFill` (records the filled volume, clears
+  the step-down + stale waiting reason, consumes ignite); a one-time,
+  marker-guarded `clearAllAttempts` migration at engine start; the -/+
+  stepper snaps every result onto the broker grid via `snapVolumeToStep`
+  and is disabled with an explanatory tooltip when the symbol isn't in
+  Market Watch; an active step-down shows "sends X" on the card. Running
+  trades untouched. Tests: +4 trade_volume_store_test; 78/78 pass.
+
 - **2026-10-20 (v1.6.28+76)** — Ignite redefined, per the user:
   (1) "once ignite occurs, this button becomes unignited ... ignition will
   only take place one time" - every open path already consumed it when
