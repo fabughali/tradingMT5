@@ -91,7 +91,7 @@ class RiskGate {
         : RiskState.freshForToday();
     final todayStart = RiskState.utcMidnightMs(DateTime.now());
     if (state.dayStartUtcMs != todayStart) {
-      state = RiskState.freshForToday();
+      state = state.rolledOverToToday();
       _persist(state);
     }
     return state;
@@ -238,7 +238,7 @@ class RiskGate {
   void _rolloverIfNewDay() {
     final todayStart = RiskState.utcMidnightMs(DateTime.now());
     if (_state.dayStartUtcMs != todayStart) {
-      _state = RiskState.freshForToday();
+      _state = _state.rolledOverToToday();
       _persist(_state);
     }
   }

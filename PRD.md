@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-21 (v1.6.34+82)** — Risk-state UTC-midnight rollover wiped
+  open-position counts. Found live: at 00:01-00:02 UTC SHIB SELL and TRX
+  BUY opened (size-scaled 60%, margin ~271%) although ~13 positions were
+  open and the 200-300% tier caps at 6 - TRX had been blocked by that cap
+  all night. `state.json` showed `"open_positions": {}`: both rollover
+  paths (`_loadOrReset`, `_rolloverIfNewDay`) used
+  `RiskState.freshForToday()`, which reset everything, so until the next
+  cycle's `resetTo` rebuilt the counts from MT5 (up to ~20 min) the cap
+  saw 0 open. Now `rolledOverToToday()` resets only the daily P&L and day
+  start, carrying over open positions and the cooldown. The two trades
+  that slipped through stay open (normal SLL management). Includes
+  v1.6.33. Tests: +1 risk_state_rollover_test; 92/92 pass.
+
 - **2026-10-21 (v1.6.33+81)** — SLL gap found by v1.6.32's own heartbeat
   on its first real run: `longest gap between sweeps since last heartbeat
   1236s` (01:29 -> 01:50). The ~20-minute Power-on / technique-switch

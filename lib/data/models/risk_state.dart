@@ -26,6 +26,19 @@ class RiskState {
   factory RiskState.freshForToday() =>
       RiskState(dayStartUtcMs: utcMidnightMs(DateTime.now()));
 
+  /// The new UTC day's state, carrying over everything that is NOT a
+  /// per-day counter (2026-10-21, v1.6.33, found live): the old rollover
+  /// used [freshForToday], which also wiped [openPositions] - for up to a
+  /// full cycle (~20 min) after UTC midnight the margin-tiered position cap
+  /// saw "0 open" with ~13 really open, and SHIB + TRX opened past a cap
+  /// of 6. Only the daily P&L restarts; open positions and any active
+  /// cooldown are facts about NOW, not about the day.
+  RiskState rolledOverToToday() => RiskState(
+    dayStartUtcMs: utcMidnightMs(DateTime.now()),
+    openPositions: Map<String, int>.from(openPositions),
+    cooldownUntilMs: cooldownUntilMs,
+  );
+
   factory RiskState.fromJson(Map<String, dynamic> json) => RiskState(
     dayStartUtcMs:
         (json['day_start'] as num?)?.toInt() ?? utcMidnightMs(DateTime.now()),
