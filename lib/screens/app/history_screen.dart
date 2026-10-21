@@ -92,6 +92,10 @@ class HistoryScreen extends ConsumerWidget {
     // (see EngineService._applySlRatchet's own doc comment on this date).
     'sll_baseline' => 'SLL: -\$5 baseline',
     'sll_ratchet' => 'SLL: ratchet lock',
+    // 2026-10-21, per the user ("BNB trade ... the reason is unknown"): the
+    // engine has written this reason since the worm10 technique shipped,
+    // but it was never given a label here - 39 recycles showed "Unknown".
+    'worm10_recycle' => 'Recycled (same signal)',
     _ => 'Unknown',
   };
 
@@ -104,6 +108,7 @@ class HistoryScreen extends ConsumerWidget {
     'closed_by_app' => Colors.purple,
     'parent_closed' => Colors.indigo,
     'sll_baseline' || 'sll_ratchet' => Colors.red,
+    'worm10_recycle' => Colors.teal,
     _ => scheme.outline,
   };
 
@@ -280,6 +285,7 @@ class _ReasonSummaryBar extends StatelessWidget {
     // appeared in.
     const order = [
       'opposite_signal',
+      'worm10_recycle',
       'take_profit',
       'stop_loss',
       'sll_baseline',

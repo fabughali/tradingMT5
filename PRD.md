@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-21 (v1.6.35+83)** — worm10 recycle no longer closes when its
+  reopen can't happen, per the user ("okay"). Found live: BNB SELL
+  #1661497400 got a fresh SELL_OPEN1 (01:00 candle); the recycle closed it
+  at 03:08 for -$2.30, then the reopen was blocked by the position cap
+  (14/3, margin 168.6%) - a plain loss with no new trade, shown in History
+  as "Unknown". Now the recycle runs `risk.gate(..., replacingOne: true)`
+  (the recycled position counted as freed, so a recycle exactly at the cap
+  still passes) and the spread guard BEFORE closing; if either would block
+  the reopen it keeps the running trade and logs why. Flips are unchanged.
+  History now labels `worm10_recycle` as "Recycled (same signal)" (39 past
+  entries had shown "Unknown"). Includes v1.6.33/34. Tests: +2
+  risk_gate_replacing_test; 94/94 pass.
+
 - **2026-10-21 (v1.6.34+82)** — Risk-state UTC-midnight rollover wiped
   open-position counts. Found live: at 00:01-00:02 UTC SHIB SELL and TRX
   BUY opened (size-scaled 60%, margin ~271%) although ~13 positions were

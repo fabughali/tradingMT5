@@ -3668,6 +3668,55 @@ class EngineService {
           }
           return;
         }
+        // Recycle = close + reopen in the SAME direction - pointless (just
+        // realizes the loss) if the reopen can't happen. Found live
+        // 2026-10-21: BNB SELL was recycled at 03:08 on a fresh SELL_OPEN1,
+        // closed at -$2.30, and the reopen was then blocked by the position
+        // cap (14/3) - net effect a plain loss with no new trade. Per the
+        // user ("okay"), a recycle now checks the risk gate (counting the
+        // position being replaced as freed) and the spread guard BEFORE
+        // closing; if either would block the reopen, the running trade is
+        // kept. A FLIP is deliberately not gated this way - closing a
+        // wrong-way trade is still right even if the new side can't open.
+        if (decision.action == Worm10Action.recycle) {
+          final preGate = risk.gate(
+            'open',
+            mt5Symbol,
+            category,
+            bypassMarginGate: ignitedPairs.isIgnited(tvSymbol),
+            replacingOne: true,
+          );
+          if (!preGate.allowed) {
+            logger.log(
+              '$tvSymbol ($category): recycle on $latestWire skipped - keeping the running trade, '
+              'its reopen would be blocked: ${preGate.reason}.',
+            );
+            return;
+          }
+          try {
+            final q = await mt5.getMarketWatchSymbol(mt5Symbol);
+            final qs = (q['symbols'] as List?) ?? const [];
+            if (qs.isNotEmpty) {
+              final qi = qs.first as Map<String, dynamic>;
+              final qb = (qi['bid'] as num?)?.toDouble();
+              final qa = (qi['ask'] as num?)?.toDouble();
+              final qVol = (existing['volume'] as num?)?.toDouble();
+              final qCs = (qi['contract_size'] as num?)?.toDouble() ?? 1.0;
+              if (qb != null && qa != null && qVol != null &&
+                  spreadTooWide(bid: qb, ask: qa, volume: qVol, contractSize: qCs)) {
+                logger.log(
+                  '$tvSymbol ($category): recycle on $latestWire skipped - keeping the running trade, '
+                  'spread too wide to reopen (\$${spreadCost(bid: qb, ask: qa, volume: qVol, contractSize: qCs).toStringAsFixed(2)}).',
+                  level: 'WARNING',
+                );
+                return;
+              }
+            }
+          } catch (e) {
+            logger.log('$tvSymbol ($category): recycle spread pre-check failed ($e) - keeping the running trade.', level: 'ERROR');
+            return;
+          }
+        }
         await _closePosition(
           category,
           tvSymbol,

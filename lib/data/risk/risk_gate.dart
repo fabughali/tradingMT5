@@ -122,11 +122,18 @@ class RiskGate {
   /// explicitly ignited via the Dashboard's thunder icon. Every other gate
   /// (kill switch, cooldown, daily loss limit, per-symbol max-positions)
   /// still applies unchanged - the user only ever singled out margin level.
+  ///
+  /// [replacingOne] (2026-10-21, v1.6.35): the caller is about to CLOSE one
+  /// position of this same symbol/category and reopen it (a worm10
+  /// recycle), so the open is net-neutral - that one position is not
+  /// counted against either cap, otherwise a recycle at exactly the cap
+  /// would block itself. Every other rule applies unchanged.
   GateResult gate(
     String action,
     String symbol,
     AutoCategory category, {
     bool bypassMarginGate = false,
+    bool replacingOne = false,
   }) {
     if (action == 'close') return const GateResult.allowed();
 
@@ -163,8 +170,9 @@ class RiskGate {
     // Checked BEFORE the per-symbol cap so the more general limit is what
     // the user sees in the block reason when both would apply.
     final cap = bypassMarginGate ? null : positionCapFor(_marginLevel);
+    final replaced = replacingOne ? 1 : 0;
     if (cap != null) {
-      final totalOpen = _state.openPositions.values.fold(0, (a, b) => a + b);
+      final totalOpen = _state.openPositions.values.fold(0, (a, b) => a + b) - replaced;
       if (totalOpen >= cap) {
         return GateResult.blocked(
           'Margin-tiered position cap: $totalOpen/$cap open '
@@ -172,7 +180,7 @@ class RiskGate {
         );
       }
     }
-    final perSymbol = _state.openPositions[key] ?? 0;
+    final perSymbol = (_state.openPositions[key] ?? 0) - replaced;
     if (perSymbol >= _config.maxPerSymbol) {
       return GateResult.blocked(
         'Max positions for $key: $perSymbol/${_config.maxPerSymbol}',
