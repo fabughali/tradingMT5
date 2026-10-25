@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.39+87)** — **Spread guard removed**, per the user ("there
+  should be no limit for the gap whenever the trade is open ... $1 or $2 $5
+  $20 no problem ... because now the sll doesn't look any trade less than 0%
+  p&l there is no point to put any limit ... keep it unlimited"). The
+  v1.6.32 $1 limit had blocked ignited SOL 125 times (its normal spread
+  costs $1.50 at volume 3). Removed from normal/ignited/flip opens, the
+  recycle pre-check (its risk-gate part stays) and copies. Also answered
+  (no code change): pending-order trigger prices sit exactly at the broker's
+  minimum distance, 5 price steps (`trade_stops_level` = 5 on every pair
+  measured today: BTC +0.05, ETH +0.5, DOT/BNB/UNI +0.005, DOGE +0.00005);
+  the user asked for +1 step, but Equiti rejected +1 with retcode 10015
+  "Invalid price" when it was tried on 10-16.
+
 - **2026-10-25 (v1.6.38+86)** — **SLL only acts on positive P&L**, per the
   user ("whenever p&l is less than 0% sll has no action. sll action only for
   positive p&l. so for running and for copied trades, sll has no effect once

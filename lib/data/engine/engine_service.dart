@@ -60,7 +60,6 @@ import '../tradingview/launch.dart';
 import '../tradingview/signals_reader.dart';
 import 'candle_closed.dart';
 import 'sl_ratchet_ladder.dart';
-import 'spread_guard.dart';
 import 'volume_step.dart';
 import 'worm10_decision.dart';
 
@@ -3702,29 +3701,8 @@ class EngineService {
             );
             return;
           }
-          try {
-            final q = await mt5.getMarketWatchSymbol(mt5Symbol);
-            final qs = (q['symbols'] as List?) ?? const [];
-            if (qs.isNotEmpty) {
-              final qi = qs.first as Map<String, dynamic>;
-              final qb = (qi['bid'] as num?)?.toDouble();
-              final qa = (qi['ask'] as num?)?.toDouble();
-              final qVol = (existing['volume'] as num?)?.toDouble();
-              final qCs = (qi['contract_size'] as num?)?.toDouble() ?? 1.0;
-              if (qb != null && qa != null && qVol != null &&
-                  spreadTooWide(bid: qb, ask: qa, volume: qVol, contractSize: qCs)) {
-                logger.log(
-                  '$tvSymbol ($category): recycle on $latestWire skipped - keeping the running trade, '
-                  'spread too wide to reopen (\$${spreadCost(bid: qb, ask: qa, volume: qVol, contractSize: qCs).toStringAsFixed(2)}).',
-                  level: 'WARNING',
-                );
-                return;
-              }
-            }
-          } catch (e) {
-            logger.log('$tvSymbol ($category): recycle spread pre-check failed ($e) - keeping the running trade.', level: 'ERROR');
-            return;
-          }
+          // (The spread pre-check that used to follow here was removed with
+          // the spread guard itself - v1.6.39, see [_openPosition].)
         }
         await _closePosition(
           category,
@@ -4393,18 +4371,11 @@ class EngineService {
     final point = (info['point'] as num?)?.toDouble() ?? 0.0;
     final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
 
-    // Spread guard (2026-10-20, per the user) - see [spreadTooWide]'s doc
-    // comment for the live XRP -$6 incident. Applies to every open path
-    // (normal, ignited, flip, recycle) since they all funnel through here.
-    final contractSizeForSpread = (info['contract_size'] as num?)?.toDouble() ?? 1.0;
-    if (spreadTooWide(bid: bid, ask: ask, volume: tryVolume, contractSize: contractSizeForSpread)) {
-      final cost = spreadCost(bid: bid, ask: ask, volume: tryVolume, contractSize: contractSizeForSpread);
-      final reason = 'spread too wide: \$${cost.toStringAsFixed(2)} to open $tryVolume '
-          '(limit \$${maxSpreadCostUsd.toStringAsFixed(2)}) - will retry next cycle';
-      logger.log('$mt5Symbol ($category): NOT opening - $reason.', level: 'WARNING');
-      waitingReasons.record(mapping.tradingViewSymbol, reason);
-      return false;
-    }
+    // Spread guard REMOVED (2026-10-25, v1.6.39, per the user: "there
+    // should be no limit for the gap whenever the trade is open ... $1 or
+    // $2 $5 $20 no problem ... because now the sll doesn't look at any
+    // trade less than 0% p&l there is no point to put any limit ... keep it
+    // unlimited"). Its v1.6.32 $1 limit had blocked ignited SOL 125 times.
 
     // 2026-10-17 REDESIGN, per the user: "tp/sl should be fixed according
     // to 40/60 rules... app should take an action according to P&L.. but
@@ -5034,7 +5005,6 @@ class EngineService {
     }
     final info = symbols.first as Map<String, dynamic>;
     final digits = (info['digits'] as num?)?.toInt() ?? 5;
-    final contractSize = (info['contract_size'] as num?)?.toDouble() ?? 1.0;
     // Nullable (2026-10-20) - the same hard `as num` cast that crashed the
     // main open path on a symbol with no quote (fixed there in v1.6.24).
     final bidRaw = (info['bid'] as num?)?.toDouble();
@@ -5045,16 +5015,8 @@ class EngineService {
     }
     final bid = bidRaw;
     final ask = askRaw;
-    // Copy guards (2026-10-20, per the user) - see [spreadTooWide] and
-    // [copyStopLossSurvives] for the live ETH copy that lost -$2.70 eleven
-    // seconds after opening.
-    if (spreadTooWide(bid: bid, ask: ask, volume: copyVolume, contractSize: contractSize)) {
-      final cost = spreadCost(bid: bid, ask: ask, volume: copyVolume, contractSize: contractSize);
-      final reason = 'Spread too wide: \$${cost.toStringAsFixed(2)} to open a 1-lot copy '
-          '(limit \$${maxSpreadCostUsd.toStringAsFixed(2)}).';
-      logger.log('$mt5Symbol ($category): $reasonLabel copy blocked - $reason', level: 'WARNING');
-      return (success: false, failureReason: reason);
-    }
+    // No spread limit on copies either (2026-10-25, v1.6.39, per the user:
+    // "keep it unlimited").
     final entry = direction == TradeDirection.long ? ask : bid;
 
     // 2026-10-25 (v1.6.38), per the user: no -$1 stop-loss on copies any
