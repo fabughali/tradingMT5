@@ -923,6 +923,177 @@ class EngineService {
     }
   }
 
+  /// Resting-order volume sync (2026-10-25, per the user: "whenever the
+  /// user changes the volume setting before the trade is filled then
+  /// whenever this trade is filled then new volume setting should take
+  /// place not the old volume settings"). Before this, a Dashboard +/-
+  /// only changed the store - an order already resting in MT5 kept the
+  /// size it was placed with, and [_reconcileStaleRestingOrderIfAny]
+  /// only ever compared direction/SL/TP.
+  ///
+  /// Every 30s, each resting app order of a genuinely WAITING pair (no app
+  /// position running for that symbol/category - so an auto copy resting
+  /// beside a running trade is never resized; manual copies are skipped
+  /// too) is compared against [plannedSendVolume], the exact size
+  /// [_openPosition] would send right now. On a difference it is cancelled
+  /// and re-placed with the same direction/SL/TP at a fresh
+  /// immediate-trigger price (the broker's minimum distance from the
+  /// current quote, same as [_openPosition]'s fallback). If the new size
+  /// is rejected, the old size is re-placed so the entry is never lost.
+  /// Running trades are never touched.
+  DateTime _lastRestingVolumeSyncAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _restingVolumeSyncInterval = Duration(seconds: 30);
+
+  Future<void> _maybeSyncRestingOrderVolumes() async {
+    if (DateTime.now().difference(_lastRestingVolumeSyncAt) < _restingVolumeSyncInterval) {
+      return;
+    }
+    _lastRestingVolumeSyncAt = DateTime.now();
+    try {
+      final result = await mt5.getOpenPositions();
+      final orders = ((result['orders'] as List?) ?? const []).cast<Map<String, dynamic>>();
+      if (orders.isEmpty) return;
+      final positions = ((result['positions'] as List?) ?? const []).cast<Map<String, dynamic>>();
+      for (final category in allAutoCategories) {
+        final tag = 'trading_mt5 ${category.wireValue}';
+        final resting = orders.where((o) => o['comment'] == tag && o['state'] == 'placed').toList();
+        for (final order in resting) {
+          final symbol = order['symbol'] as String?;
+          final orderTicket = _parseTicket(order['order_id']);
+          if (symbol == null || orderTicket == null) continue;
+          if (manualCopyPendingOrders.isPending(orderTicket)) continue;
+          final sameSymbol = resting.where((o) => (o['symbol'] as String?)?.toUpperCase() == symbol.toUpperCase());
+          if (sameSymbol.length != 1) continue;
+          final running = positions.any((p) =>
+              p['comment'] == tag && (p['symbol'] as String?)?.toUpperCase() == symbol.toUpperCase());
+          if (running) continue;
+          final tvSymbol = _loadSymbolsFresh()
+              .where((m) => m.mt5Symbol.toUpperCase() == symbol.toUpperCase())
+              .map((m) => m.tradingViewSymbol)
+              .firstOrNull;
+          if (tvSymbol == null) continue;
+          await _syncOneRestingOrderVolume(category, tvSymbol, symbol, orderTicket, order);
+        }
+      }
+    } catch (e, st) {
+      logger.log('Resting-order volume sync failed: $e\n$st', level: 'ERROR');
+    }
+  }
+
+  Future<void> _syncOneRestingOrderVolume(
+    AutoCategory category,
+    String tvSymbol,
+    String mt5Symbol,
+    int orderTicket,
+    Map<String, dynamic> order,
+  ) async {
+    final orderVolume = (order['volume_current'] as num?)?.toDouble() ??
+        (order['volume'] as num?)?.toDouble() ??
+        (order['volume_initial'] as num?)?.toDouble();
+    if (orderVolume == null) {
+      logger.log(
+        '$tvSymbol ($category): resting order $orderTicket has no recognizable '
+        'volume field ($order) - cannot compare it with the card volume.',
+        level: 'ERROR',
+      );
+      return;
+    }
+    final symbolInfo = await mt5.getMarketWatchSymbol(mt5Symbol);
+    final symbols = (symbolInfo['symbols'] as List?) ?? const [];
+    if (symbols.isEmpty) return;
+    final info = symbols.first as Map<String, dynamic>;
+    final volumeMin = (info['volume_min'] as num?)?.toDouble();
+    final bid = (info['bid'] as num?)?.toDouble();
+    final ask = (info['ask'] as num?)?.toDouble();
+    if (volumeMin == null || bid == null || ask == null || bid <= 0 || ask <= 0) return;
+    final volumeStep = (info['volume_step'] as num?)?.toDouble() ?? volumeMin;
+    final volKey = '${category.wireValue}|$tvSymbol';
+    final planned = plannedSendVolume(
+      desired: tradeVolumes.desired(volKey),
+      marginScale: RiskGate.marginSizeScaleFor(risk.marginLevel),
+      attempt: tradeVolumes.attempt(volKey),
+      lastApplied: tradeVolumes.lastApplied(volKey),
+      volumeMin: volumeMin,
+      volumeStep: volumeStep,
+    );
+    if ((planned - orderVolume).abs() < volumeStep / 2) return;
+
+    final isBuy = (order['type'] as String? ?? '').contains('buy');
+    final restingSl = (order['stop_loss'] as num?)?.toDouble();
+    final restingTp = (order['take_profit'] as num?)?.toDouble();
+    logger.log(
+      '$tvSymbol ($category): resting order $orderTicket was placed at vol=$orderVolume '
+      'but the volume setting now sends vol=$planned - cancelling and re-placing it '
+      'with the new volume (same direction/SL/TP).',
+    );
+    final deleteResult = await mt5.deleteOrder(symbol: mt5Symbol, orderTicket: orderTicket);
+    final deleteRetcode = (deleteResult['retcode'] as num?)?.toInt();
+    if (deleteRetcode != null && deleteRetcode != 10009) {
+      logger.log(
+        '$tvSymbol ($category): could not cancel resting order $orderTicket '
+        '(retcode=$deleteRetcode, it may have just triggered) - leaving it as is.',
+        level: 'ERROR',
+      );
+      return;
+    }
+    final digits = (info['digits'] as num?)?.toInt() ?? 5;
+    final point = (info['point'] as num?)?.toDouble() ?? 0.0;
+    final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
+    final minDistance = point <= 0
+        ? (isBuy ? ask : bid) * 0.0005
+        : stopsLevelPoints > 0
+        ? stopsLevelPoints * point
+        : point;
+    final triggerPrice = _roundToDigits(isBuy ? ask + minDistance : bid - minDistance, digits);
+    Future<int?> place(double volume) async {
+      final r = await mt5.sendPendingOrder(
+        symbol: mt5Symbol,
+        type: isBuy ? 'buy_stop' : 'sell_stop',
+        volume: volume,
+        price: triggerPrice,
+        sl: restingSl != null && restingSl > 0 ? restingSl : null,
+        tp: restingTp != null && restingTp > 0 ? restingTp : null,
+        fillingType: 'ioc',
+        comment: 'trading_mt5 ${category.wireValue}',
+      );
+      final retcode = (r['retcode'] as num?)?.toInt();
+      if (retcode != null && retcode != 10009) {
+        logger.log(
+          '$tvSymbol ($category): re-placing at vol=$volume rejected: retcode=$retcode '
+          '${r['retcode_details'] ?? ''}'.trim(),
+          level: 'ERROR',
+        );
+        return null;
+      }
+      return _firstIntField(r, const ['order', 'ticket']) ?? -1;
+    }
+
+    final newTicket = await place(planned);
+    if (newTicket != null) {
+      logger.log(
+        '$tvSymbol ($category): resting order re-placed at vol=$planned '
+        '(order $newTicket, trigger $triggerPrice) - replaces $orderTicket.',
+      );
+      return;
+    }
+    final fallbackTicket = await place(orderVolume);
+    if (fallbackTicket != null) {
+      logger.log(
+        '$tvSymbol ($category): new volume $planned was rejected - re-placed the '
+        'previous vol=$orderVolume instead (order $fallbackTicket) so the entry is not lost.',
+        level: 'WARNING',
+      );
+      return;
+    }
+    const reason = 'volume change: could not re-place the waiting order';
+    waitingReasons.record(tvSymbol, reason);
+    logger.log(
+      '$tvSymbol ($category): $reason (old order $orderTicket already cancelled) - '
+      'the next signal check will place it again.',
+      level: 'ERROR',
+    );
+  }
+
   Future<void> run() async {
     _startedAt; // force initialization now, not lazily on first read
     logger.log('Engine starting.');
@@ -1612,6 +1783,8 @@ class EngineService {
     await _maybeApplySlRatchet();
     // Same reasoning - margin level is account-wide, not per-symbol.
     await _maybeRefreshMarginGate();
+    // Waiting orders follow a changed Dashboard volume (2026-10-25).
+    await _maybeSyncRestingOrderVolumes();
 
     await _reconcileClosedPositions();
 
@@ -1762,6 +1935,7 @@ class EngineService {
         // a just-tripped gate from still letting one more open through on
         // a symbol later in the same long sweep.
         await _maybeRefreshMarginGate();
+        await _maybeSyncRestingOrderVolumes();
         if (!(await _maybeRunHealthCheck())) return;
         try {
           // Re-read symbols from config.json fresh every cycle (rather than
@@ -4362,12 +4536,18 @@ class EngineService {
       volumeStep: volumeStep,
     );
     final floorVolume = tradeVolumes.lastApplied(volKey) ?? volumeMin;
-    var tryVolume = tradeVolumes.attempt(volKey) ?? desiredVolume;
-    if (tryVolume > desiredVolume) tryVolume = desiredVolume;
-    if (tryVolume < floorVolume) tryVolume = floorVolume;
-    // Final snap on what's actually sent - a persisted attempt from before
-    // this fix (or a hand-edited Dashboard volume) may itself be off-grid.
-    tryVolume = snapVolumeToStep(tryVolume, volumeMin: volumeMin, volumeStep: volumeStep);
+    // Same computation [_maybeSyncRestingOrderVolumes] compares resting
+    // orders against (2026-10-25) - one shared helper so the two can't
+    // drift. Includes the final snap of a possibly off-grid persisted
+    // attempt.
+    final tryVolume = plannedSendVolume(
+      desired: desiredVolumeRaw,
+      marginScale: marginScale,
+      attempt: tradeVolumes.attempt(volKey),
+      lastApplied: tradeVolumes.lastApplied(volKey),
+      volumeMin: volumeMin,
+      volumeStep: volumeStep,
+    );
     final point = (info['point'] as num?)?.toDouble() ?? 0.0;
     final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
 

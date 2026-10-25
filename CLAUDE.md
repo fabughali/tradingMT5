@@ -211,9 +211,9 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Current state (keep this updated)
 
-- Version: repo `1.6.37+85` (2026-10-25). Releases since 1.6.25 are summarised in PRD
+- Version: repo `1.6.40+88` (2026-10-25). Releases since 1.6.25 are summarised in PRD
   §20 (closed-candle rule, ignite, Market Watch auto-add, dollar SLL, spread guard,
-  recycle pre-check, pending-cancel <200%). Windows install status: check
+  recycle pre-check, pending-cancel <200%, SLL profit-only, no spread limit, resting-order volume sync). Windows install status: check
   `VersionInfo.FileVersion` (never assume). Linux not redeployed from Windows (no SSH) —
   still 1.6.23 there; update it before ever running it.
 - Linux engine: currently **stopped** (`inactive (dead)`) — Windows is the live

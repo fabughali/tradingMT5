@@ -1980,6 +1980,26 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.40+88)** — **Waiting orders follow a changed volume**,
+  per the user ("whenever the user changes the volume setting before the
+  trade is filled then whenever this trade is filled then new volume setting
+  should take place not the old volume settings"). Before: Dashboard +/-
+  only updated `trade-volume.json`; an order already resting in MT5 kept its
+  old size, and the stale-order check compared only direction/SL/TP. Now
+  `_maybeSyncRestingOrderVolumes` (every 30s, beside the margin check)
+  compares each resting app order of a genuinely waiting pair (no app
+  position running for it, so copies are never resized; manual copies
+  skipped) with `plannedSendVolume` - the exact size `_openPosition` sends
+  (card volume -> margin scale -> step-down attempt -> last-filled floor ->
+  grid snap; one shared helper so the two cannot drift). On a difference it
+  cancels and re-places with the same direction/SL/TP at a fresh
+  immediate-trigger price; if the new size is rejected it re-places the old
+  size so the entry is not lost. Running trades untouched. Unchanged rule:
+  the last-filled size is still the floor, so lowering the card below it
+  does not shrink the order. Order volume field read tolerantly
+  (`volume_current`/`volume`/`volume_initial`; not yet seen live - logged as
+  ERROR if none exists).
+
 - **2026-10-25 (v1.6.39+87)** — **Spread guard removed**, per the user ("there
   should be no limit for the gap whenever the trade is open ... $1 or $2 $5
   $20 no problem ... because now the sll doesn't look any trade less than 0%

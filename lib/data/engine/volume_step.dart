@@ -47,3 +47,36 @@ double _pow10(int d) {
   }
   return r;
 }
+
+/// The exact volume [EngineService._openPosition] sends right now for one
+/// pair/category (2026-10-25, extracted so a resting, not-yet-triggered
+/// order can be compared against it - per the user: "whenever the user
+/// changes the volume setting before the trade is filled ... new volume
+/// setting should take place not the old volume settings").
+///
+/// [desired] is the Dashboard card volume (null = never set, use the
+/// broker minimum), scaled by [marginScale] when below 1; [attempt] is a
+/// persisted step-down after a 10014/10019 rejection (never above the
+/// desired size); [lastApplied] is the floor - the last size that really
+/// filled - which wins over both. Every intermediate is snapped onto the
+/// broker grid, same as the send path always did.
+double plannedSendVolume({
+  required double? desired,
+  required double marginScale,
+  required double? attempt,
+  required double? lastApplied,
+  required double volumeMin,
+  required double volumeStep,
+}) {
+  final desiredRaw = desired ?? volumeMin;
+  final desiredVolume = snapVolumeToStep(
+    marginScale >= 1.0 ? desiredRaw : desiredRaw * marginScale,
+    volumeMin: volumeMin,
+    volumeStep: volumeStep,
+  );
+  final floorVolume = lastApplied ?? volumeMin;
+  var tryVolume = attempt ?? desiredVolume;
+  if (tryVolume > desiredVolume) tryVolume = desiredVolume;
+  if (tryVolume < floorVolume) tryVolume = floorVolume;
+  return snapVolumeToStep(tryVolume, volumeMin: volumeMin, volumeStep: volumeStep);
+}
