@@ -80,3 +80,48 @@ double plannedSendVolume({
   if (tryVolume < floorVolume) tryVolume = floorVolume;
   return snapVolumeToStep(tryVolume, volumeMin: volumeMin, volumeStep: volumeStep);
 }
+
+/// What the next order will send and, when that differs from the card
+/// volume, why (2026-10-25, per the user: ADA's card said 400 but the order
+/// went out at 200 with nothing on screen saying so). [marginScale] is
+/// ignored for an [ignited] pair - it sends the full card volume.
+({double volume, String? why}) explainPlannedSend({
+  required double? desired,
+  required double marginScale,
+  required double? marginLevel,
+  required bool ignited,
+  required double? attempt,
+  required double? lastApplied,
+  required double volumeMin,
+  required double volumeStep,
+}) {
+  final scale = ignited ? 1.0 : marginScale;
+  final volume = plannedSendVolume(
+    desired: desired,
+    marginScale: scale,
+    attempt: attempt,
+    lastApplied: lastApplied,
+    volumeMin: volumeMin,
+    volumeStep: volumeStep,
+  );
+  final card = snapVolumeToStep(desired ?? volumeMin, volumeMin: volumeMin, volumeStep: volumeStep);
+  if ((volume - card).abs() < 1e-9) return (volume: volume, why: null);
+  String fmt(double v) => v == v.roundToDouble() ? v.toStringAsFixed(0) : '$v';
+  final reasons = <String>[];
+  final scaled = plannedSendVolume(
+    desired: desired,
+    marginScale: scale,
+    attempt: null,
+    lastApplied: null,
+    volumeMin: volumeMin,
+    volumeStep: volumeStep,
+  );
+  if (scale < 1.0) {
+    reasons.add('${(scale * 100).round()}% at ${marginLevel?.toStringAsFixed(0) ?? '?'}% margin');
+  }
+  if (attempt != null && attempt < scaled - 1e-9) reasons.add('stepped down after a broker rejection');
+  if (lastApplied != null && (volume - lastApplied).abs() < 1e-9 && lastApplied > scaled + 1e-9) {
+    reasons.add('min = last fill ${fmt(lastApplied)}');
+  }
+  return (volume: volume, why: reasons.isEmpty ? null : reasons.join(', '));
+}

@@ -1050,7 +1050,7 @@ class EngineService {
     final volKey = '${category.wireValue}|$tvSymbol';
     final planned = plannedSendVolume(
       desired: tradeVolumes.desired(volKey),
-      marginScale: RiskGate.marginSizeScaleFor(risk.marginLevel),
+      marginScale: ignitedPairs.isIgnited(tvSymbol) ? 1.0 : RiskGate.marginSizeScaleFor(risk.marginLevel),
       attempt: tradeVolumes.attempt(volKey),
       lastApplied: tradeVolumes.lastApplied(volKey),
       volumeMin: volumeMin,
@@ -4681,7 +4681,12 @@ class EngineService {
     // [floorVolume] (the last size that actually worked for this pair),
     // so scaling down here naturally respects both existing rules rather
     // than introducing a new, separate clamp.
-    final marginScale = RiskGate.marginSizeScaleFor(risk.marginLevel);
+    // An ignited pair sends the full card volume (2026-10-25, per the user:
+    // "do both" - ignite already skips the margin gate; "margin level has
+    // nothing to do with manual ignited pair" now covers the size too).
+    final marginScale = ignitedPairs.isIgnited(mapping.tradingViewSymbol)
+        ? 1.0
+        : RiskGate.marginSizeScaleFor(risk.marginLevel);
     final desiredVolumeRaw = tradeVolumes.desired(volKey) ?? volumeMin;
     // Snapped onto the broker's volume grid up front (2026-10-20, per the
     // user) - see [snapVolumeToStep]'s own doc comment: margin scaling

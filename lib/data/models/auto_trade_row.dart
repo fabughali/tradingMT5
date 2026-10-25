@@ -52,6 +52,8 @@ class AutoTradeRow {
     required this.volumeMax,
     this.volumeLimitsKnown = true,
     this.attemptVolume,
+    this.sendVolume,
+    this.sendWhy,
     this.startCandidateTag,
     this.startCandidateAt,
     this.startCandidateEta,
@@ -230,6 +232,12 @@ class AutoTradeRow {
   /// step-down is active. Shown on the Dashboard so the card never claims
   /// one size while another is sent (2026-10-20, per the user).
   final double? attemptVolume;
+
+  /// Volume the next order will really send (margin scaling, ignite,
+  /// step-down and the last-fill minimum applied) and, when it differs from
+  /// the card volume, why (2026-10-25). Null when unknown.
+  final double? sendVolume;
+  final String? sendWhy;
 
   /// The live view of a not-yet-confirmed candidate signal for a row with
   /// NO running position or resting order yet (2026-10-03, per the user:

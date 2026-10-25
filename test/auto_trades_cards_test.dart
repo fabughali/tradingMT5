@@ -42,6 +42,8 @@ AutoTradeRow _waiting(String sym, AutoTradeStatus status, {String? reason, bool 
   ticket: status == AutoTradeStatus.waitingPending ? 1662352578 : null,
   waitingReason: reason,
   desiredVolume: 40,
+  sendVolume: 200,
+  sendWhy: '30% at 197% margin, min = last fill 200',
   volumeMin: 1,
   volumeStep: 1,
   volumeMax: 1000,
@@ -80,7 +82,7 @@ void main() {
     _waiting('XRPUSD', AutoTradeStatus.waitingNoSignal, paused: true),
   ];
 
-  for (final width in [420.0, 1000.0, 1500.0]) {
+  for (final width in [420.0, 700.0, 1000.0, 1200.0, 1500.0]) {
     testWidgets('cards lay out without overflow at width $width', (tester) async {
       tester.view.physicalSize = Size(width, 3000);
       tester.view.devicePixelRatio = 1.0;
@@ -92,6 +94,7 @@ void main() {
       expect(find.text('Blocked'), findsOneWidget);
       expect(find.text('Paused'), findsOneWidget);
       expect(find.textContaining('3 running · 1 resting · 1 blocked · 2 waiting'), findsOneWidget);
+      expect(find.textContaining('sends 200 (30% at 197% margin'), findsWidgets);
     });
   }
 

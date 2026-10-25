@@ -170,7 +170,8 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 - **NEVER test a second GUI instance or click Power on the live machine** — a stray GUI
   launch cost a real-money flip on 2026-10-20.
 - **Ignite (thunder icon), v1.6.28, user's spec:** one-shot margin-level bypass that
-  fills a WAITING pair right away on its CURRENT signal direction (even a bare zigzag),
+  fills a WAITING pair right away on its CURRENT signal direction (even a bare zigzag)
+  at the FULL card volume (no margin size scaling, v1.6.46),
   respecting the closed-candle rule; consumed the moment it fills (incl. late stop-order
   fills); clicking a yellow icon on a waiting pair cancels it; disabled on running rows.
   Entry for non-ignited pairs stays strictly OPEN1-only — the user explicitly wants that.
@@ -216,7 +217,7 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Current state (keep this updated)
 
-- Version: repo `1.6.45+93` (2026-10-25). Releases since 1.6.25 are summarised in PRD
+- Version: repo `1.6.46+94` (2026-10-25). Releases since 1.6.25 are summarised in PRD
   §20 (closed-candle rule, ignite, Market Watch auto-add, dollar SLL, spread guard,
   recycle pre-check, pending-cancel <200%, SLL profit-only, no spread limit, resting-order volume sync, chart DATA check before any read). Windows install status: check
   `VersionInfo.FileVersion` (never assume). Linux not redeployed from Windows (no SSH) —

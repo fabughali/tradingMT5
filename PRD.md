@@ -1980,6 +1980,20 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.46+94)** — **Ignite sends the full card volume; cards show
+  the real send size**, per the user ("ada is set vol= 400 ... user ignite
+  this trade ... once this trade filled ... vol still 200" -> "do both").
+  Cause: ignite skipped only the margin GATE, not margin SIZE scaling - at
+  196.7% margin the 400 card volume was scaled to 30% (120) and then raised
+  to the last-fill minimum (200). (1) An ignited pair now uses scale 1.0 in
+  `_openPosition` and in the resting-order volume sync (the last-fill
+  minimum still applies; it only raises). Before this, an ignited pair at
+  <= 150% margin was scaled to 0% (sent the minimum/last fill). (2)
+  `explainPlannedSend` computes what the next order will really send and
+  why; every card shows "sends X (why)" when it differs from the card
+  volume, e.g. "sends 200 (30% at 197% margin, min = last fill 200)".
+  Waiting cards 300px tall to fit it.
+
 - **2026-10-25 (v1.6.45+93)** — **Dashboard trades as cards**, per the user
   ("instead of using rows, i want you to use cards. in this card, chart is
   there. and all other data" + "filled and not yet triggered cards are yellow,

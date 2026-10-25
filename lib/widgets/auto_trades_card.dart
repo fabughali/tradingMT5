@@ -555,7 +555,15 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
             'next open ${_fmtVolume(effective)}',
             style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 11),
           ),
-        if (_hasActiveStepDown(row, effective))
+        // The size the next order will really send, and why (2026-10-25, per
+        // the user: ADA's card said 400 while the order went out at 200).
+        if (row.sendVolume != null && (row.sendVolume! - effective).abs() > 1e-9)
+          Text(
+            'sends ${_fmtVolume(row.sendVolume!)}${row.sendWhy == null ? '' : ' (${row.sendWhy})'}',
+            softWrap: true,
+            style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.w700, fontSize: 11),
+          )
+        else if (row.sendVolume == null && _hasActiveStepDown(row, effective))
           Tooltip(
             message: 'MT5 rejected a larger size earlier - the next order will be sent at this size',
             child: Text(
@@ -869,7 +877,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     final signalTag = row.startTag ?? row.startCandidateTag;
     final signalTime = row.startTag != null ? _fmtTvTime(row.startAt) : '';
     return Container(
-      height: 270,
+      height: 300,
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
       decoration: _cardDecoration(scheme, tint),
       child: Column(
