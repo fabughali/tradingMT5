@@ -1980,6 +1980,20 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.42+90)** — **Reverse check corrects a wrong Open record**,
+  per the user ("if direction of reading is same as current trade ... but the
+  open signal is not as same in record ... then app need to update the open
+  signal record according to latest signal. but if eth is short and reading
+  is long, then app need to close this trade"). The tickets opened on the
+  stuck feed (ETH 1662352372, LTC 1662352374, SOL 1662352344) kept LTC's daily
+  SELL_OPEN1@1790380800 / ZIGZAG_SELL@1792022400 as their Open, because the
+  worm10 audit wrote Open only once (10-17 rule, now superseded). When the
+  audit's direction agrees with the running trade and the recorded Open
+  differs from the real replay Start, it is overwritten (same re-read check
+  first; logged "corrected worm10 Start"). A reading against the trade still
+  closes and flips it - confirmed live 14:08Z: ETH 1662352372 SELL closed on
+  the real signal, BUY placed.
+
 - **2026-10-25 (v1.6.41+89)** — **Stuck TradingView feed closed ~20 trades -
   fixed**. After the 12:21Z Power-on, from LTCUSDT onward (12:37Z) every pair
   read the SAME data: SELL_OPEN1@1790380800 / ZIGZAG_SELL@1792022400 and the

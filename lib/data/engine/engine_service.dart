@@ -3570,7 +3570,18 @@ class EngineService {
             // recomputes [trueStart] fresh from live data regardless of
             // what's stored here, so this has zero effect on trading
             // correctness, only on what gets displayed as "Open."
-            if (openSnapshot == null) {
+            // 2026-10-25, per the user - superseding "written ONCE" above:
+            // "if direction of reading is same as current trade ... but the
+            // open signal is not as same in record ... then app need to
+            // update the open signal record according to latest signal".
+            // Found live: ETH/LTC/SOL tickets opened on a stuck chart feed
+            // kept LTC daily signals (SELL_OPEN1@1790380800) as their Open
+            // forever. A recorded Open that differs from the replay's real
+            // [trueStart] is now overwritten (after the same re-read check);
+            // a reading AGAINST the trade still closes it, below.
+            final recordDiffers = openSnapshot != null &&
+                (openSnapshot.kind != trueStart.kind || openSnapshot.barTime != trueStart.time);
+            if (openSnapshot == null || recordDiffers) {
               // Re-confirm this Start event is still really there before
               // WRITING it (2026-10-17, found live: right as the MT5
               // bridge reconnected after a brief connection-refused
@@ -3600,7 +3611,8 @@ class EngineService {
                   Worm10EntrySignalSnapshot(kind: trueStart.kind, barTime: trueStart.time),
                 );
                 logger.log(
-                  '$mt5Symbol ($category): backfilled worm10 Start for '
+                  '$mt5Symbol ($category): '
+                  '${recordDiffers ? "corrected" : "backfilled"} worm10 Start for '
                   'ticket=$auditTicket - $trueStartWire@${trueStart.time}.',
                 );
               }
