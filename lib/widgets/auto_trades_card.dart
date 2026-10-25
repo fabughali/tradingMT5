@@ -462,7 +462,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     crossAxisAlignment: CrossAxisAlignment.start,
     mainAxisSize: MainAxisSize.min,
     children: [
-      Text(label, style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+      Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: scheme.onSurfaceVariant)),
       const SizedBox(height: 2),
       value,
     ],
@@ -474,7 +474,9 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
       value,
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
-      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: color),
+      // 2026-10-25, per the user: "text title should be more thick than
+      // value text" - labels bold (see [_kv]), values regular.
+      style: TextStyle(fontWeight: FontWeight.w400, fontSize: 13, color: color),
     ),
     scheme,
   );
@@ -629,7 +631,6 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
         ? '—'
         : '+\$${row.slRatchetThreshold == 5 ? 2 : row.slRatchetThreshold! - 5}';
     final checked = isWithinCurrentCandle(row.lastCheckedAt);
-    final canAddCopy = row.profit != null && row.profit! > 0;
     return Container(
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
       decoration: _cardDecoration(scheme, tint),
@@ -663,6 +664,10 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                     style: const TextStyle(color: Colors.green, fontWeight: FontWeight.w700),
                   ),
                 ),
+              // Hourly check mark sits just left of the more icon, with a gap
+              // (2026-10-25, per the user).
+              const SizedBox(width: 10),
+              _runningMoreMenu(context, row, scheme),
             ],
           ),
           const SizedBox(height: 2),
@@ -728,66 +733,82 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
           const SizedBox(height: 8),
           _CardPnlChart(ticket: row.ticket, profit: row.profit, percent: row.pnlPercent),
           const SizedBox(height: 8),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: _kt('Entry / now', '${_fmtPrice(row.price)} / ${_fmtPrice(row.currentPrice)}', scheme,
-                    color: nearColor),
-              ),
-              Expanded(child: _kt('SL / TP', '${_fmtPrice(row.stopLoss)} / ${_fmtPrice(row.takeProfit)}', scheme)),
-              Expanded(
-                child: _kv(
-                  'SLL lock',
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
+          // Three equal columns, divided (2026-10-25, per the user: "those 3
+          // columns should be separated equally"): entry/now + liquidation,
+          // SL/TP + extra margin, SLL lock + volume.
+          IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        sll,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w600,
-                          fontSize: 13,
-                          color: row.slRatchetThreshold != null ? Colors.green : scheme.onSurfaceVariant,
-                        ),
-                      ),
-                      InkWell(
-                        borderRadius: BorderRadius.circular(10),
-                        onTap: () => _showSllInfoDialog(context),
-                        child: Padding(
-                          padding: const EdgeInsets.all(2),
-                          child: Icon(Icons.info_outline, size: 14, color: scheme.onSurfaceVariant),
-                        ),
+                      _kt('Entry / now', '${_fmtPrice(row.price)} / ${_fmtPrice(row.currentPrice)}', scheme,
+                          color: nearColor),
+                      const SizedBox(height: 8),
+                      Tooltip(
+                        message: row.liquidationPrice == null
+                            ? ''
+                            : 'Estimate: price at which this position alone would reach '
+                                  "Equiti's 30% stop-out level, if every other position "
+                                  'stayed exactly as it is right now.',
+                        child: _kt('Liquidation', _fmtPrice(row.liquidationPrice), scheme, color: nearColor),
                       ),
                     ],
                   ),
-                  scheme,
                 ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Tooltip(
-                  message: row.liquidationPrice == null
-                      ? ''
-                      : 'Estimate: price at which this position alone would reach '
-                            "Equiti's 30% stop-out level, if every other position "
-                            'stayed exactly as it is right now.',
-                  child: _kt('Liquidation', _fmtPrice(row.liquidationPrice), scheme, color: nearColor),
+                VerticalDivider(width: 16, color: scheme.outlineVariant),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _kt('SL / TP', '${_fmtPrice(row.stopLoss)} / ${_fmtPrice(row.takeProfit)}', scheme),
+                      const SizedBox(height: 8),
+                      _kt(
+                        'Extra margin',
+                        row.extraMargin == null ? '—' : '\$${row.extraMargin!.toStringAsFixed(2)}',
+                        scheme,
+                      ),
+                    ],
+                  ),
                 ),
-              ),
-              Expanded(
-                child: _kt(
-                  'Extra margin',
-                  row.extraMargin == null ? '—' : '\$${row.extraMargin!.toStringAsFixed(2)}',
-                  scheme,
+                VerticalDivider(width: 16, color: scheme.outlineVariant),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _kv(
+                        'SLL lock',
+                        Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              sll,
+                              style: TextStyle(
+                                fontSize: 13,
+                                color: row.slRatchetThreshold != null ? Colors.green : scheme.onSurfaceVariant,
+                              ),
+                            ),
+                            InkWell(
+                              borderRadius: BorderRadius.circular(10),
+                              onTap: () => _showSllInfoDialog(context),
+                              child: Padding(
+                                padding: const EdgeInsets.all(2),
+                                child: Icon(Icons.info_outline, size: 14, color: scheme.onSurfaceVariant),
+                              ),
+                            ),
+                          ],
+                        ),
+                        scheme,
+                      ),
+                      const SizedBox(height: 8),
+                      _kv('Volume', _volumeReadout(row, scheme), scheme),
+                    ],
+                  ),
                 ),
-              ),
-              Expanded(child: _kv('Volume', _volumeControl(row, scheme), scheme)),
-            ],
+              ],
+            ),
           ),
           const Divider(height: 18),
           Wrap(
@@ -803,44 +824,129 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
               ],
             ],
           ),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              _pauseButton(row, scheme),
-              _lastSwitch(row, scheme),
-              const Spacer(),
-              Tooltip(
-                message: 'Copies running on this pair',
-                child: Text(
-                  '×${row.copyCount}',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w600,
-                    color: row.copyCount > 1 ? Colors.amber.shade800 : scheme.onSurfaceVariant,
-                  ),
-                ),
-              ),
-              IconButton(
-                icon: const Icon(Icons.add_circle_outline, size: 20),
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-                color: canAddCopy ? scheme.primary : scheme.onSurfaceVariant.withValues(alpha: 0.3),
-                tooltip: canAddCopy
-                    ? 'Open a copy trade (same direction/TP/volume)'
-                    : 'Only available while this trade\'s P&L is positive',
-                onPressed: canAddCopy ? () => widget.onAddCopy(row.tvSymbol) : null,
-              ),
-              IconButton(
-                icon: const Icon(Icons.power_settings_new, size: 20),
-                color: Colors.red,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-                tooltip: 'Terminate this pair\'s trade',
-                onPressed: () => _confirmTerminate(context, row),
-              ),
-            ],
-          ),
         ],
       ),
+    );
+  }
+
+  /// Current volume on a running card, read-only (2026-10-25, per the
+  /// user: the -/+ moved to the more menu, "still auto card need to show
+  /// current volum"): the running size, the next-open size if it differs,
+  /// and what that next order will really send.
+  Widget _volumeReadout(AutoTradeRow row, ColorScheme scheme) {
+    final current = row.currentVolume ?? row.desiredVolume ?? row.volumeMin;
+    final next = row.desiredVolume;
+    final showNext = !row.isCopy && next != null && (next - current).abs() > 1e-9;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(_fmtVolume(current), style: const TextStyle(fontSize: 13)),
+        if (showNext)
+          Text(
+            'next open ${_fmtVolume(next)}',
+            style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 11),
+          ),
+        if (!row.isCopy && row.sendVolume != null && (row.sendVolume! - (next ?? current)).abs() > 1e-9)
+          Text(
+            'sends ${_fmtVolume(row.sendVolume!)}${row.sendWhy == null ? '' : ' (${row.sendWhy})'}',
+            style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.w700, fontSize: 11),
+          ),
+      ],
+    );
+  }
+
+  /// The running card's "more" menu (2026-10-25, per the user: "more icon
+  /// at the top right where once it is pressed it will show (pause, last
+  /// toggle, multiplier copy, volume controls -/+ with current volume
+  /// setting, power off)"). The volume and Last rows keep the menu open and
+  /// update in place; the other items act and close it.
+  Widget _runningMoreMenu(BuildContext context, AutoTradeRow row, ColorScheme scheme) {
+    final canAddCopy = row.profit != null && row.profit! > 0;
+    return PopupMenuButton<String>(
+      icon: Icon(Icons.more_vert, size: 20, color: scheme.onSurfaceVariant),
+      tooltip: 'More',
+      padding: EdgeInsets.zero,
+      constraints: const BoxConstraints(minWidth: 240),
+      onSelected: (value) {
+        switch (value) {
+          case 'pause':
+            widget.onTogglePause(row.tvSymbol, !row.isPaused);
+          case 'copy':
+            widget.onAddCopy(row.tvSymbol);
+          case 'terminate':
+            _confirmTerminate(context, row);
+        }
+      },
+      itemBuilder: (context) {
+        var last = row.isLastTagged;
+        return [
+        PopupMenuItem(
+          value: 'pause',
+          child: Row(
+            children: [
+              Icon(row.isPaused ? Icons.play_arrow : Icons.pause, size: 20, color: row.isPaused ? Colors.green : null),
+              const SizedBox(width: 10),
+              Text(row.isPaused ? 'Resume' : 'Pause'),
+            ],
+          ),
+        ),
+        PopupMenuItem(
+          child: StatefulBuilder(
+            builder: (context, setLocal) => Row(
+              children: [
+                const Icon(Icons.flag_outlined, size: 20),
+                const SizedBox(width: 10),
+                const Expanded(child: Text('Last')),
+                Switch(
+                  value: last,
+                  onChanged: (on) {
+                    widget.onToggleLast(row.tvSymbol, on);
+                    setLocal(() => last = on);
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (!row.isCopy)
+          PopupMenuItem(
+            child: _MenuVolumeStepper(
+              row: row,
+              initial: row.desiredVolume ?? row.currentVolume ?? row.volumeMin,
+              format: _fmtVolume,
+              step: (v, dir) => _steppedVolume(row, v, dir),
+              tooltip: (s) => _volumeTooltip(row, s),
+              onChange: (v) => widget.onChangeVolume(row.tvSymbol, v),
+            ),
+          )
+        else
+          const PopupMenuItem(enabled: false, child: Text('Copy volume is fixed at 1 lot')),
+        PopupMenuItem(
+          value: 'copy',
+          enabled: canAddCopy,
+          child: Row(
+            children: [
+              const Icon(Icons.add_circle_outline, size: 20),
+              const SizedBox(width: 10),
+              Expanded(child: Text(canAddCopy ? 'Add copy trade' : 'Add copy (P&L must be positive)')),
+              Text('×${row.copyCount}', style: TextStyle(color: row.copyCount > 1 ? Colors.amber.shade800 : null)),
+            ],
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem(
+          value: 'terminate',
+          child: Row(
+            children: [
+              Icon(Icons.power_settings_new, size: 20, color: Colors.red),
+              SizedBox(width: 10),
+              Text('Terminate trade', style: TextStyle(color: Colors.red)),
+            ],
+          ),
+        ),
+        ];
+      },
     );
   }
 
@@ -1157,7 +1263,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                   const gap = 12.0;
                   int cols(double minWidth, int max) => (constraints.maxWidth / minWidth).floor().clamp(1, max);
                   double width(int c) => (constraints.maxWidth - gap * (c - 1)) / c;
-                  final runWidth = width(cols(440, 3));
+                  final runWidth = width(cols(330, 4));
                   final waitWidth = width(cols(290, 4));
                   return Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -1240,5 +1346,64 @@ class _CardPnlChartState extends State<_CardPnlChart> {
       points.add(PnlPoint(time: now, profit: widget.profit!, percent: widget.percent));
     }
     return PnlChart(points: points, height: 110);
+  }
+}
+
+/// Volume -/+ inside the running card's more menu - keeps its own value so
+/// repeated clicks update in place while the menu stays open (2026-10-25).
+class _MenuVolumeStepper extends StatefulWidget {
+  const _MenuVolumeStepper({
+    required this.row,
+    required this.initial,
+    required this.format,
+    required this.step,
+    required this.tooltip,
+    required this.onChange,
+  });
+
+  final AutoTradeRow row;
+  final double initial;
+  final String Function(double) format;
+  final double Function(double value, int direction) step;
+  final String Function(String normal) tooltip;
+  final void Function(double) onChange;
+
+  @override
+  State<_MenuVolumeStepper> createState() => _MenuVolumeStepperState();
+}
+
+class _MenuVolumeStepperState extends State<_MenuVolumeStepper> {
+  late double _value = widget.initial;
+
+  void _bump(int direction) {
+    final next = widget.step(_value, direction);
+    widget.onChange(next);
+    setState(() => _value = next);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = widget.row.volumeLimitsKnown;
+    return Row(
+      children: [
+        const Icon(Icons.stacked_bar_chart, size: 20),
+        const SizedBox(width: 10),
+        const Expanded(child: Text('Volume')),
+        IconButton(
+          icon: const Icon(Icons.remove_circle_outline, size: 20),
+          tooltip: widget.tooltip('Decrease next-open volume'),
+          onPressed: enabled ? () => _bump(-1) : null,
+        ),
+        ConstrainedBox(
+          constraints: const BoxConstraints(minWidth: 40),
+          child: Text(widget.format(_value), textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.w600)),
+        ),
+        IconButton(
+          icon: const Icon(Icons.add_circle_outline, size: 20),
+          tooltip: widget.tooltip('Increase next-open volume'),
+          onPressed: enabled ? () => _bump(1) : null,
+        ),
+      ],
+    );
   }
 }

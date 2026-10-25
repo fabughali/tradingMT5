@@ -217,7 +217,7 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Current state (keep this updated)
 
-- Version: repo `1.6.46+94` (2026-10-25). Releases since 1.6.25 are summarised in PRD
+- Version: repo `1.6.47+95` (2026-10-25). Releases since 1.6.25 are summarised in PRD
   §20 (closed-candle rule, ignite, Market Watch auto-add, dollar SLL, spread guard,
   recycle pre-check, pending-cancel <200%, SLL profit-only, no spread limit, resting-order volume sync, chart DATA check before any read). Windows install status: check
   `VersionInfo.FileVersion` (never assume). Linux not redeployed from Windows (no SSH) —

@@ -1980,6 +1980,21 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.47+95)** — **Running cards: 4 per row, controls in a more
+  menu**, per the user: (1) "i want to have 4 per row" - up to 4 running cards
+  per row (min ~330px each). (2) "more icon at the top right ... (pause, last
+  toggle, multiplier copy, volume controls -/+ with current volume setting,
+  power off) ... removed from the card ... still auto card need to show
+  current volume" - a more (three dots) menu at the top right; the volume
+  -/+ and Last switch update in place while the menu stays open; the card
+  keeps a read-only Volume (running size, "next open X", "sends X (why)").
+  The hourly check marks sit left of the more icon with a gap ("check mark
+  will be at the left side of more icon with some space"). (3) "text title
+  should be more thick than value text" - labels bold, values regular.
+  (4) "those 3 columns should be separated equally" - entry/now +
+  liquidation | SL/TP + extra margin | SLL lock + volume, three equal
+  columns with dividers.
+
 - **2026-10-25 (v1.6.46+94)** — **Ignite sends the full card volume; cards show
   the real send size**, per the user ("ada is set vol= 400 ... user ignite
   this trade ... once this trade filled ... vol still 200" -> "do both").

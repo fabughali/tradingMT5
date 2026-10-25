@@ -118,4 +118,44 @@ void main() {
     await tester.pumpWidget(_host(rows));
     expect(find.text('Update '), findsWidgets);
   });
+
+  testWidgets('running card controls live in the more menu; volume steps in place', (tester) async {
+    tester.view.physicalSize = const Size(1500, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final changes = <double>[];
+    await tester.pumpWidget(MaterialApp(
+      home: Scaffold(
+        body: SingleChildScrollView(
+          child: AutoTradesCard(
+            rows: [_running('ETHUSD', 3.42)],
+            onTogglePause: (_, _) {},
+            onToggleLast: (_, _) {},
+            onTerminate: (_) {},
+            onChangeVolume: (_, v) => changes.add(v),
+            onAddCopy: (_) {},
+            onIgnite: (_) {},
+            onFavorite: (_, _) {},
+            historyPnlSince: 0,
+            pnlSinceTimestamp: null,
+            onResetPnlSince: () {},
+            liveAccountPnl: 1.0,
+          ),
+        ),
+      ),
+    ));
+    expect(find.text('Terminate trade'), findsNothing);
+    await tester.tap(find.byIcon(Icons.more_vert));
+    await tester.pumpAndSettle();
+    expect(find.text('Volume'), findsNWidgets(2)); // card label + menu row
+    for (final item in ['Pause', 'Add copy trade', 'Terminate trade']) {
+      expect(find.text(item), findsOneWidget);
+    }
+    await tester.tap(find.byTooltip('Increase next-open volume'));
+    await tester.pump();
+    await tester.tap(find.byTooltip('Increase next-open volume'));
+    await tester.pump();
+    expect(changes, [0.41, 0.42]);
+    expect(find.text('0.42'), findsOneWidget);
+  });
 }
