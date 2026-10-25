@@ -933,17 +933,21 @@ class EngineService {
             .where(ignitedPairs.isIgnited)
             .firstOrNull;
         if (ignitedBase != null) {
-          if (_exemptOrdersLogged.add(orderTicket)) logger.log(
-            'MARGIN GATE: leaving resting pending order $orderTicket ($symbol) alone - '
-            '$ignitedBase is ignited (margin level bypassed until it fills or is un-ignited).',
-          );
+          if (_exemptOrdersLogged.add(orderTicket)) {
+            logger.log(
+              'MARGIN GATE: leaving resting pending order $orderTicket ($symbol) alone - '
+              '$ignitedBase is ignited (margin level bypassed until it fills or is un-ignited).',
+            );
+          }
           continue;
         }
         if (manualCopyPendingOrders.isPending(orderTicket)) {
-          if (_exemptOrdersLogged.add(orderTicket)) logger.log(
-            'MARGIN GATE: leaving resting pending order $orderTicket ($symbol) alone - '
-            'it\'s a manual copy, exempt from margin-level cancellation.',
-          );
+          if (_exemptOrdersLogged.add(orderTicket)) {
+            logger.log(
+              'MARGIN GATE: leaving resting pending order $orderTicket ($symbol) alone - '
+              'it\'s a manual copy, exempt from margin-level cancellation.',
+            );
+          }
           continue;
         }
         try {

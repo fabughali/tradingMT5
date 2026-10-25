@@ -1980,6 +1980,22 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.51+99)** — **History as a 3-per-row card grid**, per the
+  user ("history card should be wrapped list 3 cards per each row ...
+  redesign" + "there should be a below section in each card ... for details
+  about anything required ... like: remarks, more details about close or
+  status"). Each card matches the Dashboard's running cards: green / red /
+  neutral by realized P&L; header with pair, side, 1:2000, close-reason chip
+  and a more menu (Signal trace dialog, Delete record); ticket / interval /
+  duration; investment and realized P&L; the recorded P&L chart (ending on
+  the realized P&L); three equal columns - Opened / Entry / Open signal |
+  Closed / Close price / Close signal | Volume / SL-TP / max-min P&L; and a
+  bottom Remarks section (the close explained in plain words, the engine's
+  detail note, update signal, SLL at close, extra margin, liquidation, trace
+  size). New totals line ("N closed · win · loss · net") with an All / Wins
+  / Losses filter. Built a row at a time (lazy); 3 per row on wide windows,
+  2 or 1 on narrow ones; the "P&L since" divider keeps its own row.
+
 - **2026-10-25 (v1.6.50+98)** — **Daily range cache; quieter log; fewer order
   re-placements**, per the user ("yes" to all three). (1) 14 of the day's 16
   refused chart reads (and all 4 automatic chart reloads, 17:18-18:07Z) came
