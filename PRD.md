@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.50+98)** — **Daily range cache; quieter log; fewer order
+  re-placements**, per the user ("yes" to all three). (1) 14 of the day's 16
+  refused chart reads (and all 4 automatic chart reloads, 17:18-18:07Z) came
+  from the 1H -> Daily switch the range read makes for every pair. A
+  confirmed Daily range is now reused for 60 minutes (`_rangeCache` in
+  `_readConfirmedRange`, keyed category|pair|script), so the chart stays on
+  1H for most checks. (2) "leaving resting pending order ... alone" (ignited
+  / manual copy) now logs once per order instead of every ~46s sweep.
+  (3) A resting order is re-placed only on a direction change or SL/TP moving
+  more than 1% (`restingOrderNeedsReplace`) - the 60/40 SL is solved from the
+  live entry price, so before, every small price tick re-placed it (ADA:
+  SL 0.0867 -> 0.0859 cancelled and re-placed order 1662352909 at 16:02Z).
+
 - **2026-10-25 (v1.6.49+97)** — **No auto-copy of a trade being closed;
   paused cards breathe**. (1) The user: "i ignited eth at vol=4 ... it was
   v=1 in mt5 ... why". Not the ignite: at 17:08:58.126Z the user's Terminate

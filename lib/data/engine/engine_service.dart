@@ -62,6 +62,7 @@ import '../tradingview/launch.dart';
 import '../tradingview/signals_reader.dart';
 import 'candle_closed.dart';
 import 'sl_ratchet_ladder.dart';
+import 'resting_order_check.dart';
 import 'volume_step.dart';
 import 'worm10_decision.dart';
 
@@ -888,6 +889,10 @@ class EngineService {
     }
   }
 
+  /// Exempt resting orders already logged as "left alone" - logged once per
+  /// order, not on every sweep (2026-10-25: the line repeated every ~46s).
+  final Set<int> _exemptOrdersLogged = {};
+
   /// Cancels every resting (placed but not yet triggered) pending order
   /// this app itself opened, across every auto category - called only
   /// while [RiskGate.marginGateTripped] is true (2026-10-13, per the user:
@@ -928,14 +933,14 @@ class EngineService {
             .where(ignitedPairs.isIgnited)
             .firstOrNull;
         if (ignitedBase != null) {
-          logger.log(
+          if (_exemptOrdersLogged.add(orderTicket)) logger.log(
             'MARGIN GATE: leaving resting pending order $orderTicket ($symbol) alone - '
             '$ignitedBase is ignited (margin level bypassed until it fills or is un-ignited).',
           );
           continue;
         }
         if (manualCopyPendingOrders.isPending(orderTicket)) {
-          logger.log(
+          if (_exemptOrdersLogged.add(orderTicket)) logger.log(
             'MARGIN GATE: leaving resting pending order $orderTicket ($symbol) alone - '
             'it\'s a manual copy, exempt from margin-level cancellation.',
           );
@@ -4183,8 +4188,17 @@ class EngineService {
     // longer overwrites it with the baseline (see that method's own doc
     // comment on this same date) - a resting order is stale only if the
     // direction or the real 60/40 levels themselves have moved.
+    // Only a real change re-places the order - see [restingOrderNeedsReplace]
+    // (2026-10-25: small price ticks used to re-place it every cycle).
     final changed = target != null &&
-        (restingDirection != newDirection || restingSl != target.sl || restingTp != target.tp);
+        restingOrderNeedsReplace(
+          restingDirection: restingDirection,
+          newDirection: newDirection,
+          restingSl: restingSl,
+          targetSl: target.sl,
+          restingTp: restingTp,
+          targetTp: target.tp,
+        );
     if (!changed) {
       logger.log(
         '$tvSymbol ($category): a pending order for this symbol/category '
@@ -4222,6 +4236,11 @@ class EngineService {
     return false;
   }
 
+  /// Confirmed Daily ranges, reused for [_rangeCacheTtl] - see
+  /// [_readConfirmedRange] (2026-10-25).
+  final Map<String, ({RangeResult range, DateTime at})> _rangeCache = {};
+  static const _rangeCacheTtl = Duration(minutes: 60);
+
   /// Shared by both check methods' own range reads (2026-10-07, extracted -
   /// both carried byte-identical copies of this exact triple-read-with-
   /// immediate-retry sequence). Pure extraction - every delay, log message,
@@ -4245,6 +4264,15 @@ class EngineService {
     String? scriptIdPart,
   }) async {
     final rangeScriptIdPart = scriptIdPart ?? customScripts[0].scriptIdPart;
+    // Daily-range cache (2026-10-25, per the user): 14 of the day's 16
+    // refused chart reads were on the 1H -> Daily switch for this read, and
+    // each such switch risks TradingView stalling. A confirmed Daily range
+    // barely moves within an hour, so it is reused for [_rangeCacheTtl].
+    final cacheKey = '${category.wireValue}|$tvSymbol|$rangeScriptIdPart';
+    final cached = _rangeCache[cacheKey];
+    if (cached != null && DateTime.now().difference(cached.at) < _rangeCacheTtl) {
+      return cached.range;
+    }
     // 2026-10-17 - same unchecked-result bug fixed everywhere else this
     // call appears - see [_checkOneSymbol]'s own matching fix for the full
     // root-cause reasoning. This one feeds the TP/SL range every
@@ -4316,6 +4344,7 @@ class EngineService {
         return null;
       }
     }
+    _rangeCache[cacheKey] = (range: range, at: DateTime.now());
     return range;
   }
 
