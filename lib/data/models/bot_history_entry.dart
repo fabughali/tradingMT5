@@ -51,6 +51,7 @@ class BotHistoryEntry {
     this.investmentValue,
     this.extraMargin,
     this.liquidationPrice,
+    this.signalTrace,
   });
 
   final String id;
@@ -146,6 +147,12 @@ class BotHistoryEntry {
   /// existed.
   final double? liquidationPrice;
 
+  /// Every signal event on this trade, open to close, in order (2026-10-25,
+  /// per the user: "a record of all open closed signals for the single
+  /// trade so it can be traced") - raw `TradeTraceEntry` JSON maps. Null
+  /// for entries written before this field existed.
+  final List<Map<String, dynamic>>? signalTrace;
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'ts': ts.toIso8601String(),
@@ -175,6 +182,7 @@ class BotHistoryEntry {
     if (investmentValue != null) 'investment_value': investmentValue,
     if (extraMargin != null) 'extra_margin': extraMargin,
     if (liquidationPrice != null) 'liquidation_price': liquidationPrice,
+    if (signalTrace != null) 'signal_trace': signalTrace,
   };
 
   factory BotHistoryEntry.fromJson(Map<String, dynamic> json) => BotHistoryEntry(
@@ -206,5 +214,9 @@ class BotHistoryEntry {
     investmentValue: (json['investment_value'] as num?)?.toDouble(),
     extraMargin: (json['extra_margin'] as num?)?.toDouble(),
     liquidationPrice: (json['liquidation_price'] as num?)?.toDouble(),
+    signalTrace: (json['signal_trace'] as List?)
+        ?.whereType<Map>()
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList(),
   );
 }

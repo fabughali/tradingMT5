@@ -30,6 +30,7 @@ import '../identity/favorite_pair_store.dart';
 import '../platform/windows_memory.dart';
 import '../identity/ignited_pair_store.dart';
 import '../identity/terminate_request_store.dart';
+import '../identity/trade_signal_trace_store.dart';
 import '../identity/trade_volume_store.dart';
 import '../identity/unpause_check_request_store.dart';
 import '../identity/waiting_reason_store.dart';
@@ -155,6 +156,7 @@ class EngineService {
     baselineStopStrikes = BaselineStopStrikeStore(storage);
     worm10Pending = Worm10PendingSignalStore(storage);
     worm10EntrySignals = Worm10EntrySignalStore(storage);
+    signalTrace = TradeSignalTraceStore(storage);
     // Backfill [firstOpen] from every past trade this app has ever closed,
     // so the new "wait for a confirmed opposite signal before a pair's
     // first-ever entry" gate (2026-10-06, per the user) only applies to
@@ -250,6 +252,7 @@ class EngineService {
   late final BaselineStopStrikeStore baselineStopStrikes;
   late final Worm10PendingSignalStore worm10Pending;
   late final Worm10EntrySignalStore worm10EntrySignals;
+  late final TradeSignalTraceStore signalTrace;
 
   /// Tickets the retroactive direction audit has already checked since the
   /// last time it was forced to re-run - in-memory only, see the audit's
@@ -1697,6 +1700,7 @@ class EngineService {
           realizedProfitPercent: realizedProfitPercent,
           sllAtTermination: sllAtTermination,
           investmentValue: notionalForPct,
+          signalTrace: _closedTrace(ticket, null, null, stopReason),
         ).toJson(),
       );
       logger.log('$mt5Symbol ($category): reconciled ticket=$ticket as $stopReason.');
@@ -2635,6 +2639,7 @@ class EngineService {
                 auditTicket,
                 EntrySignalSnapshot(tag: trueStartWire, barTime: trueStart.time),
               );
+              _trace(auditTicket, 'open_backfilled', trueStartWire, trueStart.time, note: 'audit replay');
               logger.log(
                 '$mt5Symbol ($category): backfilled Start signal for '
                 'ticket=$auditTicket - $trueStartWire@${trueStart.time}.',
@@ -2645,6 +2650,7 @@ class EngineService {
               final current = entrySignals.peek(auditTicket);
               if (current?.updateTag != updateWire || current?.updateTime != updateSignal.time) {
                 entrySignals.recordUpdate(auditTicket, updateWire, updateSignal.time);
+                _trace(auditTicket, 'update', updateWire, updateSignal.time, note: 'audit replay');
                 logger.log(
                   '$mt5Symbol ($category): backfilled Update signal for '
                   'ticket=$auditTicket - $updateWire@${updateSignal.time}.',
@@ -2831,6 +2837,7 @@ class EngineService {
               (startTag == 'LL' && wireTag == 'BUY');
           if (isCrossConfirm) {
             entrySignals.recordUpdate(existingTicket, wireTag, latest.time);
+            _trace(existingTicket, 'update', wireTag, latest.time);
           }
         }
         pendingSignals.clear(barKey);
@@ -3610,6 +3617,15 @@ class EngineService {
                   auditTicket,
                   Worm10EntrySignalSnapshot(kind: trueStart.kind, barTime: trueStart.time),
                 );
+                _trace(
+                  auditTicket,
+                  recordDiffers ? 'open_corrected' : 'open_backfilled',
+                  trueStartWire,
+                  trueStart.time,
+                  note: recordDiffers
+                      ? 'was ${worm10EventKindToWire(openSnapshot.kind)}@${openSnapshot.barTime}'
+                      : 'audit replay',
+                );
                 logger.log(
                   '$mt5Symbol ($category): '
                   '${recordDiffers ? "corrected" : "backfilled"} worm10 Start for '
@@ -3622,6 +3638,7 @@ class EngineService {
               final current = worm10EntrySignals.peek(auditTicket);
               if (current?.updateKind != updateEvent.kind || current?.updateTime != updateEvent.time) {
                 worm10EntrySignals.recordUpdate(auditTicket, updateEvent.kind, updateEvent.time);
+                _trace(auditTicket, 'update', updateWire, updateEvent.time, note: 'audit replay');
                 logger.log(
                   '$mt5Symbol ($category): backfilled worm10 Update for '
                   'ticket=$auditTicket - $updateWire@${updateEvent.time}.',
@@ -3800,6 +3817,7 @@ class EngineService {
                 latest.time != current.updateTime;
             if (isGenuinelyNewer) {
               worm10EntrySignals.recordUpdate(ticket, latest.kind, latest.time);
+              _trace(ticket, 'update', worm10EventKindToWire(latest.kind), latest.time);
               logger.log('$tvSymbol ($category): worm10 Update - $latestWire@${latest.time}.');
             }
           }
@@ -3985,12 +4003,66 @@ class EngineService {
           barTime: worm10OpenAt,
         ),
       );
+      _trace(ticket, 'open', worm10OpenKindWire, worm10OpenAt);
       return;
     }
     entrySignals.record(
       ticket,
       EntrySignalSnapshot(tag: signalTagToWire(signal.tag), barTime: signal.time),
     );
+    _trace(ticket, 'open', signalTagToWire(signal.tag), signal.time);
+  }
+
+  /// Appends one line to [ticket]'s signal trace - see [TradeSignalTraceStore].
+  void _trace(int ticket, String action, String? signal, int? barTime, {String? note}) {
+    try {
+      signalTrace.add(
+        ticket,
+        TradeTraceEntry(at: DateTime.now().toUtc(), action: action, signal: signal, barTime: barTime, note: note),
+      );
+    } catch (e) {
+      logger.log('signal trace write failed for ticket=$ticket: $e', level: 'ERROR');
+    }
+  }
+
+  /// Remembers the signal an order was placed on, for an order that did
+  /// not trigger inside [_openPosition]'s 20s window (2026-10-25).
+  void _rememberOpenIntent(
+    AutoCategory category,
+    String mt5Symbol,
+    Signal signal, {
+    String? worm10OpenKindWire,
+    int? worm10OpenAt,
+  }) {
+    final isWorm10 = worm10OpenKindWire != null && worm10OpenAt != null;
+    signalTrace.rememberIntent(
+      '${category.wireValue}|${mt5Symbol.toUpperCase()}',
+      PendingOpenIntent(
+        signal: isWorm10 ? worm10OpenKindWire : signalTagToWire(signal.tag),
+        barTime: isWorm10 ? worm10OpenAt : signal.time,
+        worm10: isWorm10,
+        placedAt: DateTime.now().toUtc(),
+      ),
+    );
+  }
+
+  /// Records the Open of a late-filled order from its remembered intent, so
+  /// a late fill never runs with a blank Open (2026-10-25, per the user: "i
+  /// want to see open signal too... so it is not blank").
+  void _recordLateFillOpen(int ticket, AutoCategory category, String mt5Symbol) {
+    final intent = signalTrace.takeIntent('${category.wireValue}|${mt5Symbol.toUpperCase()}');
+    if (intent == null) return;
+    if (worm10EntrySignals.peek(ticket) != null || entrySignals.peek(ticket) != null) return;
+    if (intent.worm10) {
+      worm10EntrySignals.record(
+        ticket,
+        Worm10EntrySignalSnapshot(kind: worm10EventKindFromWire(intent.signal), barTime: intent.barTime),
+      );
+    } else {
+      entrySignals.record(ticket, EntrySignalSnapshot(tag: intent.signal, barTime: intent.barTime));
+    }
+    _trace(ticket, 'open_late_fill', intent.signal, intent.barTime, note: 'order placed ${intent.placedAt.toIso8601String()}');
+    logger.log('$mt5Symbol ($category): late fill ticket=$ticket - Open recorded as ${intent.signal}@${intent.barTime}.');
   }
 
   /// True if MT5 already has a resting pending order (the
@@ -4354,6 +4426,7 @@ class EngineService {
   /// NEXT open goes back to the card's volume instead of staying stuck on
   /// a stepped-down size) and clearing the stale waiting reason.
   void _onLateFill(String tvSymbol, String mt5Symbol, int ticket, AutoCategory category, double? filledVolume) {
+    _recordLateFillOpen(ticket, category, mt5Symbol);
     if (filledVolume != null && filledVolume > 0) {
       tradeVolumes.recordApplied('${category.wireValue}|$tvSymbol', filledVolume);
     }
@@ -4782,6 +4855,13 @@ class EngineService {
         return true;
       }
     }
+    _rememberOpenIntent(
+      category,
+      mt5Symbol,
+      openSignal,
+      worm10OpenKindWire: worm10OpenKindWire,
+      worm10OpenAt: worm10OpenAt,
+    );
     logger.log(
       '$mt5Symbol ($category): pending order $ticket placed but did not '
       'trigger within 20s — still resting in MT5, not yet tracked as an '
@@ -5356,10 +5436,14 @@ class EngineService {
       final worm10Snapshot = existingTicket == null ? null : worm10EntrySignals.peek(existingTicket);
       if (worm10Snapshot != null) {
         worm10EntrySignals.record(newTicket, worm10Snapshot);
+        _trace(newTicket, 'open', worm10EventKindToWire(worm10Snapshot.kind), worm10Snapshot.barTime, note: 'copy of $existingTicket');
         return;
       }
       final regularSnapshot = existingTicket == null ? null : entrySignals.peek(existingTicket);
-      if (regularSnapshot != null) entrySignals.record(newTicket, regularSnapshot);
+      if (regularSnapshot != null) {
+        entrySignals.record(newTicket, regularSnapshot);
+        _trace(newTicket, 'open', regularSnapshot.tag, regularSnapshot.barTime, note: 'copy of $existingTicket');
+      }
     }
 
     if (!viaPendingFallback) {
@@ -5784,8 +5868,36 @@ class EngineService {
         investmentValue: notional,
         extraMargin: extraMargin,
         liquidationPrice: liquidationPrice,
+        signalTrace: _closedTrace(
+          ticket,
+          worm10CloseKindWire ?? (closeSignal != null ? signalTagToWire(closeSignal.tag) : null),
+          worm10CloseAt ?? closeSignal?.time,
+          stopReason,
+        ),
       ).toJson(),
     );
+  }
+
+  /// [ticket]'s full signal trace plus its closing line, removed from the
+  /// live store - goes into the History entry (2026-10-25).
+  List<Map<String, dynamic>> _closedTrace(int ticket, String? closeSignal, int? closeAt, String? stopReason) {
+    List<TradeTraceEntry> entries;
+    try {
+      entries = signalTrace.take(ticket);
+    } catch (e) {
+      logger.log('signal trace read failed for ticket=$ticket: $e', level: 'ERROR');
+      entries = const [];
+    }
+    return [
+      ...entries.map((e) => e.toJson()),
+      TradeTraceEntry(
+        at: DateTime.now().toUtc(),
+        action: 'close',
+        signal: closeSignal,
+        barTime: closeAt,
+        note: stopReason,
+      ).toJson(),
+    ];
   }
 
   int? _firstIntField(Map<String, dynamic> map, List<String> keys) {

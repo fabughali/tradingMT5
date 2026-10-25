@@ -583,6 +583,22 @@ class _HistoryCard extends StatelessWidget {
                 ),
               ],
             ),
+            // 2026-10-25, per the user: "app need to have a record of all
+            // open closed signals for the single trade so it can be traced"
+            // - every signal event on this ticket, open to close, in order.
+            if (entry.signalTrace != null && entry.signalTrace!.isNotEmpty) ...[
+              const SizedBox(height: 14),
+              _section('Signal trace', [
+                for (final t in entry.signalTrace!)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Text(
+                      _traceLine(t),
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+              ]),
+            ],
             if (entry.detail != null) ...[
               const SizedBox(height: 10),
               Text(
@@ -621,6 +637,29 @@ class _HistoryCard extends StatelessWidget {
   /// rows, visually separated so which side of the trade a given line
   /// belongs to is never ambiguous (2026-10-17, per the user's own 4-part
   /// card spec).
+  /// One trace line: "25 Oct 14:08  Close  LL @ bar time  (opposite_signal)".
+  String _traceLine(Map<String, dynamic> t) {
+    final at = DateTime.tryParse(t['at'] as String? ?? '');
+    final action = switch (t['action'] as String?) {
+      'open' => 'Open',
+      'open_late_fill' => 'Open (late fill)',
+      'open_backfilled' => 'Open (recorded by audit)',
+      'open_corrected' => 'Open corrected',
+      'update' => 'Update',
+      'close' => 'Close',
+      final other => other ?? '?',
+    };
+    final signal = t['signal'] as String?;
+    final bar = (t['bar_time'] as num?)?.toInt();
+    final note = t['note'] as String?;
+    return [
+      HistoryScreen._fmtTime(at?.toLocal()),
+      action,
+      if (signal != null) '${worm10DisplayLabelOrRaw(signal)} @ ${HistoryScreen._fmtBarTime(bar)}',
+      if (note != null) '($note)',
+    ].join('  ');
+  }
+
   Widget _section(String title, List<Widget> rows) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

@@ -1980,6 +1980,22 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.43+91)** — **Open signal never blank + full signal trace
+  per trade**, per the user ("i want to see open signal too... so it is not
+  blank .. app need to have a record of all open closed signals for the single
+  trade so it can be traced"). Found live: LTC 1662352100 filled late (its
+  stop order did not trigger inside `_openPosition`'s 20s window), was picked
+  up by reconciliation with no Open recorded, and was closed by the 12:37Z
+  stuck-feed audit before any Open was written. (1) The signal an order is
+  placed on is now remembered when it doesn't trigger in 20s
+  (`PendingOpenIntent`, keyed category|mt5Symbol, persisted) and recorded as
+  the trade's Open the moment the late fill is picked up. (2) New
+  `TradeSignalTraceStore` (`logs/trade-signal-trace.json`): every open, late
+  fill, audit backfill/correction, update and the close (signal + reason) per
+  ticket, in order; written into the History entry (`signal_trace`) at close
+  and shown as a "Signal trace" section on the History card. Earlier History
+  entries have no trace.
+
 - **2026-10-25 (v1.6.42+90)** — **Reverse check corrects a wrong Open record**,
   per the user ("if direction of reading is same as current trade ... but the
   open signal is not as same in record ... then app need to update the open

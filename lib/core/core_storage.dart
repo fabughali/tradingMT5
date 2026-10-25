@@ -232,6 +232,10 @@ class CoreStorage {
   /// four.
   String get worm10EntrySignalFile => p.join(logsDir, 'worm10-entry-signal.json');
 
+  /// Per-ticket signal trace + signals of resting orders not yet filled -
+  /// see [TradeSignalTraceStore] (2026-10-25).
+  String get tradeSignalTraceFile => p.join(logsDir, 'trade-signal-trace.json');
+
   /// Keyed by `${category.wireValue}|$tvSymbol` -> `true`, for every
   /// symbol/category that has EVER achieved a real first open (2026-10-06,
   /// per the user: "this only for new added auto trades not for recycled
