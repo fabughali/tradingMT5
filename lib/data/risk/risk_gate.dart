@@ -48,6 +48,17 @@ class RiskGate {
   bool get marginGateTripped =>
       _marginLevel != null && _marginLevel! <= marginGateThresholdPct;
 
+  /// Below this margin level every resting (placed, not yet triggered)
+  /// pending order the app placed is cancelled (2026-10-25, per the user:
+  /// "whenever the margin level is less than 200 ... the app need to close
+  /// active untriggered trades once margin is less than 200"). Used to be
+  /// tied to [marginGateThresholdPct] (150%). The hard open block stays at
+  /// 150%; ignited pairs and manual copies keep their existing exemptions.
+  static const double pendingOrderCancelBelowPct = 200;
+
+  bool get shouldCancelRestingOrders =>
+      _marginLevel != null && _marginLevel! < pendingOrderCancelBelowPct;
+
   double? get marginLevel => _marginLevel;
 
   /// Margin-level-tiered concurrent-position cap (2026-10-15, per the

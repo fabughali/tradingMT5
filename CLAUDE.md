@@ -210,10 +210,11 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Current state (keep this updated)
 
-- Version: repo `1.6.25+73` (2026-10-20: GUI key re-read + single-instance lock; 1.6.24
-  = null-bid crash, Windows stop cleanup, volume-step snapping). Windows install status:
-  see the latest PRD §20 entry / ask. Linux not redeployed from Windows (no SSH) - still
-  1.6.23 there.
+- Version: repo `1.6.37+85` (2026-10-25). Releases since 1.6.25 are summarised in PRD
+  §20 (closed-candle rule, ignite, Market Watch auto-add, dollar SLL, spread guard,
+  recycle pre-check, pending-cancel <200%). Windows install status: check
+  `VersionInfo.FileVersion` (never assume). Linux not redeployed from Windows (no SSH) —
+  still 1.6.23 there; update it before ever running it.
 - Linux engine: currently **stopped** (`inactive (dead)`) — Windows is the live
   instance as of now (MT5 balance ≈ 34.76 on 1013734072 there).
 - Unit tests: `test/sl_ratchet_ladder_test.dart`, `zigzag_range_test.dart`,

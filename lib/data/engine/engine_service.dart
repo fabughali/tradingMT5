@@ -469,6 +469,12 @@ class EngineService {
   DateTime _lastSlRatchetAt = DateTime.fromMillisecondsSinceEpoch(0);
   static const _slRatchetInterval = Duration(seconds: 30);
 
+  /// History's "SLL at close" text for a locked rung (2026-10-25, v1.6.36):
+  /// the dollar CLOSE level, e.g. rung 10 -> "+$5". It used to print the
+  /// rung in the old percent format ("+10%"), which read like "SL at 10".
+  static String _sllLockText(int threshold) =>
+      '+\$${slRatioForThreshold(threshold).toStringAsFixed(0)}';
+
   DateTime? _lastSlHeartbeatAt;
   Duration _maxSlGapSinceHeartbeat = Duration.zero;
 
@@ -550,7 +556,15 @@ class EngineService {
     // that closed since the last sweep should have its old rung state
     // dropped immediately, not linger until the next time something else
     // happens to be open.
-    slRatchet.pruneClosed(stillOpenTickets);
+    // Keep a lock until reconciliation has written the closed trade's
+    // History record (2026-10-25, v1.6.36, per the user's "sll is not
+    // working properly" report): pruning every ticket missing from MT5
+    // here deleted the lock of a trade the user had just closed BEFORE
+    // [_reconcileClosedPositions] read it for "SLL at close", so History
+    // showed -$5 for trades that were really locked at +$5/+$10 (ETH
+    // #1661797797, BNB #1662347724). Tickets the app still tracks as open
+    // are kept; reconciliation forgets them itself once recorded.
+    slRatchet.pruneClosed({...stillOpenTickets, ...openPositions.listAppPositions()});
     if (positions.isEmpty) return 0;
 
     for (final position in positions) {
@@ -789,6 +803,7 @@ class EngineService {
   DateTime _lastMarginCheckAt = DateTime.fromMillisecondsSinceEpoch(0);
   static const _marginCheckInterval = Duration(seconds: 30);
   bool _marginGateWasTripped = false;
+  bool _pendingCancelWasActive = false;
 
   Future<void> _maybeRefreshMarginGate() async {
     if (DateTime.now().difference(_lastMarginCheckAt) < _marginCheckInterval) {
@@ -826,7 +841,20 @@ class EngineService {
       }
       _marginGateWasTripped = isTripped;
 
-      if (isTripped) {
+      // 2026-10-25, per the user: resting orders are cancelled below 200%
+      // margin level, not only once the hard 150% gate trips - see
+      // [RiskGate.pendingOrderCancelBelowPct].
+      final cancelPending = risk.shouldCancelRestingOrders;
+      if (cancelPending && !_pendingCancelWasActive) {
+        logger.log(
+          'MARGIN: margin level ${marginLevel!.toStringAsFixed(1)}% < '
+          '${RiskGate.pendingOrderCancelBelowPct.toStringAsFixed(0)}% - cancelling every '
+          'untriggered pending order this app placed (ignited pairs and manual copies exempt).',
+          level: 'WARNING',
+        );
+      }
+      _pendingCancelWasActive = cancelPending;
+      if (cancelPending) {
         await _cancelAllRestingPendingOrders();
       }
     } catch (e, st) {
@@ -1484,7 +1512,7 @@ class EngineService {
       // per the user) - see the Dashboard SLL column's own matching fix
       // for the full reasoning.
       final sllAtTermination = ratchetThreshold != null
-          ? '+$ratchetThreshold%'
+          ? _sllLockText(ratchetThreshold)
           : copyPositions.isCopy(ticket)
           ? '-\$1'
           : '-\$5';
@@ -1522,6 +1550,7 @@ class EngineService {
         ).toJson(),
       );
       logger.log('$mt5Symbol ($category): reconciled ticket=$ticket as $stopReason.');
+      slRatchet.forget(ticket);
       final wasCopy = copyPositions.isCopy(ticket);
       openPositions.forgetPosition(ticket);
       botCategories.forget(ticket);
@@ -4704,7 +4733,7 @@ class EngineService {
     // [_findAppPosition] now always prefers the original over a copy, so
     // this path shouldn't normally ever see a copy's own ticket.
     final sllAtTermination = ratchetThreshold != null
-        ? '+$ratchetThreshold%'
+        ? _sllLockText(ratchetThreshold)
         : copyPositions.isCopy(ticket)
         ? '-\$1'
         : '-\$5';

@@ -42,6 +42,13 @@ class SlRatchetStore {
   /// Drops state for any ticket not in [stillOpenTickets] — keeps this file
   /// from growing forever with closed positions' old entries. Called once
   /// per sweep with the live open-positions ticket set.
+  /// Drops one ticket's state - called by reconciliation right AFTER it has
+  /// written that ticket's History record (2026-10-25, v1.6.36).
+  void forget(int ticket) {
+    final map = Map<String, dynamic>.from(_readRaw());
+    if (map.remove('$ticket') != null) _write(map);
+  }
+
   void pruneClosed(Set<int> stillOpenTickets) {
     final raw = _readRaw();
     final map = Map<String, dynamic>.from(raw);

@@ -1980,6 +1980,26 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.37+85)** — (1) **Pending orders cancelled below 200%
+  margin**, per the user ("whenever the margin level is less than 200 ...
+  the app need to close active untriggered trades"): was only at the 150%
+  hard gate. New `RiskGate.pendingOrderCancelBelowPct = 200` /
+  `shouldCancelRestingOrders`; the 150% open block is unchanged; ignited
+  pairs and manual copies keep their exemptions. (2) **SLL investigation**
+  ("BTC and ETH p&l today passed +15 but sll stuck at +5"): the ladder logic
+  is correct (every lock in the log is right: +$10 -> +$5, +$15 -> +$10),
+  the sweep runs every ~45-50s - but the installed v1.6.32 had the 20-min
+  post-restart SLL blackout (fixed in v1.6.33, never installed): heartbeat
+  gaps of 1237s/1236s after the 10-24 21:00Z and 10-25 00:34Z restarts;
+  ETH had locked +$10 at 23:33Z, so a +$15 peak inside 00:36-00:56Z would
+  not have been recorded. Not provable (prices aren't logged per sweep).
+  (3) **v1.6.36 History SLL fixes**: the sweep pruned a closed ticket's lock
+  BEFORE reconciliation wrote its History record, so trades closed by the
+  user showed "SLL -$5" though locked (ETH #1661797797 locked +$10, BNB
+  #1662347724 locked +$2); locks are now kept until reconciliation records
+  and forgets them. "SLL at close" now shows the $ close level ("+$5")
+  instead of the old "+10%" rung text. Includes v1.6.33-35. 97/97 tests.
+
 - **2026-10-21 (v1.6.35+83)** — worm10 recycle no longer closes when its
   reopen can't happen, per the user ("okay"). Found live: BNB SELL
   #1661497400 got a fresh SELL_OPEN1 (01:00 candle); the recycle closed it
