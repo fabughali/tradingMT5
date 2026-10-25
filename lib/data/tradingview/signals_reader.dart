@@ -622,6 +622,25 @@ Future<Worm10Check> readWorm10Signals(
       }
       if (!worm10Src) return { error: 'worm_10_26 not found' };
       if (!rsiSrc) return { error: 'spy_9_26 not found' };
+      // 2026-10-25 - never read plots from a series that hasn't loaded
+      // THIS symbol (a stuck feed kept LTCUSDT's daily bars under every
+      // other pair's label, see chartDataMismatchReason).
+      var mainSeries = chart.model().mainSeries();
+      if (typeof mainSeries.isLoading === 'function' && mainSeries.isLoading()) {
+        return { error: 'main series still loading - refusing to read' };
+      }
+      var loadedInfo = typeof mainSeries.symbolInfo === 'function' ? mainSeries.symbolInfo() : null;
+      function tickerBase(s) {
+        var v = String(s || '').trim().toUpperCase();
+        if (v.indexOf(':') !== -1) v = v.split(':').pop();
+        if (v.indexOf('/') !== -1) v = v.split('/')[0];
+        if (v.indexOf('_') !== -1) v = v.split('_')[0];
+        return v.replace(/USDT/g, '').replace(/\\.PERP/g, '');
+      }
+      var loadedName = loadedInfo ? (loadedInfo.name || loadedInfo.ticker || '') : '';
+      if (!loadedName || tickerBase(loadedName) !== tickerBase(${jsonEncode(symbol)})) {
+        return { error: 'main series holds ' + (loadedName || 'nothing') + ', not ' + ${jsonEncode(symbol)} + ' - refusing to read' };
+      }
 
       function colOf(plotId) {
         var num = parseInt((String(plotId).match(/(\\d+)\$/) || [])[1], 10);

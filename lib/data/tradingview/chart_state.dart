@@ -224,10 +224,21 @@ Future<VerifyResult> verifyCustomScripts(CdpClient cdp) async {
 }
 
 class SetChartViewResult {
-  const SetChartViewResult({required this.ok, this.error, this.state, this.switched = false});
+  const SetChartViewResult({
+    required this.ok,
+    this.error,
+    this.state,
+    this.switched = false,
+    this.dataNotLoaded = false,
+  });
   final bool ok;
   final String? error;
   final ChartState? state;
+
+  /// The chart's LABEL shows the requested symbol/resolution but its bar
+  /// data never loaded for it (see [chartDataMismatchReason]) - the
+  /// signature of a stuck TradingView feed, which a page reload clears.
+  final bool dataNotLoaded;
 
   /// True only when a real `setSymbol`/`setResolution` call actually fired
   /// this time (not a no-op because the chart was already showing the
@@ -263,6 +274,106 @@ String _tickerBase(String s) {
 }
 
 bool _sameBase(String a, String b) => _tickerBase(a) == _tickerBase(b);
+
+/// Bar length in seconds for a chart resolution ('60' -> 3600, 'D' ->
+/// 86400, 'W' -> 604800); null for anything not checked ('M', seconds).
+int? resolutionSeconds(String resolution) {
+  final r = _normalizeResolution(resolution);
+  if (r == 'D') return 86400;
+  if (r == 'W') return 604800;
+  final minutes = int.tryParse(r);
+  return minutes == null ? null : minutes * 60;
+}
+
+/// Whether the chart's BAR DATA really is [expectedSymbol] at [resolution]
+/// - null when it is, otherwise the reason it isn't (2026-10-25, root
+/// cause of a real loss: ~20 trades closed in one Power-on sweep). The
+/// chart's label switched pair by pair, but its series stayed in the
+/// loading state (`isLoading()` true, `symbolInfo()` null) still holding
+/// LTCUSDT's DAILY bars from the range read - every pair after LTC read
+/// LTC's daily signals (SELL_OPEN1@1790380800 / ZIGZAG_SELL@1792022400)
+/// and its 39.28-75.0 range. The label-only check from 2026-10-17 could
+/// not see that; this checks the data itself: series loaded, its own
+/// symbol info names the requested pair, and the bars are spaced at the
+/// requested resolution (smallest gap among the last few bars).
+String? chartDataMismatchReason({
+  required bool? loading,
+  required String? symbolInfoName,
+  required String expectedSymbol,
+  required List<int> recentBarTimes,
+  String? resolution,
+}) {
+  if (loading == true) return 'series still loading';
+  if (symbolInfoName == null || symbolInfoName.isEmpty) return 'series has no symbol info';
+  if (!_sameBase(symbolInfoName, expectedSymbol)) {
+    return 'series data is for $symbolInfoName, not $expectedSymbol';
+  }
+  final expected = resolution == null ? null : resolutionSeconds(resolution);
+  if (expected != null) {
+    final times = [...recentBarTimes]..sort();
+    if (times.length < 2) return 'too few bars loaded';
+    var minGap = times[1] - times[0];
+    for (var i = 2; i < times.length; i++) {
+      final gap = times[i] - times[i - 1];
+      if (gap < minGap) minGap = gap;
+    }
+    if (minGap != expected) {
+      return 'bars are ${minGap}s apart, expected ${expected}s for $resolution';
+    }
+  }
+  return null;
+}
+
+const _chartDataExpr = '''(function() {
+  try {
+    var ms = window.TradingViewApi._activeChartWidgetWV.value()._chartWidget.model().mainSeries();
+    var loading = typeof ms.isLoading === 'function' ? ms.isLoading() : null;
+    var si = typeof ms.symbolInfo === 'function' ? ms.symbolInfo() : null;
+    var times = [];
+    var bars = ms.bars();
+    if (bars && !bars.isEmpty()) {
+      var last = bars.lastIndex();
+      for (var i = last; i >= bars.firstIndex() && times.length < 6; i--) {
+        var v = bars.valueAt(i);
+        if (v && typeof v[0] === 'number') times.push(v[0]);
+      }
+    }
+    return { loading: loading, name: si ? (si.name || si.ticker || null) : null, times: times };
+  } catch (e) {
+    return { error: String(e && e.message || e) };
+  }
+})()''';
+
+/// Reads the main series' load state and checks it with
+/// [chartDataMismatchReason]; null = the data really is [expectedSymbol].
+Future<String?> readChartDataMismatch(CdpClient cdp, String expectedSymbol, String? resolution) async {
+  final res = await cdp.evaluate(_chartDataExpr) as Map<String, dynamic>?;
+  if (res == null) return 'no reply from chart';
+  if (res['error'] != null) return 'chart data read failed: ${res['error']}';
+  return chartDataMismatchReason(
+    loading: res['loading'] as bool?,
+    symbolInfoName: res['name'] as String?,
+    expectedSymbol: expectedSymbol,
+    recentBarTimes: ((res['times'] as List?) ?? const []).map((t) => (t as num).toInt()).toList(),
+    resolution: resolution,
+  );
+}
+
+/// Polls [readChartDataMismatch] until the data is right or [timeout]
+/// passes; returns the last reason, or null once verified.
+Future<String?> _waitForChartData(CdpClient cdp, String expectedSymbol, String? resolution, Duration timeout) async {
+  final deadline = DateTime.now().add(timeout);
+  String? reason;
+  while (true) {
+    try {
+      reason = await readChartDataMismatch(cdp, expectedSymbol, resolution);
+    } catch (e) {
+      reason = 'chart data read failed: $e';
+    }
+    if (reason == null || !DateTime.now().isBefore(deadline)) return reason;
+    await Future<void>.delayed(const Duration(milliseconds: 1500));
+  }
+}
 
 /// Switches the chart to [symbol]/[resolution] via the widget API, then waits
 /// until the chart actually reports the requested values. Only calls
@@ -312,6 +423,20 @@ Future<SetChartViewResult> setChartView(
       res?['symbolErr'] != null ||
       res?['resolutionErr'] != null;
   if (!changedAnything) {
+    // Label already matches - still verify the data underneath it (a
+    // series stuck mid-load keeps the PREVIOUS pair's bars, 2026-10-25).
+    final expected = symbol ?? current?.symbol;
+    if (expected != null) {
+      final reason = await _waitForChartData(cdp, expected, resolution, const Duration(seconds: 15));
+      if (reason != null) {
+        return SetChartViewResult(
+          ok: false,
+          error: 'chart data not loaded for $expected $resolution: $reason',
+          state: current,
+          dataNotLoaded: true,
+        );
+      }
+    }
     return SetChartViewResult(ok: true, state: current);
   }
 
@@ -339,7 +464,26 @@ Future<SetChartViewResult> setChartView(
         resolution == null ||
         _normalizeResolution(state!.resolution ?? '') ==
             _normalizeResolution(resolution);
-    if (symOk && resOk) return SetChartViewResult(ok: true, state: state, switched: true);
+    if (symOk && resOk) {
+      // The label switching is not enough - wait (within the same overall
+      // timeout) for the series itself to load this pair's bars.
+      final remaining = deadline.difference(DateTime.now());
+      final reason = await _waitForChartData(
+        cdp,
+        symbol ?? state!.symbol!,
+        resolution,
+        remaining.isNegative ? Duration.zero : remaining,
+      );
+      if (reason != null) {
+        return SetChartViewResult(
+          ok: false,
+          error: 'chart data not loaded for ${symbol ?? state!.symbol} $resolution: $reason',
+          state: state,
+          dataNotLoaded: true,
+        );
+      }
+      return SetChartViewResult(ok: true, state: state, switched: true);
+    }
   }
   return SetChartViewResult(
     ok: false,

@@ -2002,6 +2002,37 @@ class EngineService {
   /// anticipated.
   static const int _forceRelaunchTradingViewThreshold = 3;
 
+  /// Stuck chart feed self-heal (2026-10-25, after a real loss - see
+  /// [chartDataMismatchReason]): the label switches but the series stays
+  /// mid-load on the previous pair. Every such read is already refused by
+  /// [setChartView]; after this many in a row the chart page is reloaded
+  /// (confirmed live the same day: one `Page.reload` cleared exactly this
+  /// state - series loaded again, `isLoading()` false, symbol info back).
+  int _consecutiveChartDataFailures = 0;
+  static const int _chartDataReloadThreshold = 3;
+
+  Future<void> _noteChartView(SetChartViewResult result, CdpClient cdp) async {
+    if (!result.dataNotLoaded) {
+      if (result.ok) _consecutiveChartDataFailures = 0;
+      return;
+    }
+    _consecutiveChartDataFailures++;
+    if (_consecutiveChartDataFailures < _chartDataReloadThreshold) return;
+    _consecutiveChartDataFailures = 0;
+    logger.log(
+      'TRADINGVIEW WATCHDOG: chart data failed to load $_chartDataReloadThreshold '
+      'times in a row (${result.error}) - the feed is stuck on old data. '
+      'Reloading the chart page; no signal is read until the data checks out.',
+      level: 'CRITICAL',
+    );
+    try {
+      await cdp.send('Page.reload', const {'ignoreCache': false});
+      await Future<void>.delayed(const Duration(seconds: 20));
+    } catch (e) {
+      logger.log('TRADINGVIEW WATCHDOG: chart page reload failed: $e', level: 'ERROR');
+    }
+  }
+
   Future<void> _forceRelaunchTradingViewIfStuck(String home) async {
     _consecutiveStuckAttempts++;
     if (_consecutiveStuckAttempts < _forceRelaunchTradingViewThreshold) {
@@ -2421,6 +2452,7 @@ class EngineService {
     // only safe response - a skipped cycle is far better than a decision
     // made on the wrong pair's data.
     final chartView = await setChartView(cdp, tvSymbol, category.signalResolution);
+    await _noteChartView(chartView, cdp);
     if (!chartView.ok) {
       logger.log(
         '$tvSymbol ($category): chart view switch failed (${chartView.error}) - '
@@ -3027,6 +3059,7 @@ class EngineService {
     // misattributing one stuck symbol's stale signal to every other
     // symbol in it).
     final chartView = await setChartView(cdp, tvSymbol, category.signalResolution);
+    await _noteChartView(chartView, cdp);
     if (!chartView.ok) {
       logger.log(
         '$tvSymbol ($category): chart view switch failed (${chartView.error}) - '
@@ -3294,6 +3327,7 @@ class EngineService {
     // never actually happened. See [_checkOneSymbol]'s own matching fix for
     // the general pattern.
     final chartView = await setChartView(cdp, tvSymbol, category.signalResolution);
+    await _noteChartView(chartView, cdp);
     if (!chartView.ok) {
       logger.log(
         '$tvSymbol ($category): chart view switch failed (${chartView.error}) - '
@@ -4092,6 +4126,7 @@ class EngineService {
     // technique shares, so a misattributed symbol here would compute the
     // WRONG stop-loss/take-profit levels for whatever's actually open.
     final chartView = await setChartView(cdp, tvSymbol, category.rangeResolution);
+    await _noteChartView(chartView, cdp);
     if (!chartView.ok) {
       logger.log(
         '$tvSymbol ($category): chart view switch failed (${chartView.error}) - '
@@ -5925,6 +5960,7 @@ class EngineService {
     final cdp = _cdp!;
 
     final chartView = await setChartView(cdp, tvSymbol, category.signalResolution);
+    await _noteChartView(chartView, cdp);
     if (!chartView.ok) {
       throw StateError('could not switch the chart to $tvSymbol (${chartView.error})');
     }

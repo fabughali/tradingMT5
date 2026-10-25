@@ -1980,6 +1980,25 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.41+89)** — **Stuck TradingView feed closed ~20 trades -
+  fixed**. After the 12:21Z Power-on, from LTCUSDT onward (12:37Z) every pair
+  read the SAME data: SELL_OPEN1@1790380800 / ZIGZAG_SELL@1792022400 and the
+  range 39.28-75.0 (even for DOGE at $0.076). The audit and reverse checks
+  closed LTC, NEAR, OP, SHIB, UNI, DOGE, DOT, ETH, then BCH, BNB, BTC, GALA,
+  HBAR, AVAX, ETC, GRT, INJ, LINK until the user switched Power off at 13:27Z;
+  ignited ETH/LTC placed SELL orders and SOL opened SELL on it. Root cause,
+  confirmed live via CDP afterwards: the chart LABEL said XLMUSDT 1H, but the
+  main series was stuck mid-load (`isLoading()` true, `symbolInfo()` null)
+  still holding LTCUSDT's DAILY bars (last close 56.65, bars 86400s apart) from
+  LTC's range read. The 10-17 fix only compared the label. Now `setChartView`
+  also checks the DATA (`chartDataMismatchReason`): series loaded, its own
+  symbol info names the requested pair, bars spaced at the requested
+  resolution - otherwise the read is refused (`dataNotLoaded`), even when the
+  label already matched. `readWorm10Signals` refuses on its own too. After 3
+  such refusals in a row the engine reloads the chart page (one `Page.reload`
+  cleared the stuck state live). Verified live: ETH 1H / LTC D / NEAR 1H
+  switches pass in ~1.7s with healthy data.
+
 - **2026-10-25 (v1.6.40+88)** — **Waiting orders follow a changed volume**,
   per the user ("whenever the user changes the volume setting before the
   trade is filled then whenever this trade is filled then new volume setting

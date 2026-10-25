@@ -162,6 +162,11 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 - **No spread limit (v1.6.39, user's explicit choice):** the v1.6.32 spread guard and the
   copy -$1-survivability check were removed. Pending-order triggers sit at the broker
   minimum (5 price steps); +1 step is rejected by Equiti (retcode 10015).
+- **Chart DATA check before every read (v1.6.41, after ~20 trades were closed on
+  2026-10-25):** a TradingView label can switch while the series stays stuck
+  mid-load on the previous pair's bars. `setChartView` must verify `isLoading()`
+  false + `symbolInfo()` names the pair + bar spacing = resolution; never weaken this
+  back to a label-only check. 3 failures in a row -> chart page reload.
 - **NEVER test a second GUI instance or click Power on the live machine** — a stray GUI
   launch cost a real-money flip on 2026-10-20.
 - **Ignite (thunder icon), v1.6.28, user's spec:** one-shot margin-level bypass that
@@ -211,9 +216,9 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Current state (keep this updated)
 
-- Version: repo `1.6.40+88` (2026-10-25). Releases since 1.6.25 are summarised in PRD
+- Version: repo `1.6.41+89` (2026-10-25). Releases since 1.6.25 are summarised in PRD
   §20 (closed-candle rule, ignite, Market Watch auto-add, dollar SLL, spread guard,
-  recycle pre-check, pending-cancel <200%, SLL profit-only, no spread limit, resting-order volume sync). Windows install status: check
+  recycle pre-check, pending-cancel <200%, SLL profit-only, no spread limit, resting-order volume sync, chart DATA check before any read). Windows install status: check
   `VersionInfo.FileVersion` (never assume). Linux not redeployed from Windows (no SSH) —
   still 1.6.23 there; update it before ever running it.
 - Linux engine: currently **stopped** (`inactive (dead)`) — Windows is the live
