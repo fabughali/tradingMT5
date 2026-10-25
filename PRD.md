@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.44+92)** — **P&L chart per trade**, per the user ("can you
+  build something like that chart where you show P&L chart? ... app need to
+  have a record for P&L run through trade duration and also chart need to act
+  instantly according to changes in P&L", with a tradingPionex screenshot).
+  The engine samples every app position's P&L ($ and % of notional) on every
+  SLL sweep (~30s; `PnlSeriesStore`, one `logs/pnl/<ticket>.jsonl` per
+  ticket; skips only unchanged values inside 15s). History card: "P&L over
+  time" chart (green above 0, red below, dotted 0 line, max/0/min %, times),
+  ending on the realized P&L. Dashboard: tap a running trade's P&L cell for a
+  live chart that adds the GUI's own 5s reading on top of the recorded series.
+  Trades closed before this release have no series. Engine-only recording:
+  while Power is off nothing is sampled.
+
 - **2026-10-25 (v1.6.43+91)** — **Open signal never blank + full signal trace
   per trade**, per the user ("i want to see open signal too... so it is not
   blank .. app need to have a record of all open closed signals for the single

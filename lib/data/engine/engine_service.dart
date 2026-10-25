@@ -30,6 +30,7 @@ import '../identity/favorite_pair_store.dart';
 import '../platform/windows_memory.dart';
 import '../identity/ignited_pair_store.dart';
 import '../identity/terminate_request_store.dart';
+import '../identity/pnl_series_store.dart';
 import '../identity/trade_signal_trace_store.dart';
 import '../identity/trade_volume_store.dart';
 import '../identity/unpause_check_request_store.dart';
@@ -157,6 +158,7 @@ class EngineService {
     worm10Pending = Worm10PendingSignalStore(storage);
     worm10EntrySignals = Worm10EntrySignalStore(storage);
     signalTrace = TradeSignalTraceStore(storage);
+    pnlSeries = PnlSeriesStore(storage);
     // Backfill [firstOpen] from every past trade this app has ever closed,
     // so the new "wait for a confirmed opposite signal before a pair's
     // first-ever entry" gate (2026-10-06, per the user) only applies to
@@ -253,6 +255,7 @@ class EngineService {
   late final Worm10PendingSignalStore worm10Pending;
   late final Worm10EntrySignalStore worm10EntrySignals;
   late final TradeSignalTraceStore signalTrace;
+  late final PnlSeriesStore pnlSeries;
 
   /// Tickets the retroactive direction audit has already checked since the
   /// last time it was forced to re-run - in-memory only, see the audit's
@@ -489,6 +492,38 @@ class EngineService {
   /// position the sweep just closed. Real interval is therefore 30s up to
   /// about one per-symbol check (~45-60s); the heartbeat below records the
   /// worst gap actually seen so this is verifiable, not assumed.
+  /// Contract sizes for the P&L % samples, refreshed every 10 minutes.
+  Map<String, double> _contractSizes = const {};
+  DateTime _contractSizesAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  /// One P&L sample per app trade, every SLL sweep - see [PnlSeriesStore].
+  /// Covers every position carrying this app's comment tag (paused pairs and
+  /// copies included); never fails the sweep it rides on.
+  Future<void> _recordPnlSamples(List<Map<String, dynamic>> positions) async {
+    try {
+      if (DateTime.now().difference(_contractSizesAt) > const Duration(minutes: 10)) {
+        _contractSizes = {
+          for (final w in await mt5.getWatchedSymbols())
+            (w['symbol'] as String).toUpperCase(): (w['contract_size'] as num?)?.toDouble() ?? 1.0,
+        };
+        _contractSizesAt = DateTime.now();
+      }
+      for (final position in positions) {
+        if (!((position['comment'] as String?) ?? '').startsWith('trading_mt5')) continue;
+        final ticket = int.tryParse('${position['position_id']}');
+        final profit = (position['profit'] as num?)?.toDouble();
+        if (ticket == null || profit == null) continue;
+        final volume = (position['volume'] as num?)?.toDouble() ?? 0;
+        final priceOpen = (position['price_open'] as num?)?.toDouble() ?? 0;
+        final contractSize = _contractSizes[(position['symbol'] as String? ?? '').toUpperCase()];
+        final notional = contractSize == null ? 0.0 : volume * contractSize * priceOpen;
+        pnlSeries.record(ticket, profit, notional > 0 ? profit / notional * 100 : null);
+      }
+    } catch (e) {
+      logger.log('P&L sample failed: $e', level: 'ERROR');
+    }
+  }
+
   Future<void> _maybeApplySlRatchet() async {
     final now = DateTime.now();
     final sinceLast = now.difference(_lastSlRatchetAt);
@@ -568,6 +603,8 @@ class EngineService {
     // are kept; reconciliation forgets them itself once recorded.
     slRatchet.pruneClosed({...stillOpenTickets, ...openPositions.listAppPositions()});
     if (positions.isEmpty) return 0;
+
+    await _recordPnlSamples(positions);
 
     for (final position in positions) {
       final ticket = int.tryParse('${position['position_id']}');

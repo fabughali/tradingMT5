@@ -4,6 +4,7 @@ import '../data/models/auto_category.dart';
 import '../data/engine/volume_step.dart';
 import '../data/models/auto_trade_row.dart';
 import '../utilities/auto_cycle.dart';
+import 'live_pnl_dialog.dart';
 
 /// Dashboard card (2026-09-29, per the user: "a table .. a list of
 /// currenly running trades, filled trades, waiting trades", extended the
@@ -1103,6 +1104,10 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                                 fontWeight: FontWeight.w600,
                               ),
                             ),
+                            // 2026-10-25, per the user - tap for the live P&L chart.
+                            onTap: row.ticket != null && row.profit != null
+                                ? () => showLivePnlDialog(context, row)
+                                : null,
                           ),
                           DataCell(
                             Text(

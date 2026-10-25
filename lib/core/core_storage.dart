@@ -236,6 +236,9 @@ class CoreStorage {
   /// see [TradeSignalTraceStore] (2026-10-25).
   String get tradeSignalTraceFile => p.join(logsDir, 'trade-signal-trace.json');
 
+  /// One P&L series file per ticket - see [PnlSeriesStore] (2026-10-25).
+  String pnlSeriesFile(int ticket) => p.join(logsDir, 'pnl', '$ticket.jsonl');
+
   /// Keyed by `${category.wireValue}|$tvSymbol` -> `true`, for every
   /// symbol/category that has EVER achieved a real first open (2026-10-06,
   /// per the user: "this only for new added auto trades not for recycled

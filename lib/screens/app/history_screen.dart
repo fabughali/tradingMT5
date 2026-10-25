@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/core_storage.dart';
 import '../../data/engine/worm10_decision.dart';
+import '../../data/identity/pnl_series_store.dart';
 import '../../data/models/auto_category.dart';
 import '../../data/models/bot_history_entry.dart';
 import '../../data/models/trade_direction.dart';
 import '../../data/providers/app_providers.dart';
+import '../../widgets/pnl_chart.dart';
 
 /// Every closed position's full record — id, direction, entry/exit price,
 /// P&L, open/close signal detail, and exactly how it ended (2026-09-27,
@@ -599,6 +602,24 @@ class _HistoryCard extends StatelessWidget {
                   ),
               ]),
             ],
+            // P&L over the trade's life (2026-10-25, per the user) - the
+            // engine's recorded samples, ending on the realized P&L.
+            Builder(builder: (context) {
+              final points = PnlSeriesStore(CoreStorage.instance).read(entry.ticket);
+              if (points.isEmpty) return const SizedBox.shrink();
+              final end = entry.endTime;
+              final realized = entry.realizedProfit;
+              if (end != null && realized != null) {
+                final t = end.toUtc().millisecondsSinceEpoch ~/ 1000;
+                if (t > points.last.time) {
+                  points.add(PnlPoint(time: t, profit: realized, percent: entry.realizedProfitPercent));
+                }
+              }
+              return Padding(
+                padding: const EdgeInsets.only(top: 14),
+                child: _section('P&L over time', [PnlChart(points: points)]),
+              );
+            }),
             if (entry.detail != null) ...[
               const SizedBox(height: 10),
               Text(
