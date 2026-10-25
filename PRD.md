@@ -1980,6 +1980,26 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.45+93)** — **Dashboard trades as cards**, per the user
+  ("instead of using rows, i want you to use cards. in this card, chart is
+  there. and all other data" + "filled and not yet triggered cards are yellow,
+  running cards with P&L positive are green ... P&L negative are red. P&L
+  zero are neutral color. non filled cards are neutral color" + "sorting of
+  running cards should be same sorting technique as sorting in auto running
+  trades"). Running card: pair, side, 1:2000, copy badge, candle-check marks,
+  ticket, interval, duration; investment and P&L (tap = live chart); live P&L
+  chart (recorded series + current P&L); entry/now, SL/TP, SLL lock (+info),
+  liquidation (yellow near liquidation), extra margin, volume -/+; Open /
+  Update / Close A / Close B; pause, Last, copies + add copy, terminate
+  (confirm). Waiting card (fixed height): state badge (Order resting /
+  Blocked / Waiting / Paused), last checked, why (order details or the exact
+  reason), signal, SL/TP or direction, volume with pending/"sends", pause,
+  ignite, Last, favourite, cancel. Running cards keep the existing cycling
+  sort; waiting cards go resting, blocked, waiting, paused, then A-Z. The
+  copy-group row tint is gone (card colour now means P&L); copies show a
+  "copy" badge and the x-count. 2 running cards per row (3 wide, 1 narrow),
+  up to 4 waiting cards per row.
+
 - **2026-10-25 (v1.6.44+92)** — **P&L chart per trade**, per the user ("can you
   build something like that chart where you show P&L chart? ... app need to
   have a record for P&L run through trade duration and also chart need to act

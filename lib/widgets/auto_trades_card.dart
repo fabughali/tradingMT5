@@ -1,10 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
+import '../core/core_storage.dart';
+import '../data/identity/pnl_series_store.dart';
 import '../data/models/auto_category.dart';
 import '../data/engine/volume_step.dart';
 import '../data/models/auto_trade_row.dart';
 import '../utilities/auto_cycle.dart';
 import 'live_pnl_dialog.dart';
+import 'pnl_chart.dart';
 
 /// Dashboard card (2026-09-29, per the user: "a table .. a list of
 /// currenly running trades, filled trades, waiting trades", extended the
@@ -318,20 +323,6 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     return out;
   }
 
-  /// [waitingReason] (2026-09-29, per the user: "waiting pairs should
-  /// reflect exact reason ... not guess ... for example (not enough
-  /// margin)") replaces the generic "Waiting · no signal" label with the
-  /// broker's own literal rejection text whenever one is on record.
-  static (String, Color) _statusLabel(AutoTradeRow row, ColorScheme scheme) =>
-      switch (row.status) {
-        AutoTradeStatus.running => ('Running', Colors.green),
-        AutoTradeStatus.waitingPending => ('Waiting · pending order', Colors.orange),
-        AutoTradeStatus.waitingNoSignal => (
-          row.waitingReason != null ? 'Waiting · ${row.waitingReason}' : 'Waiting · no signal',
-          row.waitingReason != null ? Colors.red : scheme.outline,
-        ),
-      };
-
   static String _fmtPrice(double? v) {
     if (v == null) return '—';
     if (v == 0) return '0';
@@ -358,27 +349,6 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     if (fullRange == 0) return false;
     final remainingBuffer = (row.currentPrice! - row.liquidationPrice!).abs();
     return remainingBuffer / fullRange * 100 <= 20;
-  }
-
-  /// A deterministic background tint shared by every row for the same
-  /// pair, so a pair's original trade and its Multiplier copies visually
-  /// group together (2026-10-15, per the user: "same trades (same pair)
-  /// should have same row color"). Null (no tint - the table's normal
-  /// default) whenever a pair has no copies, so an ordinary single-row
-  /// pair looks exactly as it always has. Hashing [mt5Symbol] (rather
-  /// than a counter) means the same pair gets the same color across
-  /// refreshes without needing to track group identity anywhere.
-  static Color? _copyGroupColor(AutoTradeRow row, {required bool isOriginal}) {
-    if (row.copyCount <= 1) return null;
-    // ONE color per symbol group, shaded by opacity - parent darker, every
-    // copy lighter (2026-10-16, per the user, after a brief detour through
-    // two separate palettes per group: "i asked you to make parent darker
-    // for same color. and copied lighter for same color... use same color
-    // for parent and X copied trades"). Different GROUPS still get
-    // different colors via the hash below.
-    const palette = [Colors.amber, Colors.cyan, Colors.purple, Colors.teal, Colors.pink, Colors.indigo];
-    final color = palette[row.mt5Symbol.hashCode.abs() % palette.length];
-    return color.withValues(alpha: isOriginal ? 0.30 : 0.12);
   }
 
   static String _fmtTag(String? tag) => tag == null ? '—' : tag.toUpperCase();
@@ -455,246 +425,537 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     return '${d.inSeconds}s';
   }
 
-  /// Compact per-pair card for the waiting/unfilled section below the main
-  /// table (2026-10-18, per the user: "make the waiting trades (unfilled)
-  /// in a card not in table. so auto table contains filled trades and
-  /// running trades. and below that table wrapped cards of waiting
-  /// unfilled trades sorted by name a-z") - only the controls that still
-  /// mean anything for a pair with no real position yet: status, the
-  /// next-open volume stepper, Auto play/pause, Ignite, and
-  /// Power/terminate (cancels the resting pending order, if any). Reuses
-  /// the exact same callbacks/logic as the table's own cells so behavior
-  /// never diverges between the two presentations of the same row.
-  Widget _buildWaitingCard(BuildContext context, AutoTradeRow row) {
-    final scheme = Theme.of(context).colorScheme;
-    final (label, color) = _statusLabel(row, scheme);
+  /// Card colour (2026-10-25, per the user): "filled and not yet triggered
+  /// cards are yellow, running cards with P&L positive are green ... P&L
+  /// negative are red. P&L zero are neutral color. non filled cards are
+  /// neutral color". Null = neutral.
+  static Color? _cardTint(AutoTradeRow row) {
+    if (row.status == AutoTradeStatus.waitingPending) return Colors.amber;
+    if (row.status == AutoTradeStatus.running && row.profit != null && row.profit != 0) {
+      return row.profit! > 0 ? Colors.green : Colors.red;
+    }
+    return null;
+  }
+
+  static BoxDecoration _cardDecoration(ColorScheme scheme, Color? tint) => BoxDecoration(
+    color: tint?.withValues(alpha: 0.08) ?? scheme.surfaceContainerLow,
+    border: Border.all(color: tint?.withValues(alpha: 0.7) ?? scheme.outlineVariant, width: tint == null ? 1 : 1.4),
+    borderRadius: BorderRadius.circular(12),
+  );
+
+  static Widget _badge(String text, Color color) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+    decoration: BoxDecoration(color: color.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(5)),
+    child: Text(text, style: TextStyle(fontSize: 11, color: color, fontWeight: FontWeight.w600)),
+  );
+
+  static String _ago(DateTime? t) {
+    if (t == null) return 'not checked yet';
+    final d = DateTime.now().difference(t);
+    if (d.inHours > 0) return 'checked ${d.inHours}h ${d.inMinutes % 60}m ago';
+    if (d.inMinutes > 0) return 'checked ${d.inMinutes}m ago';
+    return 'checked just now';
+  }
+
+  /// Label over a value - one cell of a card's level grid.
+  static Widget _kv(String label, Widget value, ColorScheme scheme) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text(label, style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+      const SizedBox(height: 2),
+      value,
+    ],
+  );
+
+  static Widget _kt(String label, String value, ColorScheme scheme, {Color? color}) => _kv(
+    label,
+    Text(
+      value,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: color),
+    ),
+    scheme,
+  );
+
+  /// One signal in a card's signal line: "Open LL 10-24 11:00".
+  static Widget _sig(String label, String? tag, String time, ColorScheme scheme, {Color? color}) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Text('$label ', style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+      Text(_fmtTag(tag), style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: tag == null ? null : color)),
+      if (time.isNotEmpty) Text(' $time', style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+    ],
+  );
+
+  /// Next-open volume -/+ (same rules as the old table cell): a copy's
+  /// volume is fixed; a pending change shows the current size struck
+  /// through with the new one under it; an active step-down shows "sends X".
+  Widget _volumeControl(AutoTradeRow row, ColorScheme scheme) {
+    if (row.isCopy) {
+      return Tooltip(
+        message: 'Copy volume is fixed at 1 lot',
+        child: Text(
+          _fmtVolume(row.currentVolume ?? 1),
+          style: TextStyle(fontWeight: FontWeight.w600, color: scheme.onSurfaceVariant),
+        ),
+      );
+    }
     final effective = row.desiredVolume ?? row.currentVolume ?? row.volumeMin;
     final hasCurrent = row.currentVolume != null;
     final current = row.currentVolume ?? effective;
-    final showPending = row.desiredVolume != null &&
-        hasCurrent &&
-        (row.desiredVolume! - row.currentVolume!).abs() > 1e-9;
-    // Fixed width AND height (2026-10-18, per the user: "width and height
-    // of all cards should be identical"), split into two explicit
-    // sections (2026-10-18, per the user: "make card having two
-    // sections. upper section (pair title + status) .. bottom section in
-    // two rows (volum) (power, ignite, pause)" / "make upper section
-    // heigher than fixed bottom section" / "so upper section contains
-    // all status text") - the upper section is taller than the bottom
-    // one and shows the FULL status text (no ellipsis truncation, a
-    // long broker rejection reason just wraps across more lines), while
-    // the bottom section (volume stepper + action icons) stays a small,
-    // fixed size identical on every card regardless of what's above it.
-    const cardHeight = 230.0;
-    const cardPadding = 10.0;
-    // 2026-10-18, per the user: "the padding from bottom edge of the
-    // card to the bottom of action row should be same as the padding
-    // from top edge of the card to the top edge of the title" - a fixed
-    // `bottomHeight` SizedBox left dead space below the action row
-    // whenever the two rows' real content was shorter than that
-    // allotment, making the bottom gap bigger than the top one. The
-    // bottom section is now sized to its own natural (`min`) content
-    // instead, and the upper section is `Expanded` to absorb whatever
-    // space is left - so the action row always sits flush against the
-    // SAME `cardPadding` the title sits flush against up top, by
-    // construction, not by tuning a magic number.
-    return Container(
-      width: 180,
-      height: cardHeight,
-      padding: const EdgeInsets.all(cardPadding),
-      decoration: BoxDecoration(
-        border: Border.all(color: scheme.outlineVariant),
-        borderRadius: BorderRadius.circular(8),
+    final showPending =
+        row.desiredVolume != null && hasCurrent && (row.desiredVolume! - row.currentVolume!).abs() > 1e-9;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            IconButton(
+              icon: const Icon(Icons.remove_circle_outline, size: 20),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+              tooltip: _volumeTooltip(row, 'Decrease next-open volume'),
+              onPressed: row.volumeLimitsKnown
+                  ? () => widget.onChangeVolume(row.tvSymbol, _steppedVolume(row, effective, -1))
+                  : null,
+            ),
+            ConstrainedBox(
+              constraints: const BoxConstraints(minWidth: 36),
+              child: Text(
+                _fmtVolume(current),
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  fontWeight: FontWeight.w600,
+                  decoration: showPending ? TextDecoration.lineThrough : null,
+                  color: showPending ? scheme.onSurfaceVariant : null,
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.add_circle_outline, size: 20),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 30, minHeight: 30),
+              tooltip: _volumeTooltip(row, 'Increase next-open volume'),
+              onPressed: row.volumeLimitsKnown
+                  ? () => widget.onChangeVolume(row.tvSymbol, _steppedVolume(row, effective, 1))
+                  : null,
+            ),
+          ],
+          ),
+        ),
+        if (showPending)
+          Text(
+            'next open ${_fmtVolume(effective)}',
+            style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 11),
+          ),
+        if (_hasActiveStepDown(row, effective))
+          Tooltip(
+            message: 'MT5 rejected a larger size earlier - the next order will be sent at this size',
+            child: Text(
+              'sends ${_fmtVolume(row.attemptVolume!)}',
+              style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.w700, fontSize: 11),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _pauseButton(AutoTradeRow row, ColorScheme scheme) => IconButton(
+    icon: Icon(row.isPaused ? Icons.play_arrow : Icons.pause, size: 20),
+    color: row.isPaused ? Colors.green : scheme.onSurfaceVariant,
+    padding: EdgeInsets.zero,
+    constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+    tooltip: row.isPaused
+        ? 'Resume — engine will act on this pair again'
+        : 'Pause — engine will take no action on this pair',
+    onPressed: () => widget.onTogglePause(row.tvSymbol, !row.isPaused),
+  );
+
+  Widget _lastSwitch(AutoTradeRow row, ColorScheme scheme) => Row(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      Transform.scale(
+        scale: 0.75,
+        child: Switch(
+          value: row.isLastTagged,
+          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          onChanged: (on) => widget.onToggleLast(row.tvSymbol, on),
+        ),
       ),
+      Text('Last', style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant)),
+    ],
+  );
+
+  /// One running trade (2026-10-25, per the user: "instead of using rows,
+  /// i want you to use cards. in this card, chart is there. and all other
+  /// data"). Header, investment/P&L (tap = live chart), live P&L chart,
+  /// levels, signals, controls - every item the old table row had.
+  Widget _buildRunningCard(BuildContext context, AutoTradeRow row) {
+    final scheme = Theme.of(context).colorScheme;
+    final tint = _cardTint(row);
+    final small = TextStyle(fontSize: 11, color: scheme.onSurfaceVariant);
+    final side = switch (row.direction) {
+      'sell' => ('SHORT', Colors.red),
+      'buy' => ('LONG', Colors.green),
+      _ => ('—', scheme.outline),
+    };
+    final near = _isNearLiquidation(row);
+    final nearColor = near ? Colors.yellow.shade800 : null;
+    final pnlColor = row.profit == null || row.profit == 0
+        ? scheme.onSurface
+        : row.profit! > 0
+        ? Colors.green.shade700
+        : Colors.red.shade700;
+    final pnlText = row.profit == null
+        ? '—'
+        : '${row.profit! >= 0 ? '+' : ''}${row.profit!.toStringAsFixed(2)}'
+              '${row.pnlPercent == null ? '' : ' (${row.pnlPercent! >= 0 ? '+' : ''}${row.pnlPercent!.toStringAsFixed(2)}%)'}';
+    final sll = row.slRatchetThreshold == null
+        ? '—'
+        : '+\$${row.slRatchetThreshold == 5 ? 2 : row.slRatchetThreshold! - 5}';
+    final checked = isWithinCurrentCandle(row.lastCheckedAt);
+    final canAddCopy = row.profit != null && row.profit! > 0;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
+      decoration: _cardDecoration(scheme, tint),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Upper section: pair title + full status text - expands to
-          // fill whatever space the fixed-size bottom section doesn't
-          // use.
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        row.mt5Symbol,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                    ),
-                    // Star icon (2026-10-18, per the user: "add a star
-                    // icon for those waiting/unfilled cards where once
-                    // this icon is clicked, app will give those pairs
-                    // priority in filling once margin is okay") - sits
-                    // with the title, not the action row below, since
-                    // it's a standing identity preference rather than a
-                    // transient per-cycle action.
-                    IconButton(
-                      icon: Icon(row.isFavorite ? Icons.star : Icons.star_border, size: 20),
-                      color: row.isFavorite ? Colors.amber : scheme.onSurfaceVariant,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                      tooltip: row.isFavorite
-                          ? 'Favorited - checked first among waiting pairs once margin allows'
-                          : 'Favorite - give this pair priority once margin allows',
-                      onPressed: () => widget.onFavorite(row.tvSymbol, !row.isFavorite),
-                    ),
-                  ],
+          Row(
+            children: [
+              if (row.isFavorite) ...[
+                const Icon(Icons.star, size: 16, color: Colors.amber),
+                const SizedBox(width: 4),
+              ],
+              Flexible(
+                child: Text(
+                  row.mt5Symbol,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
                 ),
-                const SizedBox(height: 6),
-                Expanded(
-                  child: Container(
-                    width: double.infinity,
-                    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                    decoration: BoxDecoration(
-                      color: color.withValues(alpha: 0.15),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Align(
-                      alignment: Alignment.topLeft,
-                      child: SingleChildScrollView(
-                        child: Text(
-                          label,
-                          softWrap: true,
-                          style: TextStyle(color: color, fontWeight: FontWeight.w600, fontSize: 11),
-                        ),
-                      ),
-                    ),
+              ),
+              const SizedBox(width: 8),
+              _badge(side.$1, side.$2),
+              const SizedBox(width: 4),
+              _badge('1:2000', scheme.outline),
+              if (row.isCopy) ...[const SizedBox(width: 4), _badge('copy', Colors.amber.shade800)],
+              const Spacer(),
+              if (checked)
+                Tooltip(
+                  message: 'Checked in this candle\'s cycle ${currentAutoCycle()}',
+                  child: Text(
+                    '✓' * currentAutoCycle(),
+                    style: const TextStyle(color: Colors.green, fontWeight: FontWeight.w700),
                   ),
                 ),
-              ],
-            ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Wrap(
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              SelectableText('#${row.ticket ?? '—'}', style: small),
+              Text(
+                '  ·  ${AutoCategory.oneHour.label}  ·  lasting ${_fmtDuration(row.openedAt)}',
+                style: small,
+              ),
+            ],
           ),
           const SizedBox(height: 10),
-          // Bottom section: volume row, then the action-icon row -
-          // naturally sized (no dead space), identical on every card
-          // since every card has the exact same two rows.
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          InkWell(
+            borderRadius: BorderRadius.circular(8),
+            onTap: row.ticket != null && row.profit != null ? () => showLivePnlDialog(context, row) : null,
+            child: Container(
+              decoration: BoxDecoration(
+                border: Border.all(color: scheme.outlineVariant),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    IconButton(
-                      icon: const Icon(Icons.remove_circle_outline, size: 22),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                      tooltip: _volumeTooltip(row, 'Decrease next-open volume'),
-                      onPressed: row.volumeLimitsKnown
-                          ? () => widget.onChangeVolume(row.tvSymbol, _steppedVolume(row, effective, -1))
-                          : null,
-                    ),
-                    SizedBox(
-                      width: 56,
-                      child: Column(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(
-                            _fmtVolume(current),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            textAlign: TextAlign.center,
-                            style: TextStyle(
-                              fontWeight: FontWeight.w600,
-                              decoration: showPending ? TextDecoration.lineThrough : null,
-                              color: showPending ? scheme.onSurfaceVariant : null,
-                            ),
-                          ),
-                          if (showPending)
-                            Text(
-                              _fmtVolume(effective),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 12),
-                            ),
-                          if (_hasActiveStepDown(row, effective))
-                            Tooltip(
-                              message: 'MT5 rejected a larger size earlier - the next order will be sent at this size',
-                              child: Text(
-                                'sends ${_fmtVolume(row.attemptVolume!)}',
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.w700, fontSize: 11),
-                              ),
-                            ),
-                        ],
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.add_circle_outline, size: 22),
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                      tooltip: _volumeTooltip(row, 'Increase next-open volume'),
-                      onPressed: row.volumeLimitsKnown
-                          ? () => widget.onChangeVolume(row.tvSymbol, _steppedVolume(row, effective, 1))
-                          : null,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 4),
-                // 2026-10-18, per the user: "make a spacing between each
-                // row and next row in the card so user not pressing any
-                // icon by mistake since icons you are using are too
-                // small ... make them little larger" - bigger icons AND
-                // a bigger tap target (32x32, up from the table's
-                // compact 28x28) plus real gaps instead of spaceAround's
-                // edge-to-edge packing, so an accidental tap on the wrong
-                // control (e.g. Power right next to Ignite) is harder.
-                // "include last toggle also ... with power, pause,
-                // ignite" - the table's own Switch, scaled down to fit
-                // alongside the three icon buttons in the same row.
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    IconButton(
-                      icon: Icon(row.isPaused ? Icons.play_arrow : Icons.pause, size: 20),
-                      color: row.isPaused ? Colors.green : scheme.onSurfaceVariant,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                      tooltip: row.isPaused
-                          ? 'Resume — engine will act on this pair again'
-                          : 'Pause — engine will take no action on this pair',
-                      onPressed: () => widget.onTogglePause(row.tvSymbol, !row.isPaused),
-                    ),
-                    IconButton(
-                      icon: Icon(row.isIgnited ? Icons.bolt : Icons.bolt_outlined, size: 20),
-                      color: row.isIgnited ? Colors.amber : scheme.onSurfaceVariant,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                      tooltip: row.isIgnited
-                          ? 'Ignited - will open regardless of margin level once triggered. Click to cancel.'
-                          : 'Ignite - bypass margin level for this pair\'s next signal',
-                      onPressed: () => widget.onIgnite(row.tvSymbol),
-                    ),
-                    Tooltip(
-                      message: 'Last',
-                      child: Transform.scale(
-                        scale: 0.75,
-                        child: Switch(
-                          value: row.isLastTagged,
-                          materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                          onChanged: (on) => widget.onToggleLast(row.tvSymbol, on),
+                    Expanded(
+                      child: Padding(
+                        padding: const EdgeInsets.all(8),
+                        child: _kt(
+                          'Investment',
+                          row.investmentValue == null ? '—' : '\$${row.investmentValue!.toStringAsFixed(2)}',
+                          scheme,
                         ),
                       ),
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.power_settings_new, size: 20),
-                      color: Colors.orange,
-                      padding: EdgeInsets.zero,
-                      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
-                      tooltip: 'Cancel this pair\'s pending attempt',
-                      onPressed: () => widget.onTerminate(row.tvSymbol),
+                    Expanded(
+                      child: Container(
+                        padding: const EdgeInsets.all(8),
+                        color: (tint ?? scheme.outline).withValues(alpha: 0.12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text('P&L', style: small),
+                            const SizedBox(height: 2),
+                            FittedBox(
+                              fit: BoxFit.scaleDown,
+                              child: Text(
+                                pnlText,
+                                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w700, color: pnlColor),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
+          ),
+          const SizedBox(height: 8),
+          _CardPnlChart(ticket: row.ticket, profit: row.profit, percent: row.pnlPercent),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _kt('Entry / now', '${_fmtPrice(row.price)} / ${_fmtPrice(row.currentPrice)}', scheme,
+                    color: nearColor),
+              ),
+              Expanded(child: _kt('SL / TP', '${_fmtPrice(row.stopLoss)} / ${_fmtPrice(row.takeProfit)}', scheme)),
+              Expanded(
+                child: _kv(
+                  'SLL lock',
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        sll,
+                        style: TextStyle(
+                          fontWeight: FontWeight.w600,
+                          fontSize: 13,
+                          color: row.slRatchetThreshold != null ? Colors.green : scheme.onSurfaceVariant,
+                        ),
+                      ),
+                      InkWell(
+                        borderRadius: BorderRadius.circular(10),
+                        onTap: () => _showSllInfoDialog(context),
+                        child: Padding(
+                          padding: const EdgeInsets.all(2),
+                          child: Icon(Icons.info_outline, size: 14, color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                    ],
+                  ),
+                  scheme,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Tooltip(
+                  message: row.liquidationPrice == null
+                      ? ''
+                      : 'Estimate: price at which this position alone would reach '
+                            "Equiti's 30% stop-out level, if every other position "
+                            'stayed exactly as it is right now.',
+                  child: _kt('Liquidation', _fmtPrice(row.liquidationPrice), scheme, color: nearColor),
+                ),
+              ),
+              Expanded(
+                child: _kt(
+                  'Extra margin',
+                  row.extraMargin == null ? '—' : '\$${row.extraMargin!.toStringAsFixed(2)}',
+                  scheme,
+                ),
+              ),
+              Expanded(child: _kv('Volume', _volumeControl(row, scheme), scheme)),
+            ],
+          ),
+          const Divider(height: 18),
+          Wrap(
+            spacing: 14,
+            runSpacing: 4,
+            children: [
+              _sig('Open', row.startTag, _fmtTvTime(row.startAt), scheme),
+              if (!widget.hideUpdateCloseColumns) ...[
+                _sig('Update', row.updateTag, _fmtTvTime(row.updateAt), scheme),
+                _sig('Close A', row.closeATag, _fmtTvTime(row.closeAAt), scheme, color: Colors.orange),
+                if (row.closeBEta != null)
+                  Text('Close B watching · ${_fmtTvTimeExact(row.closeBEta!)}', style: small),
+              ],
+            ],
+          ),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              _pauseButton(row, scheme),
+              _lastSwitch(row, scheme),
+              const Spacer(),
+              Tooltip(
+                message: 'Copies running on this pair',
+                child: Text(
+                  '×${row.copyCount}',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w600,
+                    color: row.copyCount > 1 ? Colors.amber.shade800 : scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              IconButton(
+                icon: const Icon(Icons.add_circle_outline, size: 20),
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                color: canAddCopy ? scheme.primary : scheme.onSurfaceVariant.withValues(alpha: 0.3),
+                tooltip: canAddCopy
+                    ? 'Open a copy trade (same direction/TP/volume)'
+                    : 'Only available while this trade\'s P&L is positive',
+                onPressed: canAddCopy ? () => widget.onAddCopy(row.tvSymbol) : null,
+              ),
+              IconButton(
+                icon: const Icon(Icons.power_settings_new, size: 20),
+                color: Colors.red,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                tooltip: 'Terminate this pair\'s trade',
+                onPressed: () => _confirmTerminate(context, row),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// One waiting (unfilled) pair (2026-10-25, per the user's card design).
+  /// Yellow when its order is resting in MT5, neutral otherwise. Same fixed
+  /// height on every waiting card (2026-10-18 rule); the "why" box scrolls.
+  Widget _buildWaitingCard(BuildContext context, AutoTradeRow row) {
+    final scheme = Theme.of(context).colorScheme;
+    final tint = _cardTint(row);
+    final small = TextStyle(fontSize: 11, color: scheme.onSurfaceVariant);
+    final resting = row.status == AutoTradeStatus.waitingPending;
+    final blocked = !resting && row.waitingReason != null;
+    final (state, stateColor) = row.isPaused
+        ? ('Paused', scheme.outline)
+        : resting
+        ? ('Order resting', Colors.amber.shade800)
+        : blocked
+        ? ('Blocked', scheme.onSurfaceVariant)
+        : ('Waiting', scheme.outline);
+    final side = switch (row.direction) {
+      'sell' => 'SELL',
+      'buy' => 'BUY',
+      _ => '',
+    };
+    final why = resting
+        ? '$side STOP #${row.ticket ?? '—'} at ${_fmtPrice(row.price)} - fills when price reaches it.'
+              '${row.waitingReason == null ? '' : '\n${row.waitingReason}'}'
+        : blocked
+        ? row.waitingReason!
+        : row.startCandidateTag != null
+        ? 'Signal ${_fmtTag(row.startCandidateTag)} confirming'
+              '${row.startCandidateEta == null ? '' : ' - acts after ${_fmtTvTimeExact(row.startCandidateEta!)}'}.'
+        : 'No open signal yet.';
+    final signalTag = row.startTag ?? row.startCandidateTag;
+    final signalTime = row.startTag != null ? _fmtTvTime(row.startAt) : '';
+    return Container(
+      height: 270,
+      padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
+      decoration: _cardDecoration(scheme, tint),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  row.mt5Symbol,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                ),
+              ),
+              _badge(state, stateColor),
+              IconButton(
+                icon: Icon(row.isFavorite ? Icons.star : Icons.star_border, size: 18),
+                color: row.isFavorite ? Colors.amber : scheme.onSurfaceVariant,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
+                tooltip: row.isFavorite
+                    ? 'Favorited - checked first among waiting pairs once margin allows'
+                    : 'Favorite - give this pair priority once margin allows',
+                onPressed: () => widget.onFavorite(row.tvSymbol, !row.isFavorite),
+              ),
+            ],
+          ),
+          Text(_ago(row.lastCheckedAt), style: small),
+          const SizedBox(height: 6),
+          Expanded(
+            child: Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+              decoration: BoxDecoration(
+                color: (tint ?? scheme.outline).withValues(alpha: 0.10),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: SingleChildScrollView(child: Text(why, style: const TextStyle(fontSize: 12))),
+            ),
+          ),
+          const SizedBox(height: 6),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _kt(
+                  resting ? 'Open signal' : 'Signal',
+                  signalTag == null ? '—' : '${_fmtTag(signalTag)} $signalTime'.trim(),
+                  scheme,
+                ),
+              ),
+              Expanded(
+                child: resting
+                    ? _kt('SL / TP', '${_fmtPrice(row.stopLoss)} / ${_fmtPrice(row.takeProfit)}', scheme)
+                    : _kt('Direction', side.isEmpty ? '—' : side, scheme),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          _kv('Volume', _volumeControl(row, scheme), scheme),
+          Row(
+            children: [
+              _pauseButton(row, scheme),
+              IconButton(
+                icon: Icon(row.isIgnited ? Icons.bolt : Icons.bolt_outlined, size: 20),
+                color: row.isIgnited ? Colors.amber : scheme.onSurfaceVariant,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                tooltip: row.isIgnited
+                    ? 'Ignited - will open regardless of margin level once triggered. Click to cancel.'
+                    : 'Ignite - bypass margin level for this pair\'s next signal',
+                onPressed: () => widget.onIgnite(row.tvSymbol),
+              ),
+              _lastSwitch(row, scheme),
+              const Spacer(),
+              IconButton(
+                icon: const Icon(Icons.power_settings_new, size: 20),
+                color: Colors.orange,
+                padding: EdgeInsets.zero,
+                constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+                tooltip: 'Cancel this pair\'s pending attempt',
+                onPressed: () => widget.onTerminate(row.tvSymbol),
+              ),
+            ],
+          ),
         ],
       ),
     );
@@ -703,29 +964,27 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    // Table holds only real running (filled) positions; every waiting/
-    // unfilled pair moves to its own card below instead (2026-10-18, per
-    // the user). Card order is always alphabetical, independent of the
-    // table's own cycling sort mode.
+    // Running cards use the cycling sort (per the user: "sorting of running
+    // cards should be same sorting technique as sorting in auto running
+    // trades"); waiting cards: order resting, blocked, waiting, paused,
+    // then A-Z (2026-10-25 card design).
     final rows = _sorted(widget.rows.where((r) => r.status == AutoTradeStatus.running).toList());
+    int waitRank(AutoTradeRow r) => r.isPaused
+        ? 3
+        : r.status == AutoTradeStatus.waitingPending
+        ? 0
+        : r.waitingReason != null
+        ? 1
+        : 2;
     final waitingRows = widget.rows.where((r) => r.status != AutoTradeStatus.running).toList()
-      ..sort((a, b) => a.tvSymbol.compareTo(b.tvSymbol));
-    // The original trade in a copy group is whichever ticket is LOWEST -
-    // MT5 assigns tickets sequentially as trades open, and a copy can only
-    // ever be opened AFTER its original already exists (2026-10-15, per
-    // the user: "the parent/original trade color should be darker than
-    // the copied"). No separate original/copy tracking needed - this
-    // derives it purely from data already on hand.
-    final minTicketBySymbol = <String, int>{};
-    for (final r in rows) {
-      final t = r.ticket;
-      if (t == null) continue;
-      final current = minTicketBySymbol[r.mt5Symbol];
-      if (current == null || t < current) minTicketBySymbol[r.mt5Symbol] = t;
-    }
+      ..sort((a, b) {
+        final byRank = waitRank(a).compareTo(waitRank(b));
+        return byRank != 0 ? byRank : a.tvSymbol.compareTo(b.tvSymbol);
+      });
     final running = rows.length;
     final pending = waitingRows.where((r) => r.status == AutoTradeStatus.waitingPending).length;
-    final noSignal = waitingRows.where((r) => r.status == AutoTradeStatus.waitingNoSignal).length;
+    final blocked = waitingRows.where((r) => waitRank(r) == 1).length;
+    final noSignal = waitingRows.length - pending - blocked;
 
     return Card(
       margin: const EdgeInsets.all(16),
@@ -790,7 +1049,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                         mainAxisSize: MainAxisSize.min,
                         children: [
                           Text(
-                            '$running running · $pending pending · $noSignal waiting',
+                            '$running running · $pending resting · $blocked blocked · $noSignal waiting',
                             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: scheme.onSurfaceVariant,
                             ),
@@ -881,681 +1140,97 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                 padding: EdgeInsets.symmetric(vertical: 12),
                 child: Text('No symbols configured yet.'),
               )
-            else if (rows.isEmpty)
-              const SizedBox.shrink()
             else
-              SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: DataTable(
-                  headingRowHeight: 32,
-                  // 2026-10-04, per the user: "dont cut the text for reason
-                  // of waiting or not opening ... make sure there is a
-                  // spacing between each row content and horizontal lines" -
-                  // raised from 36 so every row (wrapped or not) gets more
-                  // breathing room against the divider lines, and max height
-                  // is now unbounded (was a fixed 56) so a long wrapped
-                  // rejection reason can never be clipped, however many
-                  // lines it needs.
-                  dataRowMinHeight: 48,
-                  dataRowMaxHeight: double.infinity,
-                  // Tightened from 18, per the user: "status text is
-                  // pushing all other next columns ... table should fit in
-                  // screen width" - reclaims a little width on every one of
-                  // the table's ~18 columns, which adds up.
-                  columnSpacing: 14,
-                  columns: [
-                    const DataColumn(label: Text('Symbol')),
-                    const DataColumn(label: Text('Trade ID')),
-                    const DataColumn(label: Text('Status')),
-                    const DataColumn(label: Text('Side')),
-                    const DataColumn(label: Text('Price')),
-                    const DataColumn(label: Text('SL')),
-                    const DataColumn(label: Text('TP')),
-                    const DataColumn(label: Text('P&L')),
-                    // Leverage/Investment/Extra Margin/Liquidation Price
-                    // (2026-10-15, per the user). Leverage is a flat
-                    // broker-set constant (Equiti Seychelles: 1:2000),
-                    // never computed. Investment Value and Extra Margin
-                    // come straight from real MT5 numbers (notional value,
-                    // account free margin). Liquidation Price is a real,
-                    // grounded ESTIMATE - see [AutoTradeRow.liquidationPrice]'s
-                    // own doc comment for the exact formula and why it's an
-                    // estimate rather than a fixed per-symbol number.
-                    const DataColumn(label: Text('Leverage')),
-                    const DataColumn(label: Text('Investment')),
-                    const DataColumn(label: Text('Extra Margin')),
-                    const DataColumn(label: Text('Liquidation')),
-                    DataColumn(
-                      label: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          const Text('SLL'),
-                          const SizedBox(width: 2),
-                          // 2026-10-13, per the user: "(i) icon... once
-                          // user click on this icon... app will show the
-                          // sll percent category setup in a dialog" - so
-                          // the ladder's exact thresholds are always one
-                          // tap away instead of something to remember.
-                          InkWell(
-                            borderRadius: BorderRadius.circular(10),
-                            onTap: () => _showSllInfoDialog(context),
-                            child: Padding(
-                              padding: const EdgeInsets.all(2),
-                              child: Icon(
-                                Icons.info_outline,
-                                size: 14,
-                                color: scheme.onSurfaceVariant,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const DataColumn(label: Center(child: Text('Volume'))),
-                    // Multiplier (2026-10-15, per the user): "+" opens one
-                    // more copy trade on this pair - same direction/TP/
-                    // volume, tighter -$1 SL - only while P&L is positive.
-                    // Shows how many copies currently exist for this pair.
-                    const DataColumn(label: Center(child: Text('Multiplier'))),
-                    const DataColumn(label: Text('Open')),
-                    if (!widget.hideUpdateCloseColumns) ...[
-                      const DataColumn(label: Text('Update')),
-                      const DataColumn(label: Text('Close A')),
-                      const DataColumn(label: Text('Close B')),
-                    ],
-                    const DataColumn(label: Text('Duration')),
-                    const DataColumn(label: Text('Interval')),
-                    const DataColumn(label: Text('Check')),
-                    const DataColumn(label: Text('Auto')),
-                    const DataColumn(label: Text('Last')),
-                    // Thunder/ignite icon (2026-10-17, per the user: "add a
-                    // thunder icon per each pair .. where user can ignite
-                    // any waiting pair") - see [AutoTradeRow.isIgnited]'s
-                    // own doc comment.
-                    const DataColumn(label: Text('Ignite')),
-                    const DataColumn(label: Text('')),
-                  ],
-                  rows: [
-                    for (final row in rows)
-                      DataRow(
-                        color: WidgetStateProperty.all(
-                          _copyGroupColor(row, isOriginal: row.ticket == minTicketBySymbol[row.mt5Symbol]),
-                        ),
-                        cells: [
-                          // 2026-10-18, per the user: "make sure that fav
-                          // pairs stay in fav even if they filled and
-                          // then running" - the underlying flag already
-                          // survives fill/close unconditionally (see
-                          // [FavoritePairStore]'s own doc comment, no
-                          // consume() exists), this star is just the
-                          // visual confirmation of that for a RUNNING
-                          // row - the waiting cards' own star icon isn't
-                          // reachable once a pair fills and leaves that
-                          // view.
-                          DataCell(
-                            Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                if (row.isFavorite) ...[
-                                  const Icon(Icons.star, size: 14, color: Colors.amber),
-                                  const SizedBox(width: 4),
-                                ],
-                                Text(row.mt5Symbol),
-                              ],
-                            ),
-                          ),
-                          // 2026-09-30, per the user: "add one column in
-                          // auto trade table for trade number 'trade id'.
-                          // this number also should be in history too" -
-                          // reuses the existing MT5 position/order ticket
-                          // (already the exact number History shows as
-                          // "Ticket {n}") rather than inventing a second,
-                          // parallel ID system.
-                          // 2026-09-30, per the user: "trade id should be
-                          // a selectable text" - SelectableText, not Text,
-                          // so the user can copy the real MT5 ticket.
-                          DataCell(SelectableText(row.ticket?.toString() ?? '—')),
-                          DataCell(
-                            Builder(
-                              builder: (context) {
-                                final (label, color) = _statusLabel(row, scheme);
-                                // 2026-10-04, per the user: "status text is
-                                // pushing all other next columns ... i need
-                                // status column to have wrapped text" - a
-                                // long broker rejection reason used to force
-                                // this ENTIRE column (and so the whole
-                                // table) as wide as its longest single-line
-                                // message. Capping the width and letting the
-                                // text wrap keeps the column's width fixed
-                                // regardless of message length.
-                                return Container(
-                                  width: 120,
-                                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                                  decoration: BoxDecoration(
-                                    color: color.withValues(alpha: 0.15),
-                                    borderRadius: BorderRadius.circular(6),
-                                  ),
-                                  child: Text(
-                                    label,
-                                    softWrap: true,
-                                    style: TextStyle(
-                                      color: color,
-                                      fontWeight: FontWeight.w600,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              // 2026-10-14, per the user: "in side column
-                              // .. replace sell with short, replace buy
-                              // with long" - display only, row.direction
-                              // itself stays 'buy'/'sell' for the color
-                              // check right below and every other call
-                              // site that reads it.
-                              switch (row.direction) {
-                                'sell' => 'SHORT',
-                                'buy' => 'LONG',
-                                _ => '—',
-                              },
-                              style: TextStyle(
-                                color: row.direction == 'sell'
-                                    ? Colors.red
-                                    : row.direction == 'buy'
-                                    ? Colors.green
-                                    : scheme.onSurfaceVariant,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              _fmtPrice(row.price),
-                              style: TextStyle(
-                                color: _isNearLiquidation(row) ? Colors.yellow.shade800 : null,
-                                fontWeight: _isNearLiquidation(row) ? FontWeight.w700 : null,
-                              ),
-                            ),
-                          ),
-                          DataCell(Text(_fmtPrice(row.stopLoss))),
-                          DataCell(Text(_fmtPrice(row.takeProfit))),
-                          DataCell(
-                            Text(
-                              row.profit == null
-                                  ? '—'
-                                  // 2026-10-13, per the user: value alongside
-                                  // percentage, e.g. "2.50 (132.78%)" - the
-                                  // percentage is P&L relative to the
-                                  // position's own notional value (see
-                                  // [AutoTradeRow.pnlPercent]'s own doc
-                                  // comment for why, not account margin),
-                                  // omitted entirely if it can't be computed.
-                                  : '${row.profit! >= 0 ? '+' : ''}${row.profit!.toStringAsFixed(2)}'
-                                        '${row.pnlPercent == null ? '' : ' (${row.pnlPercent! >= 0 ? '+' : ''}${row.pnlPercent!.toStringAsFixed(2)}%)'}',
-                              style: TextStyle(
-                                color: row.profit == null
-                                    ? scheme.onSurfaceVariant
-                                    : row.profit! >= 0
-                                    ? Colors.green
-                                    : Colors.red,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            // 2026-10-25, per the user - tap for the live P&L chart.
-                            onTap: row.ticket != null && row.profit != null
-                                ? () => showLivePnlDialog(context, row)
-                                : null,
-                          ),
-                          DataCell(
-                            Text(
-                              row.status == AutoTradeStatus.running ? '1:2000' : '—',
-                              style: TextStyle(color: scheme.onSurfaceVariant),
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              row.investmentValue == null
-                                  ? '—'
-                                  : '\$${row.investmentValue!.toStringAsFixed(2)}',
-                            ),
-                          ),
-                          DataCell(
-                            Text(
-                              row.extraMargin == null
-                                  ? '—'
-                                  : '\$${row.extraMargin!.toStringAsFixed(2)}',
-                              style: TextStyle(
-                                color: row.extraMargin == null ? scheme.onSurfaceVariant : null,
-                              ),
-                            ),
-                          ),
-                          DataCell(
-                            Tooltip(
-                              message: row.liquidationPrice == null
-                                  ? ''
-                                  : 'Estimate: price at which this position alone would reach '
-                                      "Equiti's 30% stop-out level, if every other position "
-                                      'stayed exactly as it is right now.',
-                              child: Text(
-                                row.liquidationPrice == null ? '—' : _fmtPrice(row.liquidationPrice),
-                                style: TextStyle(
-                                  color: row.liquidationPrice == null
-                                      ? scheme.onSurfaceVariant
-                                      : _isNearLiquidation(row)
-                                      ? Colors.yellow.shade800
-                                      : null,
-                                  fontWeight: _isNearLiquidation(row) ? FontWeight.w700 : null,
-                                ),
-                              ),
-                            ),
-                          ),
-                          DataCell(
-                            // 2026-10-13, per the user: "a column in auto
-                            // table to show current sll set... so user know
-                            // what is current sll setup without any
-                            // guessing" - the SL ratchet rung currently
-                            // locked for this position (§10.1), straight
-                            // from SlRatchetStore. Null doesn't mean "no SLL
-                            // set" for a RUNNING (filled) position though -
-                            // it means the ratchet hasn't crossed its first
-                            // rung (+5%) yet, so the SL is still whatever
-                            // baseline SL (§10.2) was set at ignition: the
-                            // flat -$5 baseline. Showing a bare "—"
-                            // there used to read as "nothing is protecting
-                            // this trade," which isn't true - per the user:
-                            // "i want sll column to reflect exactly sll not
-                            // a blank." But a WAITING pair (no fill yet - no
-                            // ticket, no SL set at all) genuinely has no SLL
-                            // to show - per the user: "if pair is not yet
-                            // filled then sll should be blank."
-                            Text(
-                              row.status != AutoTradeStatus.running
-                                  ? '—'
-                                  : row.slRatchetThreshold == null
-                                      // A copy's own baseline SL is -$1, not
-                                      // the normal -$5 (2026-10-16, per the
-                                      // user: "why in sll for copied trade
-                                      // is set -5$ ?? while it should be
-                                      // -1$????") - this label was hardcoded
-                                      // to the normal baseline everywhere,
-                                      // never accounting for a copy's own
-                                      // tighter one.
-                                      // v1.6.38, per the user: no -$5/-$1
-                                      // baseline - SLL only acts once a
-                                      // profit rung locks.
-                                      ? '—'
-                                      // Shows the LOCKED close level in $ (dollar
-                                      // ladder, v1.6.32): rung +$5 -> "+$2".
-                                      : '+\$${row.slRatchetThreshold == 5 ? 2 : row.slRatchetThreshold! - 5}',
-                              style: TextStyle(
-                                color: row.status == AutoTradeStatus.running &&
-                                        row.slRatchetThreshold != null
-                                    ? Colors.green
-                                    : scheme.onSurfaceVariant,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                          ),
-                          DataCell(
-                            Builder(
-                              builder: (context) {
-                                // Trade-size override (2026-10-03, per the
-                                // user): minus sits left of the number,
-                                // plus sits right of it; once a pending
-                                // change differs from what's currently in
-                                // play, the current number shows struck
-                                // through up top and the new value appears
-                                // as its own line BELOW this row, in
-                                // yellow. Fixed-width container (2026-10-03,
-                                // per the user: "column items should have
-                                // fixed width so everything is inlined
-                                // below each other") keeps the icons/number
-                                // pinned in the same x-position on every
-                                // row regardless of digit count or whether
-                                // a pending line is showing.
-                                // A Multiplier copy's own volume is always
-                                // fixed at 1 lot by design (2026-10-16, per
-                                // the user: "volum cant be adjusted" - a
-                                // copy's row previously still showed the
-                                // normal +/- stepper, which silently
-                                // adjusted the SYMBOL's shared next-open
-                                // volume from a row where that doesn't even
-                                // apply, since a copy's own size can never
-                                // actually change). Locked, no stepper.
-                                if (row.isCopy) {
-                                  return SizedBox(
-                                    width: 120,
-                                    child: Tooltip(
-                                      message: 'Copy volume is fixed at 1 lot',
-                                      child: Text(
-                                        _fmtVolume(row.currentVolume ?? 1),
-                                        textAlign: TextAlign.center,
-                                        style: TextStyle(
-                                          fontWeight: FontWeight.w600,
-                                          color: scheme.onSurfaceVariant,
-                                        ),
-                                      ),
-                                    ),
-                                  );
-                                }
-                                final effective = row.desiredVolume ?? row.currentVolume ?? row.volumeMin;
-                                final hasCurrent = row.currentVolume != null;
-                                final current = row.currentVolume ?? effective;
-                                final showPending = row.desiredVolume != null &&
-                                    hasCurrent &&
-                                    (row.desiredVolume! - row.currentVolume!).abs() > 1e-9;
-                                return SizedBox(
-                                  width: 120,
-                                  child: Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment: CrossAxisAlignment.center,
-                                    children: [
-                                      Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          IconButton(
-                                            icon: const Icon(Icons.remove_circle_outline, size: 16),
-                                            visualDensity: VisualDensity.compact,
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                                            tooltip: _volumeTooltip(row, 'Decrease next-open volume'),
-                                            onPressed: row.volumeLimitsKnown
-                                                ? () => widget.onChangeVolume(row.tvSymbol, _steppedVolume(row, effective, -1))
-                                                : null,
-                                          ),
-                                          SizedBox(
-                                            width: 46,
-                                            child: Text(
-                                              _fmtVolume(current),
-                                              textAlign: TextAlign.center,
-                                              style: TextStyle(
-                                                fontWeight: FontWeight.w600,
-                                                decoration: showPending ? TextDecoration.lineThrough : null,
-                                                color: showPending ? scheme.onSurfaceVariant : null,
-                                              ),
-                                            ),
-                                          ),
-                                          IconButton(
-                                            icon: const Icon(Icons.add_circle_outline, size: 16),
-                                            visualDensity: VisualDensity.compact,
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                                            tooltip: _volumeTooltip(row, 'Increase next-open volume'),
-                                            onPressed: row.volumeLimitsKnown
-                                                ? () => widget.onChangeVolume(row.tvSymbol, _steppedVolume(row, effective, 1))
-                                                : null,
-                                          ),
-                                        ],
-                                      ),
-                                      if (showPending)
-                                        Text(
-                                          _fmtVolume(effective),
-                                          style: const TextStyle(
-                                            color: Colors.amber,
-                                            fontWeight: FontWeight.w700,
-                                            fontSize: 12,
-                                          ),
-                                        ),
-                                    ],
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                          DataCell(
-                            // Blank for a non-running (waiting/not yet
-                            // filled) row (2026-10-15, per the user) - the
-                            // Multiplier only ever makes sense for an
-                            // actual running position to copy.
-                            row.status != AutoTradeStatus.running
-                                ? const Text('—')
-                                : Builder(
-                                    builder: (context) {
-                                      final canAddCopy =
-                                          row.profit != null && row.profit! > 0;
-                                      return Row(
-                                        mainAxisSize: MainAxisSize.min,
-                                        mainAxisAlignment: MainAxisAlignment.center,
-                                        children: [
-                                          Text(
-                                            '×${row.copyCount}',
-                                            style: TextStyle(
-                                              fontWeight: FontWeight.w600,
-                                              color: row.copyCount > 1 ? Colors.amber.shade800 : null,
-                                            ),
-                                          ),
-                                          IconButton(
-                                            icon: const Icon(Icons.add_circle_outline, size: 16),
-                                            visualDensity: VisualDensity.compact,
-                                            padding: EdgeInsets.zero,
-                                            constraints: const BoxConstraints(minWidth: 28, minHeight: 28),
-                                            color: canAddCopy ? scheme.primary : scheme.onSurfaceVariant.withValues(alpha: 0.3),
-                                            tooltip: canAddCopy
-                                                ? 'Open a copy trade (same direction/TP/volume, -\$1 SL)'
-                                                : 'Only available while this trade\'s P&L is positive',
-                                            onPressed: canAddCopy ? () => widget.onAddCopy(row.tvSymbol) : null,
-                                          ),
-                                        ],
-                                      );
-                                    },
-                                  ),
-                          ),
-                          DataCell(
-                            row.startTag == null && row.startCandidateTag != null
-                                // "Start candidate" (2026-10-03, per the
-                                // user: a waiting row with a real
-                                // triple-confirmed signal already mid-
-                                // "survive one extra candle" wait looked
-                                // identical to a genuinely idle one) -
-                                // orange like Close A/B, since it's not
-                                // confirmed yet, just progressing.
-                                ? Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        _fmtTag(row.startCandidateTag),
-                                        style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.orange),
-                                      ),
-                                      if (row.startCandidateEta != null)
-                                        Text(
-                                          'watching · ${_fmtTvTimeExact(row.startCandidateEta!)}',
-                                          style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-                                        ),
-                                    ],
-                                  )
-                                : Column(
-                                    mainAxisSize: MainAxisSize.min,
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(_fmtTag(row.startTag), style: const TextStyle(fontWeight: FontWeight.w600)),
-                                      if (row.startAt != null)
-                                        Text(
-                                          _fmtTvTime(row.startAt),
-                                          style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-                                        ),
-                                    ],
-                                  ),
-                          ),
-                          if (!widget.hideUpdateCloseColumns) ...[
-                            DataCell(
-                              Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(_fmtTag(row.updateTag), style: const TextStyle(fontWeight: FontWeight.w600)),
-                                  if (row.updateAt != null)
-                                    Text(
-                                      _fmtTvTime(row.updateAt),
-                                      style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-                                    ),
-                                ],
-                              ),
-                            ),
-                            DataCell(
-                              Column(
-                                mainAxisSize: MainAxisSize.min,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    _fmtTag(row.closeATag),
-                                    style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      color: row.closeATag != null ? Colors.orange : null,
-                                    ),
-                                  ),
-                                  if (row.closeAAt != null)
-                                    Text(
-                                      _fmtTvTime(row.closeAAt),
-                                      style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-                                    ),
-                                ],
-                              ),
-                            ),
-                            DataCell(
-                              row.closeBEta == null
-                                  ? const Text('—')
-                                  : Text(
-                                      'watching · ${_fmtTvTimeExact(row.closeBEta!)}',
-                                      style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
-                                    ),
-                            ),
+              // Cards instead of a table (2026-10-25, per the user). Running
+              // cards keep the table's own cycling sort; waiting cards go
+              // resting -> blocked -> waiting -> paused, then A-Z.
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  const gap = 12.0;
+                  int cols(double minWidth, int max) => (constraints.maxWidth / minWidth).floor().clamp(1, max);
+                  double width(int c) => (constraints.maxWidth - gap * (c - 1)) / c;
+                  final runWidth = width(cols(440, 3));
+                  final waitWidth = width(cols(290, 4));
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (rows.isNotEmpty)
+                        Wrap(
+                          spacing: gap,
+                          runSpacing: gap,
+                          children: [
+                            for (final row in rows) SizedBox(width: runWidth, child: _buildRunningCard(context, row)),
                           ],
-                          DataCell(Text(_fmtDuration(row.openedAt))),
-                          // Blank for a non-running row (2026-10-15, per
-                          // the user) - the interval/timeframe label only
-                          // means something once a trade is actually
-                          // running on it.
-                          DataCell(
-                            Text(
-                              row.status == AutoTradeStatus.running
-                                  ? AutoCategory.oneHour.label
-                                  : '—',
-                            ),
-                          ),
-                          DataCell(
-                            Builder(
-                              builder: (context) {
-                                final checked = row.status == AutoTradeStatus.running &&
-                                    isWithinCurrentCandle(row.lastCheckedAt);
-                                if (!checked) return const SizedBox.shrink();
-                                final cycle = currentAutoCycle();
-                                return Tooltip(
-                                  message: 'Checked in this candle\'s cycle $cycle',
-                                  child: Text(
-                                    '✓' * cycle,
-                                    style: const TextStyle(color: Colors.green, fontWeight: FontWeight.w700),
-                                  ),
-                                );
-                              },
-                            ),
-                          ),
-                          // Play/Pause button (2026-10-09, per the user:
-                          // "it is better to make it a play/pause button
-                          // rather than a toggle, so it can show exactly
-                          // the action it is doing" - replaces the former
-                          // Auto Switch, whose on/off state didn't convey
-                          // which action pressing it would take). Paused
-                          // (row.isPaused true) shows a Play icon - pressing
-                          // it resumes AND queues the instant re-check
-                          // (EngineControlRepository.setPaused); active
-                          // shows a Pause icon - pressing it pauses in
-                          // place, touching nothing about the pair's
-                          // current running/waiting state.
-                          DataCell(
-                            IconButton(
-                              icon: Icon(row.isPaused ? Icons.play_arrow : Icons.pause),
-                              color: row.isPaused ? Colors.green : scheme.onSurfaceVariant,
-                              tooltip: row.isPaused
-                                  ? 'Resume — engine will act on this pair again'
-                                  : 'Pause — engine will take no action on this pair',
-                              onPressed: () => widget.onTogglePause(row.tvSymbol, !row.isPaused),
-                            ),
-                          ),
-                          DataCell(
-                            Switch(
-                              value: row.isLastTagged,
-                              onChanged: (on) => widget.onToggleLast(row.tvSymbol, on),
-                            ),
-                          ),
-                          // Thunder/ignite icon (2026-10-17, per the user):
-                          // enabled only for a waiting pair (no running
-                          // position), per the user's own follow-up: "ignite
-                          // icon is active only for waiting pairs. disabled
-                          // for running pairs." Lit amber once armed so the
-                          // user can see which pairs are currently bypassing
-                          // margin level for their next signal.
-                          DataCell(
-                            IconButton(
-                              icon: Icon(row.isIgnited ? Icons.bolt : Icons.bolt_outlined),
-                              color: row.status == AutoTradeStatus.running
-                                  ? scheme.onSurfaceVariant.withValues(alpha: 0.3)
-                                  : row.isIgnited
-                                  ? Colors.amber
-                                  : scheme.onSurfaceVariant,
-                              tooltip: row.status == AutoTradeStatus.running
-                                  ? 'Only available for a waiting pair'
-                                  : row.isIgnited
-                                  ? 'Ignited - will open regardless of margin level once triggered. Click to cancel.'
-                                  : 'Ignite - bypass margin level for this pair\'s next signal',
-                              onPressed: row.status == AutoTradeStatus.running
-                                  ? null
-                                  : () => widget.onIgnite(row.tvSymbol),
-                            ),
-                          ),
-                          DataCell(
-                            IconButton(
-                              icon: const Icon(Icons.power_settings_new),
-                              // 2026-09-30, per the user: "pending orders,
-                              // waiting trades should have active power
-                              // button too not disabled one" - the button
-                              // was never actually disabled (onPressed is
-                              // always set below), but the muted grey
-                              // color for non-running rows read as
-                              // disabled. Orange now marks it as a live,
-                              // pressable action for those rows too - red
-                              // stays reserved for "this will close a real
-                              // running trade."
-                              // 2026-09-30 (revised same day): the action
-                              // is identical to the running-row case
-                              // (cancel/close, then retire only if Last is
-                              // on) - only the color differs, to
-                              // distinguish "closing a live trade" (red)
-                              // from "cancelling a pending/waiting
-                              // attempt" (orange).
-                              color: row.status == AutoTradeStatus.running ? Colors.red : Colors.orange,
-                              tooltip: row.status == AutoTradeStatus.running
-                                  ? 'Terminate this pair\'s trade'
-                                  : 'Cancel this pair\'s pending attempt',
-                              onPressed: () => row.status == AutoTradeStatus.running
-                                  ? _confirmTerminate(context, row)
-                                  : widget.onTerminate(row.tvSymbol),
-                            ),
-                          ),
-                        ],
-                      ),
-                  ],
-                ),
+                        ),
+                      if (waitingRows.isNotEmpty) ...[
+                        const SizedBox(height: 18),
+                        Text('Waiting (unfilled)', style: Theme.of(context).textTheme.titleSmall),
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: gap,
+                          runSpacing: gap,
+                          children: [
+                            for (final row in waitingRows) SizedBox(width: waitWidth, child: _buildWaitingCard(context, row)),
+                          ],
+                        ),
+                      ],
+                    ],
+                  );
+                },
               ),
-            if (waitingRows.isNotEmpty) ...[
-              const SizedBox(height: 16),
-              Text('Waiting (unfilled)', style: Theme.of(context).textTheme.titleSmall),
-              const SizedBox(height: 8),
-              Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                children: [
-                  for (final row in waitingRows) _buildWaitingCard(context, row),
-                ],
-              ),
-            ],
           ],
         ),
       ),
     );
+  }
+}
+
+/// The live P&L chart inside a running card: the engine's recorded series
+/// (re-read every 15s) plus the card's own live P&L as the latest point, so
+/// the line moves with every Dashboard poll (2026-10-25, per the user).
+class _CardPnlChart extends StatefulWidget {
+  const _CardPnlChart({required this.ticket, required this.profit, required this.percent});
+
+  final int? ticket;
+  final double? profit;
+  final double? percent;
+
+  @override
+  State<_CardPnlChart> createState() => _CardPnlChartState();
+}
+
+class _CardPnlChartState extends State<_CardPnlChart> {
+  final PnlSeriesStore _store = PnlSeriesStore(CoreStorage.instance);
+  List<PnlPoint> _recorded = const [];
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+    _timer = Timer.periodic(const Duration(seconds: 15), (_) => _reload());
+  }
+
+  void _reload() {
+    final ticket = widget.ticket;
+    if (ticket == null) return;
+    final recorded = _store.read(ticket);
+    if (mounted) setState(() => _recorded = recorded);
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final points = [..._recorded];
+    final now = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
+    if (widget.profit != null && (points.isEmpty || now > points.last.time)) {
+      points.add(PnlPoint(time: now, profit: widget.profit!, percent: widget.percent));
+    }
+    return PnlChart(points: points, height: 110);
   }
 }
