@@ -631,7 +631,8 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
         ? '—'
         : '+\$${row.slRatchetThreshold == 5 ? 2 : row.slRatchetThreshold! - 5}';
     final checked = isWithinCurrentCandle(row.lastCheckedAt);
-    return Container(
+    return _CardShell(
+      paused: row.isPaused,
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 8),
       decoration: _cardDecoration(scheme, tint),
       child: Column(
@@ -639,23 +640,29 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
         children: [
           Row(
             children: [
-              if (row.isFavorite) ...[
-                const Icon(Icons.star, size: 16, color: Colors.amber),
-                const SizedBox(width: 4),
-              ],
-              Flexible(
-                child: Text(
-                  row.mt5Symbol,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+              // Pair name is never cut off: when space runs out, the badges
+              // wrap to a second line instead (2026-10-25, LAST badge added).
+              Expanded(
+                child: Wrap(
+                  spacing: 4,
+                  runSpacing: 4,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [
+                    if (row.isFavorite) const Icon(Icons.star, size: 16, color: Colors.amber),
+                    Padding(
+                      padding: const EdgeInsets.only(right: 4),
+                      child: Text(
+                        row.mt5Symbol,
+                        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15),
+                      ),
+                    ),
+                    _badge(side.$1, side.$2),
+                    _badge('1:2000', scheme.outline),
+                    if (row.isLastTagged) _badge('LAST', Colors.deepOrange),
+                    if (row.isCopy) _badge('copy', Colors.amber.shade800),
+                  ],
                 ),
               ),
-              const SizedBox(width: 8),
-              _badge(side.$1, side.$2),
-              const SizedBox(width: 4),
-              _badge('1:2000', scheme.outline),
-              if (row.isCopy) ...[const SizedBox(width: 4), _badge('copy', Colors.amber.shade800)],
-              const Spacer(),
               if (checked)
                 Tooltip(
                   message: 'Checked in this candle\'s cycle ${currentAutoCycle()}',
@@ -730,9 +737,9 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
               ),
             ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(height: 14),
           _CardPnlChart(ticket: row.ticket, profit: row.profit, percent: row.pnlPercent),
-          const SizedBox(height: 8),
+          const SizedBox(height: 14),
           // Three equal columns, divided (2026-10-25, per the user: "those 3
           // columns should be separated equally"): entry/now + liquidation,
           // SL/TP + extra margin, SLL lock + volume.
@@ -833,24 +840,30 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   /// user: the -/+ moved to the more menu, "still auto card need to show
   /// current volum"): the running size, the next-open size if it differs,
   /// and what that next order will really send.
+  /// Per the user (2026-10-25): "once volum updated ... i dont need many
+  /// text... i want current volum with centrlined and new volum ... extra
+  /// info is not required" - the running size struck through, then the new
+  /// size, nothing else.
   Widget _volumeReadout(AutoTradeRow row, ColorScheme scheme) {
     final current = row.currentVolume ?? row.desiredVolume ?? row.volumeMin;
     final next = row.desiredVolume;
-    final showNext = !row.isCopy && next != null && (next - current).abs() > 1e-9;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
+    final changed = !row.isCopy && next != null && (next - current).abs() > 1e-9;
+    return Wrap(
+      spacing: 6,
+      crossAxisAlignment: WrapCrossAlignment.center,
       children: [
-        Text(_fmtVolume(current), style: const TextStyle(fontSize: 13)),
-        if (showNext)
-          Text(
-            'next open ${_fmtVolume(next)}',
-            style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 11),
+        Text(
+          _fmtVolume(current),
+          style: TextStyle(
+            fontSize: 13,
+            decoration: changed ? TextDecoration.lineThrough : null,
+            color: changed ? scheme.onSurfaceVariant : null,
           ),
-        if (!row.isCopy && row.sendVolume != null && (row.sendVolume! - (next ?? current)).abs() > 1e-9)
+        ),
+        if (changed)
           Text(
-            'sends ${_fmtVolume(row.sendVolume!)}${row.sendWhy == null ? '' : ' (${row.sendWhy})'}',
-            style: const TextStyle(color: Colors.orange, fontWeight: FontWeight.w700, fontSize: 11),
+            _fmtVolume(next),
+            style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 13),
           ),
       ],
     );
@@ -863,11 +876,14 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   /// update in place; the other items act and close it.
   Widget _runningMoreMenu(BuildContext context, AutoTradeRow row, ColorScheme scheme) {
     final canAddCopy = row.profit != null && row.profit! > 0;
+    // `child`, not `icon`: an icon button adds its own padding, which pushed
+    // the icon further from the card edge than the title is (2026-10-25,
+    // per the user: "the more icon should have same padding as title from
+    // the edge of the card").
     return PopupMenuButton<String>(
-      icon: Icon(Icons.more_vert, size: 20, color: scheme.onSurfaceVariant),
       tooltip: 'More',
-      padding: EdgeInsets.zero,
       constraints: const BoxConstraints(minWidth: 240),
+      child: Icon(Icons.more_vert, size: 20, color: scheme.onSurfaceVariant),
       onSelected: (value) {
         switch (value) {
           case 'pause':
@@ -982,7 +998,8 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
         : 'No open signal yet.';
     final signalTag = row.startTag ?? row.startCandidateTag;
     final signalTime = row.startTag != null ? _fmtTvTime(row.startAt) : '';
-    return Container(
+    return _CardShell(
+      paused: row.isPaused,
       height: 300,
       padding: const EdgeInsets.fromLTRB(12, 10, 12, 6),
       decoration: _cardDecoration(scheme, tint),
@@ -999,6 +1016,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                   style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
                 ),
               ),
+              if (row.isLastTagged) ...[_badge('LAST', Colors.deepOrange), const SizedBox(width: 4)],
               _badge(state, stateColor),
               IconButton(
                 icon: Icon(row.isFavorite ? Icons.star : Icons.star_border, size: 18),
@@ -1345,7 +1363,7 @@ class _CardPnlChartState extends State<_CardPnlChart> {
     if (widget.profit != null && (points.isEmpty || now > points.last.time)) {
       points.add(PnlPoint(time: now, profit: widget.profit!, percent: widget.percent));
     }
-    return PnlChart(points: points, height: 110);
+    return PnlChart(points: points, height: 170);
   }
 }
 
@@ -1404,6 +1422,89 @@ class _MenuVolumeStepperState extends State<_MenuVolumeStepper> {
           onPressed: enabled ? () => _bump(1) : null,
         ),
       ],
+    );
+  }
+}
+
+/// A card's frame. While its pair is paused the card blinks slowly between
+/// yellow and neutral (2026-10-25, per the user: "once user activate pause
+/// .. card color will go blinking in slow ... yellow and neutral").
+class _CardShell extends StatefulWidget {
+  const _CardShell({
+    required this.paused,
+    required this.padding,
+    required this.decoration,
+    required this.child,
+    this.height,
+  });
+
+  final bool paused;
+  final EdgeInsets padding;
+  final BoxDecoration decoration;
+  final Widget child;
+  final double? height;
+
+  @override
+  State<_CardShell> createState() => _CardShellState();
+}
+
+class _CardShellState extends State<_CardShell> with SingleTickerProviderStateMixin {
+  late final AnimationController _blink = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.paused) _blink.repeat(reverse: true);
+  }
+
+  @override
+  void didUpdateWidget(covariant _CardShell old) {
+    super.didUpdateWidget(old);
+    if (widget.paused && !_blink.isAnimating) {
+      _blink.repeat(reverse: true);
+    } else if (!widget.paused && _blink.isAnimating) {
+      _blink
+        ..stop()
+        ..value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _blink.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.paused) {
+      return Container(
+        height: widget.height,
+        padding: widget.padding,
+        decoration: widget.decoration,
+        child: widget.child,
+      );
+    }
+    final scheme = Theme.of(context).colorScheme;
+    return AnimatedBuilder(
+      animation: _blink,
+      builder: (context, child) {
+        final t = Curves.easeInOut.transform(_blink.value);
+        return Container(
+          height: widget.height,
+          padding: widget.padding,
+          decoration: BoxDecoration(
+            color: Color.lerp(scheme.surfaceContainerLow, Colors.amber.withValues(alpha: 0.22), t),
+            border: Border.all(color: Color.lerp(scheme.outlineVariant, Colors.amber, t)!, width: 1.4),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: child,
+        );
+      },
+      child: widget.child,
     );
   }
 }

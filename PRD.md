@@ -1980,6 +1980,22 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.48+96)** — **Running card polish**, per the user: (1)
+  "make the card height more so there will be more area for chart. keep
+  spacing between chart and top and bottom" - chart 110 -> 170px, 14px above
+  and below. (2) "the more icon should have same padding as title from the
+  edge of the card. and then next to it the check mark" - the menu uses a
+  plain icon child (an icon button added its own padding), so its inset
+  matches the title's; check marks sit left of it. (3) "once volum updated
+  ... i want current volum with centrlined and new volum ... extra info is
+  not required" - Volume shows the running size struck through and the new
+  size, nothing else ("next open"/"sends" text removed from the running
+  card). (4) "once user activate pause .. card color will go blinking in
+  slow ... yellow and neutral" - paused running and waiting cards blink
+  yellow/neutral every 1.4s. (5) "once last toggle is on, then last tag
+  should show after 1:2000" - LAST badge (also on waiting cards). The pair
+  name is never cut off: badges wrap to a second line when space runs out.
+
 - **2026-10-25 (v1.6.47+95)** — **Running cards: 4 per row, controls in a more
   menu**, per the user: (1) "i want to have 4 per row" - up to 4 running cards
   per row (min ~330px each). (2) "more icon at the top right ... (pause, last

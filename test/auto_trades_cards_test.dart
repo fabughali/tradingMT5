@@ -119,6 +119,56 @@ void main() {
     expect(find.text('Update '), findsWidgets);
   });
 
+  testWidgets('v1.6.48 card details: LAST badge, volume readout, menu icon inset, paused blink', (tester) async {
+    tester.view.physicalSize = const Size(1500, 3000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+    final base = _running('ETHUSD', 3.42);
+    final row = AutoTradeRow(
+      tvSymbol: base.tvSymbol,
+      mt5Symbol: base.mt5Symbol,
+      status: base.status,
+      isAutoManaged: true,
+      isPaused: true,
+      isLastTagged: true,
+      direction: 'buy',
+      profit: 3.42,
+      ticket: 11,
+      currentVolume: 0.4,
+      desiredVolume: 0.5,
+      sendVolume: 0.3,
+      sendWhy: '60% at 250% margin',
+      volumeMin: 0.01,
+      volumeStep: 0.01,
+      volumeMax: 100,
+    );
+    await tester.pumpWidget(_host([row]));
+    // LAST badge after 1:2000.
+    expect(find.text('LAST'), findsOneWidget);
+    final lastAt = tester.getTopLeft(find.text('LAST'));
+    final levAt = tester.getTopLeft(find.text('1:2000'));
+    expect(lastAt.dy > levAt.dy + 1 || lastAt.dx > levAt.dx, isTrue); // right of it, or wrapped below
+    // Volume: running size struck through + new size, no extra text.
+    final old = tester.widget<Text>(find.text('0.4'));
+    expect(old.style?.decoration, TextDecoration.lineThrough);
+    expect(find.text('0.5'), findsOneWidget);
+    expect(find.textContaining('next open'), findsNothing);
+    expect(find.textContaining('sends'), findsNothing);
+    // More icon sits as far from the right edge as the title from the left.
+    final card = tester.getRect(find.ancestor(of: find.text('ETHUSD.lv'), matching: find.byType(Container)).first);
+    final titleInset = tester.getTopLeft(find.text('ETHUSD.lv')).dx - card.left;
+    final iconInset = card.right - tester.getRect(find.byIcon(Icons.more_vert)).right;
+    expect((iconInset - titleInset).abs(), lessThan(3));
+    // Paused: the card's colour changes over time (slow blink).
+    Color? colourNow() => (tester
+                .widget<Container>(find.ancestor(of: find.text('ETHUSD.lv'), matching: find.byType(Container)).first)
+                .decoration as BoxDecoration?)
+            ?.color;
+    final c0 = colourNow();
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(colourNow(), isNot(c0));
+  });
+
   testWidgets('running card controls live in the more menu; volume steps in place', (tester) async {
     tester.view.physicalSize = const Size(1500, 3000);
     tester.view.devicePixelRatio = 1.0;
