@@ -257,6 +257,10 @@ class EngineService {
   late final TradeSignalTraceStore signalTrace;
   late final PnlSeriesStore pnlSeries;
 
+  /// Tickets this engine has closed, with when - an auto copy must never be
+  /// made of one (2026-10-25). Pruned after a day.
+  final Map<int, DateTime> _closedTickets = {};
+
   /// Tickets the retroactive direction audit has already checked since the
   /// last time it was forced to re-run - in-memory only, see the audit's
   /// own doc comment in [_checkOneSymbol] for why persistence isn't needed.
@@ -4963,6 +4967,9 @@ class EngineService {
   }) async {
     final ticket = _parseTicket(position['position_id'])!;
     logger.log('$mt5Symbol ($category): closing ticket=$ticket ($stopReason).');
+    _closedTickets
+      ..removeWhere((_, at) => DateTime.now().difference(at) > const Duration(days: 1))
+      ..[ticket] = DateTime.now();
     // Account snapshot taken BEFORE the close, while this position was
     // still genuinely running (2026-10-15, per the user: "all details
     // required in history") - same semantics as the Dashboard's own live
@@ -5633,6 +5640,17 @@ class EngineService {
         }
       }
       if (original == null || lowestTicket == null) continue;
+      // Never copy a trade the app has just closed or is about to close
+      // (2026-10-25, found live: the user terminated ETH 1662352576 and,
+      // 0.3s later in the same cycle, this scan still saw it in MT5's
+      // position list at +$7.04 - the close freed a slot under the
+      // position cap, so a 1-lot copy of the CLOSED trade was placed).
+      final matchesForGuard = _loadSymbolsFresh().where((m) => m.mt5Symbol.toUpperCase() == entry.key);
+      final tvForGuard = matchesForGuard.isEmpty ? null : matchesForGuard.first.tradingViewSymbol.toUpperCase();
+      if (_closedTickets.containsKey(lowestTicket) ||
+          (tvForGuard != null && terminateRequests.loadPending().contains(tvForGuard))) {
+        continue;
+      }
 
       final profit = (original['profit'] as num?)?.toDouble() ?? 0;
       final targetMilestone = profit > 0 ? (profit / 5).floor() : 0;
@@ -5650,6 +5668,15 @@ class EngineService {
       while (consumed < targetMilestone) {
         final freshCap = RiskGate.positionCapFor(risk.marginLevel);
         if (freshCap == 0) break;
+        // Re-confirm the original is still open right before copying it.
+        final stillOpen = ((await mt5.getOpenPositions(symbol: mapping.mt5Symbol))['positions'] as List? ?? const [])
+            .any((p) => _parseTicket((p as Map<String, dynamic>)['position_id']) == lowestTicket);
+        if (!stillOpen || _closedTickets.containsKey(lowestTicket)) {
+          logger.log(
+            '${mapping.mt5Symbol} ($category): auto-copy skipped - ticket=$lowestTicket is no longer open.',
+          );
+          break;
+        }
         final result = await _openCopyPosition(category, mapping, original, reasonLabel: 'auto +\$5 milestone');
         if (!result.success) break;
         consumed++;

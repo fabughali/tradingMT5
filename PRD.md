@@ -1980,6 +1980,20 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.49+97)** — **No auto-copy of a trade being closed;
+  paused cards breathe**. (1) The user: "i ignited eth at vol=4 ... it was
+  v=1 in mt5 ... why". Not the ignite: at 17:08:58.126Z the user's Terminate
+  closed ETH 1662352576 (+$7.04), and 0.3s later, in the same cycle, the +$5
+  milestone auto-copy scan still saw it in MT5's position list - its +$5
+  copy had been waiting since 16:55Z behind the position cap, and the BTC +
+  ETH closes freed the slot - so a 1-lot COPY (copies are fixed at 1 lot)
+  was placed (order 1662353234, cancelled by the user 17:15:08Z, never
+  filled). Now: tickets the engine closed are remembered for a day and never
+  copied, a pair with a pending terminate is skipped, and the original is
+  re-confirmed open in MT5 right before any auto copy. (2) "the pause
+  blinking color should be show like breathing" - 2.5s each way on a sine
+  curve instead of a 1.4s blink.
+
 - **2026-10-25 (v1.6.48+96)** — **Running card polish**, per the user: (1)
   "make the card height more so there will be more area for chart. keep
   spacing between chart and top and bottom" - chart 110 -> 170px, 14px above

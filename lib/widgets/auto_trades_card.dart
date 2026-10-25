@@ -1426,9 +1426,9 @@ class _MenuVolumeStepperState extends State<_MenuVolumeStepper> {
   }
 }
 
-/// A card's frame. While its pair is paused the card blinks slowly between
-/// yellow and neutral (2026-10-25, per the user: "once user activate pause
-/// .. card color will go blinking in slow ... yellow and neutral").
+/// A card's frame. While its pair is paused the card "breathes" - a slow,
+/// smooth sine fade between neutral and yellow, 2.5s each way (2026-10-25,
+/// per the user: "the pause blinking color should be show like breathing").
 class _CardShell extends StatefulWidget {
   const _CardShell({
     required this.paused,
@@ -1451,7 +1451,7 @@ class _CardShell extends StatefulWidget {
 class _CardShellState extends State<_CardShell> with SingleTickerProviderStateMixin {
   late final AnimationController _blink = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 1400),
+    duration: const Duration(milliseconds: 2500),
   );
 
   @override
@@ -1492,7 +1492,7 @@ class _CardShellState extends State<_CardShell> with SingleTickerProviderStateMi
     return AnimatedBuilder(
       animation: _blink,
       builder: (context, child) {
-        final t = Curves.easeInOut.transform(_blink.value);
+        final t = Curves.easeInOutSine.transform(_blink.value);
         return Container(
           height: widget.height,
           padding: widget.padding,
