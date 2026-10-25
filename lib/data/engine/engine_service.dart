@@ -618,30 +618,13 @@ class EngineService {
       // 60/40 SL/TP still sit on MT5 as the one remaining broker-side
       // backstop if the engine itself is down.
       final existingThreshold = slRatchet.highestThreshold(ticket);
-      if (existingThreshold == null) {
-        if (profit <= -5) {
-          try {
-            await _closePosition(
-              AutoCategory.oneHour,
-              tvSymbol,
-              mt5Symbol,
-              position,
-              stopReason: 'sll_baseline',
-              detail: 'SLL: flat -\$5 baseline reached (live P&L \$${profit.toStringAsFixed(2)}).',
-            );
-            logger.log(
-              'SLL: $tvSymbol ($mt5Symbol) closed at the -\$5 baseline '
-              '(P&L \$${profit.toStringAsFixed(2)}).',
-            );
-          } catch (e) {
-            logger.log(
-              'SLL: failed to close $tvSymbol ($mt5Symbol) at the -\$5 baseline: $e',
-              level: 'ERROR',
-            );
-          }
-          continue;
-        }
-      } else {
+      // 2026-10-25 (v1.6.38), per the user: "sll action only for positive
+      // p&l ... for running and for copied trades, sll has no effect once
+      // p&l is zero or less". The flat -$5 baseline close that used to sit
+      // here is REMOVED: before a profit rung locks, SLL does nothing at
+      // all. A losing trade now exits only on its worm10 signal, the wide
+      // broker-side 60/40 SL, or the broker's own margin stop-out.
+      if (existingThreshold != null) {
         final lockDollars = slRatioForThreshold(existingThreshold);
         if (profit <= lockDollars) {
           try {
@@ -1511,11 +1494,8 @@ class EngineService {
       // A copy's own baseline SL is -$1, not the normal -$5 (2026-10-16,
       // per the user) - see the Dashboard SLL column's own matching fix
       // for the full reasoning.
-      final sllAtTermination = ratchetThreshold != null
-          ? _sllLockText(ratchetThreshold)
-          : copyPositions.isCopy(ticket)
-          ? '-\$1'
-          : '-\$5';
+      // No -$5/-$1 baseline since v1.6.38 - an unlocked trade had no SLL.
+      final sllAtTermination = ratchetThreshold != null ? _sllLockText(ratchetThreshold) : 'none';
       storage.appendJsonl(
         storage.botHistoryFile,
         BotHistoryEntry(
@@ -4308,42 +4288,8 @@ class EngineService {
     );
   }
 
-  /// A flat -$5 stop-loss (2026-10-13, per the user, originally "whichever
-  /// occurs first" between -10%/-$10, later tightened to -5%/-$5 the same
-  /// way - simplified 2026-10-14, per the user, to a pure dollar cap: "if
-  /// pair is =0% or less... make it -5$ only sl" / "so the app only
-  /// triggers stop loss if P&L reaches -$5" - dropped the percent
-  /// comparison entirely, since for a large position 5% of notional could
-  /// be far more than $5, which the user confirmed should NOT be allowed
-  /// to run that far ("still stop at -$5 for large positions too"). Fills
-  /// in the SL ratchet ladder's own "0% or below" row (§10.1) - replaces
-  /// the 60/40 liquidation-avoidance model's own [_computeTargetLevels]
-  /// `sl` (confirmed live this is typically MUCH wider, e.g. entry
-  /// 1.7784/SL 2.6313 on a real SELL, a ~48% distance) - the ratchet
-  /// tightens FROM here the moment P&L turns positive, this is the worst
-  /// case below that. Needs [volume] (bigger volume reaches a flat $5 loss
-  /// on a smaller price move) - called separately from
-  /// [_computeTargetLevels] because the real volume for a fresh open isn't
-  /// known until after the step-down retry ladder picks it.
-  double _baselineStopLoss({
-    required double entry,
-    required TradeDirection direction,
-    required double volume,
-    required double contractSize,
-    required int digits,
-    // 2026-10-15, per the user's Multiplier-column spec: a copy trade
-    // (only ever opened while the original is already profitable) gets a
-    // tighter -$1 cap instead of the normal -$5 - every existing call
-    // site keeps the original -$5 behavior unchanged by not passing this.
-    double dollarCap = 5,
-  }) {
-    final notionalPerUnit = volume * contractSize;
-    final dollarDistance = notionalPerUnit > 0 ? dollarCap / notionalPerUnit : 0.0;
-    final dollarSl = direction == TradeDirection.long
-        ? entry - dollarDistance
-        : entry + dollarDistance;
-    return _roundToDigits(dollarSl, digits);
-  }
+  // _baselineStopLoss (the flat -$5 / copy -$1 stop-loss price) was removed
+  // 2026-10-25 (v1.6.38), per the user: SLL no longer acts at P&L <= 0.
 
   /// Returns true only on a genuine success (position opened directly, or
   /// a pending-fallback order triggered within the poll window) - every
@@ -4732,11 +4678,8 @@ class EngineService {
     // matching line (2026-10-16, per the user) - defensive here, since
     // [_findAppPosition] now always prefers the original over a copy, so
     // this path shouldn't normally ever see a copy's own ticket.
-    final sllAtTermination = ratchetThreshold != null
-        ? _sllLockText(ratchetThreshold)
-        : copyPositions.isCopy(ticket)
-        ? '-\$1'
-        : '-\$5';
+    // No -$5/-$1 baseline since v1.6.38 - an unlocked trade had no SLL.
+    final sllAtTermination = ratchetThreshold != null ? _sllLockText(ratchetThreshold) : 'none';
     // Same Equiti-30%-Stop-Out-Level estimate as the Dashboard's own live
     // Liquidation column (see [AutoTradeRow.liquidationPrice]'s doc
     // comment for the exact formula) - computed here from
@@ -4879,7 +4822,7 @@ class EngineService {
         stopReason: 'parent_closed',
         detail: 'Closed because its parent trade closed.',
         contractSize: contractSize,
-        sllAtTermination: '-\$1',
+        sllAtTermination: 'none',
         extraMargin: accountSnapshotBeforeClose?.marginFree,
         liquidationPrice: liquidationPriceForHistory,
       );
@@ -5112,37 +5055,20 @@ class EngineService {
       logger.log('$mt5Symbol ($category): $reasonLabel copy blocked - $reason', level: 'WARNING');
       return (success: false, failureReason: reason);
     }
-    final copyPoint = (info['point'] as num?)?.toDouble() ?? 0.0;
-    final copyStopsLevel = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
-    if (!copyStopLossSurvives(
-      bid: bid,
-      ask: ask,
-      volume: copyVolume,
-      contractSize: contractSize,
-      point: copyPoint,
-      stopsLevelPoints: copyStopsLevel,
-    )) {
-      final reason = 'A 1-lot copy\'s -\$1 stop-loss would sit inside $mt5Symbol\'s spread/minimum '
-          'stop distance and close immediately at a bigger loss - copy refused.';
-      logger.log('$mt5Symbol ($category): $reasonLabel copy blocked - $reason', level: 'WARNING');
-      return (success: false, failureReason: reason);
-    }
     final entry = direction == TradeDirection.long ? ask : bid;
 
-    final copySl = _baselineStopLoss(
-      entry: entry,
-      direction: direction,
-      volume: copyVolume,
-      contractSize: contractSize,
-      digits: digits,
-      dollarCap: 1,
-    );
+    // 2026-10-25 (v1.6.38), per the user: no -$1 stop-loss on copies any
+    // more ("for ... copied trades, sll has no effect once p&l is zero or
+    // less"). The copy is sent with NO broker SL; it closes with its parent
+    // or at its TP. (The -$1-survivability guard went with it - nothing
+    // left to survive. The $ spread guard above still applies.)
+    const double? copySl = null;
     final copyTp = _roundToDigits(existingTp, digits);
     final profit = (existing['profit'] as num?)?.toDouble() ?? 0;
 
     logger.log(
       '$mt5Symbol ($category): opening $reasonLabel COPY ${direction == TradeDirection.long ? 'BUY' : 'SELL'} '
-      'vol=$copyVolume entry=$entry sl=$copySl (-\$1) tp=$copyTp (copied from running '
+      'vol=$copyVolume entry=$entry sl=none tp=$copyTp (copied from running '
       'ticket=${existing['position_id']}, profit was +${profit.toStringAsFixed(2)}).',
     );
     var result = await mt5.sendMarketOrder(

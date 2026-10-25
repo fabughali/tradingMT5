@@ -155,8 +155,9 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Key architecture decisions already made (do not re-litigate without reason)
 
-- **SLL = dollar ladder (v1.6.32):** -$5 baseline; +$5 locks +$2, +$10 -> +$5, +$15 ->
-  +$10 ... Sweep is sequential with the main loop on purpose (it closes positions);
+- **SLL = dollar ladder, profit-only (v1.6.32 / v1.6.38):** NO action at P&L <= 0 (the
+  -$5 baseline and the copies' -$1 SL were removed by the user's choice on 2026-10-25);
+  +$5 locks +$2, +$10 -> +$5, +$15 -> +$10 ... Sweep is sequential with the main loop on purpose (it closes positions);
   verify cadence from the `SLL heartbeat` log line, don't assume it.
 - **Spread guard (v1.6.32):** no open if spread cost at the sent volume > $1; 1-lot copies
   refused when the -$1 SL can't clear spread + stops level. Limits are Claude's

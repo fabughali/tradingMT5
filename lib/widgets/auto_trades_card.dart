@@ -208,7 +208,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   void _showSllInfoDialog(BuildContext context) {
     // Dollar ladder since v1.6.32 (2026-10-20, per the user).
     const rows = [
-      ('below +\$5', '-\$5 flat'),
+      ('below +\$5', 'no SLL action (v1.6.38)'),
       ('+\$5', '+\$2'),
       ('+\$10', '+\$5'),
       ('+\$15', '+\$10'),
@@ -1178,7 +1178,10 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                                       // to the normal baseline everywhere,
                                       // never accounting for a copy's own
                                       // tighter one.
-                                      ? (row.isCopy ? '-\$1' : '-\$5')
+                                      // v1.6.38, per the user: no -$5/-$1
+                                      // baseline - SLL only acts once a
+                                      // profit rung locks.
+                                      ? '—'
                                       // Shows the LOCKED close level in $ (dollar
                                       // ladder, v1.6.32): rung +$5 -> "+$2".
                                       : '+\$${row.slRatchetThreshold == 5 ? 2 : row.slRatchetThreshold! - 5}',

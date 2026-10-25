@@ -1980,6 +1980,20 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-25 (v1.6.38+86)** — **SLL only acts on positive P&L**, per the
+  user ("whenever p&l is less than 0% sll has no action. sll action only for
+  positive p&l. so for running and for copied trades, sll has no effect once
+  p&l is zero or less" -> "start implementing"). Removed: the flat -$5
+  baseline close for running trades (since 10-21 it had closed 4 trades for
+  -$17.88) and the broker-side -$1 stop-loss on newly opened copies (copies
+  now open with NO SL; they close with their parent or at TP; already-open
+  copies keep whatever SL they were opened with). The +$5->+$2, +$10->+$5,
+  ... profit locks are unchanged. A losing trade now exits only on its
+  worm10 signal, the wide 60/40 broker SL, or the broker's 30% margin
+  stop-out - Claude flagged that last one as the real backstop on a ~$34
+  account before the user decided. Dashboard SLL shows "—" and History
+  "SLL: none" when no lock is active. 97/97 tests pass.
+
 - **2026-10-25 (v1.6.37+85)** — (1) **Pending orders cancelled below 200%
   margin**, per the user ("whenever the margin level is less than 200 ...
   the app need to close active untriggered trades"): was only at the 150%
