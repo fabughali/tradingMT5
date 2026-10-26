@@ -136,7 +136,18 @@ Future<void> _runEngine() async {
     }
   });
 
-  await engine.run();
+  // If run() itself ever fails, log why and EXIT so the GUI watchdog
+  // restarts a working engine - never leave a process alive whose main loop
+  // has ended (it would look "running" to the watchdog while doing no
+  // trading checks and no SLL at all).
+  try {
+    await engine.run();
+  } catch (e, st) {
+    logger.log('ENGINE LOOP ENDED BY AN ERROR - exiting for a restart: $e\n$st', level: 'CRITICAL');
+    storage.deleteFileIfExists(storage.pidFile);
+    storage.deleteFileIfExists(storage.heartbeatFile);
+    exit(1);
+  }
 
   storage.deleteFileIfExists(storage.pidFile);
   storage.deleteFileIfExists(storage.heartbeatFile);
@@ -151,13 +162,14 @@ Future<void> _runEngine() async {
   exit(0);
 }
 
-/// Every uncaught async error (a timer or stream callback, an unawaited
-/// future) used to end the engine process with the message going only to
-/// stderr - lost, since the GUI starts the engine detached. Found live
-/// 2026-10-25/26: the engine died silently twice (15:22Z, 01:36Z) with no
-/// log line and no Windows crash record, and each GUI-watchdog restart
-/// re-ran the full Power-on check over every open trade. Now such errors
-/// are logged as CRITICAL with their stack and the engine keeps running.
+/// Errors outside the main loop (a timer or stream callback, an unawaited
+/// future) used to end the engine with the message only on stderr - lost,
+/// since the GUI starts the engine detached (2026-10-25/26: 7 silent
+/// deaths, no log, no Windows crash record). They are now logged as
+/// CRITICAL with their stack. Errors in the main loop itself are handled in
+/// [EngineService.run] (logged, loop continues) and around `engine.run()`
+/// above (logged, exit for a watchdog restart), so this handler never
+/// leaves a loop-less process behind.
 void main() {
   runZonedGuarded(_runEngine, (error, stack) {
     try {

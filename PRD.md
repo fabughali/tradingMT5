@@ -1980,6 +1980,24 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-26 (v1.6.53+101)** — **Real fix for the silent engine deaths;
+  v1.6.52 superseded (never installed)**. 7 silent deaths so far (10-25
+  15:22Z; 10-26 01:36, 02:07, 12:50, 13:24, 17:42, 18:32Z), 4 right after a
+  pair's "risk gate blocked open" line. Root cause: `EngineService.run()`
+  awaited `_runCycle()` with no try/catch - an exception escaping the sweep
+  (from a step outside its per-pair try, e.g. `_maybeRunHealthCheck` or the
+  request drains) went up through run() and main() and ended the process;
+  confirmed with a scratch program: exit 255, message only on stderr (lost -
+  the engine runs detached). v1.6.52's runZonedGuarded would have caught it
+  only AFTER run() had ended, leaving a live process with no loop (no
+  heartbeat, no SLL, and the GUI watchdog would not restart it - also
+  confirmed by the scratch program); it was released but never installed.
+  Now: (1) the main loop catches and logs any cycle error as CRITICAL
+  ("CYCLE CRASHED - engine kept running") with its stack and carries on;
+  (2) `bin/engine.dart` wraps `engine.run()` - if it still fails it logs
+  "ENGINE LOOP ENDED BY AN ERROR" and exits so the watchdog restarts it;
+  (3) the zone handler stays for timer/stream errors outside the loop.
+
 - **2026-10-26 (v1.6.52+100)** — **Engine no longer dies silently on an
   uncaught error**. Found live: the engine process vanished twice with no
   log line and no Windows Application-log crash record (2026-10-25 15:22Z,

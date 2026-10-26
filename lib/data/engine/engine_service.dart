@@ -1239,19 +1239,29 @@ class EngineService {
           connected: _mt5Connected,
         );
       }
-      final health = await _runHealthCheck();
-      _lastHealthCheckAt = DateTime.now();
-      if (health == PowerHealthState.ready) {
-        await _runCycle();
-      } else if (_mt5Connected && DateTime.now().difference(_startedAt) >= _reconcileGracePeriod) {
-        // 2026-10-20, per the user ("investigate if sll is working every
-        // 30sec"): found that ANY non-ready health state - e.g. only
-        // TradingView down while MT5 is fine - skipped the whole cycle,
-        // SLL sweep included, leaving every open trade without its -$5
-        // baseline / ratchet protection. SLL is pure MT5, so it keeps
-        // running whenever MT5 itself is reachable. Sequential with the
-        // rest of this loop (never concurrent - see _maybeApplySlRatchet).
-        await _maybeApplySlRatchet();
+      // One failing cycle must never end the engine (2026-10-26, found live:
+      // the engine vanished 7 times with no log line - an exception escaping
+      // the sweep went up through run() and main() and ended the process,
+      // its message only on stderr, lost because the GUI starts the engine
+      // detached; each GUI-watchdog restart re-ran the full Power-on check).
+      // Now it is logged with its stack and the loop carries on.
+      try {
+        final health = await _runHealthCheck();
+        _lastHealthCheckAt = DateTime.now();
+        if (health == PowerHealthState.ready) {
+          await _runCycle();
+        } else if (_mt5Connected && DateTime.now().difference(_startedAt) >= _reconcileGracePeriod) {
+          // 2026-10-20, per the user ("investigate if sll is working every
+          // 30sec"): found that ANY non-ready health state - e.g. only
+          // TradingView down while MT5 is fine - skipped the whole cycle,
+          // SLL sweep included, leaving every open trade without its -$5
+          // baseline / ratchet protection. SLL is pure MT5, so it keeps
+          // running whenever MT5 itself is reachable. Sequential with the
+          // rest of this loop (never concurrent - see _maybeApplySlRatchet).
+          await _maybeApplySlRatchet();
+        }
+      } catch (e, st) {
+        logger.log('CYCLE CRASHED - engine kept running: $e\n$st', level: 'CRITICAL');
       }
 
       storage.deleteFileIfExists(storage.checknowFile);
