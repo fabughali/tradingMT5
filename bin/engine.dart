@@ -23,7 +23,7 @@ import 'package:trading_mt5/data/platform/engine_process.dart';
 // own "is the engine running" check shares the exact same definition - see
 // [isEngineProcessAliveSync]'s doc comment for the full history.
 
-void main() async {
+Future<void> _runEngine() async {
   final storage = CoreStorage.instance;
   final logger = AppLogger(storage);
 
@@ -149,4 +149,24 @@ void main() async {
   // its own lock files. Confirmed live 2026-09-12: `kill -TERM` produced
   // exactly that (log + files gone, process still resident).
   exit(0);
+}
+
+/// Every uncaught async error (a timer or stream callback, an unawaited
+/// future) used to end the engine process with the message going only to
+/// stderr - lost, since the GUI starts the engine detached. Found live
+/// 2026-10-25/26: the engine died silently twice (15:22Z, 01:36Z) with no
+/// log line and no Windows crash record, and each GUI-watchdog restart
+/// re-ran the full Power-on check over every open trade. Now such errors
+/// are logged as CRITICAL with their stack and the engine keeps running.
+void main() {
+  runZonedGuarded(_runEngine, (error, stack) {
+    try {
+      AppLogger(CoreStorage.instance).log(
+        'UNCAUGHT ERROR - engine kept running: $error\n$stack',
+        level: 'CRITICAL',
+      );
+    } catch (_) {
+      stderr.writeln('UNCAUGHT ERROR: $error\n$stack');
+    }
+  });
 }

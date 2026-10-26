@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-26 (v1.6.52+100)** — **Engine no longer dies silently on an
+  uncaught error**. Found live: the engine process vanished twice with no
+  log line and no Windows Application-log crash record (2026-10-25 15:22Z,
+  2026-10-26 01:36Z); the GUI's ENGINE WATCHDOG restarted it each time,
+  re-running the full Power-on reverse check over every open trade, and SLL
+  is off while the engine is down. Every engine exit path logs, so the cause
+  is an uncaught async error (timer/stream callback, unawaited future):
+  Dart then ends the process and prints only to stderr, which is lost
+  because the GUI starts the engine detached. `bin/engine.dart` now runs
+  inside `runZonedGuarded`: such errors are logged as CRITICAL
+  ("UNCAUGHT ERROR - engine kept running") with their stack, and the engine
+  keeps running - the next one will also show what actually failed.
+
 - **2026-10-25 (v1.6.51+99)** — **History as a 3-per-row card grid**, per the
   user ("history card should be wrapped list 3 cards per each row ...
   redesign" + "there should be a below section in each card ... for details
