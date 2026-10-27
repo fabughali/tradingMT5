@@ -1980,6 +1980,17 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-27 (v1.6.55+103)** — **History records the real close fill**.
+  Found live: BCH ticket 1662352559 (closed 18:00:51Z on a confirmed
+  SELL_OPEN1) was recorded with exit 290.45 while MT5 filled it at 290.25
+  (deal #1660266826). The app's own closes (opposite signal, terminate,
+  copies closed with their parent) wrote history from the last snapshot
+  taken BEFORE the close was sent. Now, after the close, the engine reads
+  that ticket's closed record from MT5's position history and uses its
+  `close_price` and `profit` (two tries 500ms apart; falls back to the
+  snapshot with a WARNING). Closes detected after the fact (SL/TP, stop-out,
+  closed in MT5) already used the history record.
+
 - **2026-10-27 (v1.6.54+102)** — **Root cause of the silent engine deaths
   found and fixed**. v1.6.53's new logging caught it on its first day live
   (17:38:13Z, "CYCLE CRASHED - engine kept running"): `PathAccessException:

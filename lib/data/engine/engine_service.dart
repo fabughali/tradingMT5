@@ -61,6 +61,7 @@ import '../tradingview/enforce.dart';
 import '../tradingview/launch.dart';
 import '../tradingview/signals_reader.dart';
 import 'candle_closed.dart';
+import 'close_fill.dart';
 import 'sl_ratchet_ladder.dart';
 import 'resting_order_check.dart';
 import 'volume_step.dart';
@@ -5080,7 +5081,7 @@ class EngineService {
       tvSymbol: tvSymbol,
       mt5Symbol: mt5Symbol,
       ticket: ticket,
-      position: position,
+      position: await _withActualFill(category, mt5Symbol, ticket, position),
       closeSignal: closeSignal,
       stopReason: stopReason,
       detail: detail ??
@@ -5117,6 +5118,36 @@ class EngineService {
     // the passive exception the user carved out - those are caught
     // independently by [_reconcileClosedPositions], never through here.
     await _closeCopiesOf(category, tvSymbol, mt5Symbol, excludeTicket: ticket);
+  }
+
+  /// [position] with the real close price/profit from MT5's position history
+  /// (see [withActualCloseFill]). Tries twice, 500ms apart, since the closed
+  /// record can lag the close call; falls back to the pre-close snapshot.
+  Future<Map<String, dynamic>> _withActualFill(
+    AutoCategory category,
+    String mt5Symbol,
+    int ticket,
+    Map<String, dynamic> position,
+  ) async {
+    for (var attempt = 1; attempt <= 2; attempt++) {
+      try {
+        final result = await mt5.getHistoryPositions(symbol: mt5Symbol);
+        final filled = withActualCloseFill(
+          position,
+          (result['positions'] as List?) ?? const [],
+          ticket,
+        );
+        if (!identical(filled, position)) return filled;
+      } catch (e) {
+        logger.log('$mt5Symbol ($category): could not read the close fill for ticket=$ticket: $e', level: 'WARNING');
+      }
+      if (attempt == 1) await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+    logger.log(
+      '$mt5Symbol ($category): no closed record for ticket=$ticket yet - history uses the last price seen before the close.',
+      level: 'WARNING',
+    );
+    return position;
   }
 
   /// Cascades a PARENT's own active close onto every one of its still-open
@@ -5188,7 +5219,7 @@ class EngineService {
         tvSymbol: tvSymbol,
         mt5Symbol: mt5Symbol,
         ticket: copyTicket,
-        position: copyPosition,
+        position: await _withActualFill(category, mt5Symbol, copyTicket, copyPosition),
         stopReason: 'parent_closed',
         detail: 'Closed because its parent trade closed.',
         contractSize: contractSize,
