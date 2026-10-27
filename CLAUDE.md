@@ -222,6 +222,12 @@ the actual cross-machine source of truth — the backups folder is a local-only 
   recycle pre-check, pending-cancel <200%, SLL profit-only, no spread limit, resting-order volume sync, chart DATA check before any read). Windows install status: check
   `VersionInfo.FileVersion` (never assume). Linux not redeployed from Windows (no SSH) —
   still 1.6.23 there; update it before ever running it.
+- Windows 2026-10-27 16:0xZ: ENGINE ONLY hot-swapped to v1.6.53 (user: "install it") -
+  GUI is still 1.6.51 (`FileVersion` shows 1.6.51). The old engine is kept as
+  `tradingmt5_engine.v1.6.51.bak.exe` next to it (rollback = rename back). The new
+  engine runs from the next engine start (watchdog restart or Power-on); md5 of the
+  installed file = 2970e9c3bb4e924ebfeae20887442fb9 (= CI zip). Next full install
+  of a later version replaces both.
 - Linux engine: currently **stopped** (`inactive (dead)`) — Windows is the live
   instance as of now (MT5 balance ≈ 34.76 on 1013734072 there).
 - Unit tests: `test/sl_ratchet_ladder_test.dart`, `zigzag_range_test.dart`,
