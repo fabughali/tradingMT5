@@ -421,12 +421,37 @@ class CoreStorage {
   /// Atomic write: writes to a sibling temp file, then renames it over
   /// [path]. `rename` is atomic on the same filesystem (POSIX), so a
   /// concurrent reader never sees a torn/partial write.
+  ///
+  /// Windows refuses the rename ("Access is denied", errno 5) while another
+  /// process has [path] open - e.g. the GUI reading `status.json` at that
+  /// exact moment. Found live 2026-10-27: every one of the engine's silent
+  /// deaths since 10-22 left a `status.json.tmp-<time>` behind at its exact
+  /// death time. So the rename is retried for up to [renameRetryWindow]
+  /// (a reader holds the file for milliseconds), and if it still fails the
+  /// temp file is removed before the error is rethrown.
   void writeString(String path, String contents) {
     ensureDir(p.dirname(path));
     final tmp = File('$path.tmp-${DateTime.now().microsecondsSinceEpoch}');
     tmp.writeAsStringSync(contents);
-    tmp.renameSync(path);
+    final deadline = DateTime.now().add(renameRetryWindow);
+    while (true) {
+      try {
+        tmp.renameSync(path);
+        return;
+      } on FileSystemException {
+        if (DateTime.now().isAfter(deadline)) {
+          try {
+            tmp.deleteSync();
+          } catch (_) {}
+          rethrow;
+        }
+        sleep(const Duration(milliseconds: 25));
+      }
+    }
   }
+
+  /// How long [writeString] keeps retrying a refused rename.
+  static Duration renameRetryWindow = const Duration(seconds: 2);
 
   void appendString(String path, String contents) {
     ensureDir(p.dirname(path));

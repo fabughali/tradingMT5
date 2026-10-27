@@ -1980,6 +1980,22 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-27 (v1.6.54+102)** — **Root cause of the silent engine deaths
+  found and fixed**. v1.6.53's new logging caught it on its first day live
+  (17:38:13Z, "CYCLE CRASHED - engine kept running"): `PathAccessException:
+  Cannot rename file to status.json ... Access is denied (errno 5)`, from
+  `CoreStorage.writeString` called by `_writeStatus` in the health check.
+  The atomic write (temp file + rename over the target) is refused by
+  Windows while another process has the target open - the GUI reads
+  `status.json` every few seconds. Proof: 23 leftover
+  `status.json.tmp-<time>` files in `logs/`, each stamped seconds before
+  one of the engine deaths since 10-15 (10-22 05:22, ..., 10-27 10:59,
+  12:58Z). Fix: the rename is retried for up to 2s (25ms steps); if it
+  still fails, the temp file is deleted and the error rethrown (caught and
+  logged by v1.6.53's cycle guard). Test `atomic_write_retry_test.dart`
+  holds the file open from another isolate: without the retry the write
+  throws (the old crash), with it the write succeeds.
+
 - **2026-10-26 (v1.6.53+101)** — **Real fix for the silent engine deaths;
   v1.6.52 superseded (never installed)**. 7 silent deaths so far (10-25
   15:22Z; 10-26 01:36, 02:07, 12:50, 13:24, 17:42, 18:32Z), 4 right after a
