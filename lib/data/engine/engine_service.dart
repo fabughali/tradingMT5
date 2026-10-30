@@ -2098,12 +2098,40 @@ class EngineService {
     }
   }
 
+  /// Restart cap (2026-10-30, after the PC froze on 10-29 ~22:00Z): a
+  /// stuck TradingView was force-killed 16 times in 20 minutes, every kill
+  /// missed it, and the machine hung. At most [_maxForceKillsPerWindow]
+  /// force-kills per [_forceKillWindow]; after that the engine stops
+  /// touching TradingView and only re-checks it every [_stuckBackoffRetry]
+  /// until [_tvBackoffUntil], reporting a clear tradingViewProblem status.
+  static const int _maxForceKillsPerWindow = 3;
+  static const Duration _forceKillWindow = Duration(minutes: 30);
+  static const Duration _stuckBackoffRetry = Duration(minutes: 5);
+  final List<DateTime> _forceKillTimes = [];
+  DateTime? _tvBackoffUntil;
+  DateTime? _lastBackoffAttempt;
+
   Future<void> _forceRelaunchTradingViewIfStuck(String home) async {
     _consecutiveStuckAttempts++;
     if (_consecutiveStuckAttempts < _forceRelaunchTradingViewThreshold) {
       return;
     }
     _consecutiveStuckAttempts = 0;
+    final now = DateTime.now();
+    _forceKillTimes.removeWhere((t) => now.difference(t) > _forceKillWindow);
+    if (_forceKillTimes.length >= _maxForceKillsPerWindow) {
+      _tvBackoffUntil = now.add(_forceKillWindow);
+      logger.log(
+        'TRADINGVIEW WATCHDOG: TradingView is still stuck after '
+        '$_maxForceKillsPerWindow force-kills in ${_forceKillWindow.inMinutes} min - '
+        'stopping automatic restarts until ${_tvBackoffUntil!.toUtc().toIso8601String()} '
+        '(re-checking every ${_stuckBackoffRetry.inMinutes} min). Close TradingView or '
+        'restart the PC if it stays stuck.',
+        level: 'CRITICAL',
+      );
+      return;
+    }
+    _forceKillTimes.add(now);
     logger.log(
       'TRADINGVIEW WATCHDOG: CDP port reachable but TradingView never '
       'cooperated $_forceRelaunchTradingViewThreshold times in a row - '
@@ -2123,11 +2151,19 @@ class EngineService {
         // failed kill every 3 attempts forever, with nothing ever surfacing
         // that the "fix" was never actually taking effect. See
         // [taskkillByBinaryPath]'s own doc comment.
-        final killed = await taskkillByBinaryPath(binaryPath, onLog: logger.log);
-        if (!killed) {
+        await taskkillByBinaryPath(binaryPath, onLog: logger.log);
+        // The name-based kill can miss the process that actually holds the
+        // port (see [taskkillTradingViewByPort]) - if CDP still answers,
+        // kill whatever TradingView process owns it, by PID.
+        final port = config.cdp.port;
+        if (await isCdpUp(config.cdp.host, port)) {
+          await taskkillTradingViewByPort(port, onLog: logger.log);
+          await Future<void>.delayed(const Duration(seconds: 3));
+        }
+        if (await isCdpUp(config.cdp.host, port)) {
           logger.log(
-            'TRADINGVIEW WATCHDOG: could not actually kill TradingView - it '
-            'will keep failing the same way until it\'s closed manually.',
+            'TRADINGVIEW WATCHDOG: could not actually kill TradingView - port '
+            '$port still answers. It will keep failing until it\'s closed manually.',
             level: 'CRITICAL',
           );
         }
@@ -2237,6 +2273,23 @@ class EngineService {
   }
 
   Future<void> _ensureCdpUpImpl() async {
+    // Restart cap in force (see [_maxForceKillsPerWindow]): don't touch a
+    // stuck TradingView every cycle - one re-check per [_stuckBackoffRetry].
+    final backoffUntil = _tvBackoffUntil;
+    if (backoffUntil != null && (_cdp == null || _cdp!.dead)) {
+      final now = DateTime.now();
+      if (now.isAfter(backoffUntil)) {
+        _tvBackoffUntil = null;
+      } else if (_lastBackoffAttempt != null &&
+          now.difference(_lastBackoffAttempt!) < _stuckBackoffRetry) {
+        throw StateError(
+          'TradingView stuck - automatic restarts paused until '
+          '${backoffUntil.toUtc().toIso8601String()}; close TradingView or restart the PC',
+        );
+      } else {
+        _lastBackoffAttempt = now;
+      }
+    }
     final technique = _activeTechnique();
     if (_cdp != null && !_cdp!.dead) {
       if (await _indicatorsReadyFor(technique, _cdp!)) return;
@@ -2324,6 +2377,8 @@ class EngineService {
       await ensureChartStyle(client, ChartStyle.heikinAshi);
     }
     _consecutiveStuckAttempts = 0;
+    _tvBackoffUntil = null;
+    _lastBackoffAttempt = null;
     _cdp = client;
   }
 

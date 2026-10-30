@@ -397,6 +397,88 @@ Future<bool> taskkillByBinaryPath(
   return false;
 }
 
+/// PIDs owning the server side of TCP [port], parsed from `netstat -ano -p
+/// TCP` output: any row whose LOCAL address is `...:port`, in any state
+/// (`TCP  127.0.0.1:9222  127.0.0.1:59103  ESTABLISHED  9548`). Not just
+/// LISTENING rows - confirmed live 2026-10-30 on this PC that netstat omits
+/// the LISTENING rows for TradingView's 9222 and MT5's 22346 entirely while
+/// still showing their connected sockets with the right PID.
+List<int> parseNetstatPortOwnerPids(String netstatOutput, int port) {
+  final pids = <int>{};
+  for (final line in netstatOutput.split(RegExp(r'\r?\n'))) {
+    final f = line.trim().split(RegExp(r'\s+'));
+    if (f.length < 5 || f[0].toUpperCase() != 'TCP') continue;
+    if (!f[1].endsWith(':$port')) continue;
+    final pid = int.tryParse(f[4]);
+    if (pid != null && pid > 0) pids.add(pid);
+  }
+  return pids.toList();
+}
+
+/// The process(es) actually holding [port] on Windows, as `pid -> image
+/// name` (name null if it couldn't be read). Holds its own connection open
+/// while reading netstat so there is always a server-side row to find.
+Future<Map<int, String?>> windowsProcessesListeningOn(int port) async {
+  Socket? probe;
+  try {
+    probe = await Socket.connect('127.0.0.1', port, timeout: const Duration(seconds: 2));
+  } catch (_) {}
+  final ProcessResult result;
+  try {
+    result = await Process.run('netstat', ['-ano', '-p', 'TCP']);
+  } finally {
+    probe?.destroy();
+  }
+  final out = <int, String?>{};
+  for (final pid in parseNetstatPortOwnerPids(result.stdout as String, port)) {
+    String? name;
+    try {
+      final r = await Process.run('tasklist', ['/FI', 'PID eq $pid', '/FO', 'CSV', '/NH']);
+      final first = (r.stdout as String).trim().split(RegExp(r'\r?\n')).first;
+      if (first.startsWith('"')) name = first.split('","').first.replaceAll('"', '');
+    } catch (_) {}
+    out[pid] = name;
+  }
+  return out;
+}
+
+/// Kills TradingView by whatever actually holds its CDP [port] - found live
+/// 2026-10-29: `taskkill /IM TradingView.exe` said "not found" 16 times in a
+/// row while the port kept answering, so the name-based kill never reached
+/// the stuck process. Kills only processes whose image name contains
+/// "tradingview" (never some unrelated program that happens to own the
+/// port), with `/T` so its children go too. Returns the PIDs it killed.
+Future<List<int>> taskkillTradingViewByPort(
+  int port, {
+  void Function(String message, {String? level})? onLog,
+}) async {
+  final killed = <int>[];
+  final holders = await windowsProcessesListeningOn(port);
+  if (holders.isEmpty) {
+    onLog?.call('TradingView kill by port: nothing is listening on $port.');
+    return killed;
+  }
+  for (final entry in holders.entries) {
+    final name = entry.value ?? '?';
+    if (!name.toLowerCase().contains('tradingview')) {
+      onLog?.call(
+        'TradingView kill by port: port $port is held by $name (pid ${entry.key}), '
+        'not TradingView - leaving it alone.',
+        level: 'CRITICAL',
+      );
+      continue;
+    }
+    final r = await Process.run('taskkill', ['/F', '/T', '/PID', '${entry.key}']);
+    onLog?.call(
+      'TradingView kill by port: taskkill /F /T /PID ${entry.key} ($name) exited ${r.exitCode}'
+      '${r.exitCode == 0 ? '' : ': ${(r.stderr as String).trim()}'}',
+      level: r.exitCode == 0 ? 'INFO' : 'WARNING',
+    );
+    if (r.exitCode == 0) killed.add(entry.key);
+  }
+  return killed;
+}
+
 /// Kills TradingView Desktop if it's running, and waits until CDP stops
 /// responding (or gives up after [timeout]) so the caller knows the process
 /// is actually gone before reporting success.

@@ -1980,6 +1980,26 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-10-30 (v1.6.56+104)** — **A stuck TradingView can no longer be
+  hammered until the PC hangs**. Found live: the Windows PC froze around
+  2026-10-29 22:00Z (Kernel-Power 41, hard reboot at 01:04 local), ~25 min
+  after Power-on. From 21:40Z TradingView was alive-but-stuck (CDP port
+  answering, chart never ready); the watchdog force-killed it 16 times in
+  20 min and every `taskkill /IM TradingView.exe` answered "not found", so
+  the stuck process was never actually killed. Root cause of the miss not
+  fully proven; also found that on this PC `netstat` omits the LISTENING
+  rows for 9222/22346 entirely (shows only connected sockets). Fix: (1)
+  after the name-based kill, if 9222 still answers, the engine finds the
+  process that owns the port (opens its own connection, reads the
+  server-side netstat row) and kills it by PID with `/T` - only if its
+  image is TradingView; verified live: 9222 -> TradingView.exe, 22346 ->
+  terminal64.exe. (2) At most 3 force-kills per 30 min; after that
+  automatic restarts pause for 30 min, TradingView is re-checked only
+  every 5 min, and status says "TradingView stuck - close TradingView or
+  restart the PC". Earlier the same day Windows Update (preview build
+  26300, KB5127936) also auto-rebooted the PC at 04:39 local, leaving the
+  engine off ~20h - not an app fault.
+
 - **2026-10-27 (v1.6.55+103)** — **History records the real close fill**.
   Found live: BCH ticket 1662352559 (closed 18:00:51Z on a confirmed
   SELL_OPEN1) was recorded with exit 290.45 while MT5 filled it at 290.25
