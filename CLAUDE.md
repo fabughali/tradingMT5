@@ -227,6 +227,12 @@ the actual cross-machine source of truth — the backups folder is a local-only 
   Power off (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS`, exit 0):
   GUI + engine now both 1.6.53+101. A leftover `tradingmt5_engine.v1.6.51.bak.exe`
   sits in the install folder (unused, safe to delete).
+- Windows installs since, same silent-installer method with Power off: v1.6.54
+  (2026-10-27 17:55Z) and v1.6.56+104 (2026-10-30 ~04:25Z, CI asset sha256
+  8e3053f9...). Installed = 1.6.56+104 (GUI + engine).
+- Windows PC is on Insider/preview build 26300 - Windows Update auto-rebooted it
+  2026-10-29 04:39 local (engine off ~20h), and it hard-froze 2026-10-29 ~22:00Z
+  while a stuck TradingView was being force-killed (see PRD v1.6.56).
 - Linux engine: currently **stopped** (`inactive (dead)`) — Windows is the live
   instance as of now (MT5 balance ≈ 34.76 on 1013734072 there).
 - Unit tests: `test/sl_ratchet_ladder_test.dart`, `zigzag_range_test.dart`,
