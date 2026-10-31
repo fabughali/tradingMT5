@@ -123,8 +123,7 @@ class TechniqueDetailsScreen extends StatelessWidget {
   /// Margin-tiered risk controls (2026-10-15, per the user: "how it works
   /// screen" - after a real Equiti margin stop-out forced BNBUSD.lv closed
   /// and the app's own global position cap turned out to have been set
-  /// but never actually enforced, see RiskGate.positionCapFor's own doc
-  /// comment). Applies the SAME regardless of which technique is active,
+  /// but never actually enforced). Applies the SAME regardless of which technique is active,
   /// so it's one shared section included in every technique's own list
   /// rather than three separately-maintained copies that could drift.
   static const _Section _marginRiskSection = _Section(
@@ -135,11 +134,12 @@ class TechniqueDetailsScreen extends StatelessWidget {
         'watches the account\'s live margin level and automatically '
         'pulls back on NEW trades as it tightens - it never closes a '
         'trade that\'s already running just because margin got tight. '
-        'Above 300% margin, nothing changes at all. Between 200-300%, '
-        'at most 6 trades can be running at once and any new one opens '
-        'at 60% of its normal size. Between 150-200%, that drops to at '
-        'most 3 trades at 30% size. At 150% or below, no new trade can '
-        'open at all until margin recovers. Even with all of this, the '
+        'There is no limit on the number of trades: before each new trade '
+        'the app works out what margin would be after it, and only opens '
+        'the trade if margin stays above 150%. New trades open at full '
+        'size above 300% margin, 60% size between 200-300%, and 30% size '
+        'between 150-200%. At 150% or below, no new trade can open and '
+        'untriggered orders are cancelled until margin recovers. Even with all of this, the '
         'broker\'s own hard stop-out (forced closure of the worst-losing '
         'trade) still exists underneath as a last resort if margin ever '
         'falls all the way to 30% - these rules make that far less '

@@ -5,8 +5,9 @@ import 'package:trading_mt5/core/core_storage.dart';
 import 'package:trading_mt5/data/models/app_config.dart';
 import 'package:trading_mt5/data/risk/risk_gate.dart';
 
-/// 2026-10-25, per the user: untriggered pending orders are cancelled once
-/// margin level is below 200% (it used to be only at the 150% hard gate).
+/// 2026-11-01 (v1.6.57): untriggered pending orders are cancelled at the same
+/// 150% floor that blocks new opens (they were cancelled below 200% before,
+/// which would delete the stop orders the floor now allows between 150-200%).
 void main() {
   late Directory dir;
   late RiskGate gate;
@@ -17,19 +18,16 @@ void main() {
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
-  test('below 200% cancels resting orders; the hard open block stays at 150%', () {
-    gate.updateMarginLevel(199.9);
-    expect(gate.shouldCancelRestingOrders, isTrue);
-    expect(gate.marginGateTripped, isFalse);
+  test('at or below 150% cancels resting orders and blocks opens', () {
     gate.updateMarginLevel(150);
     expect(gate.shouldCancelRestingOrders, isTrue);
     expect(gate.marginGateTripped, isTrue);
   });
 
-  test('at or above 200% resting orders are left alone', () {
-    gate.updateMarginLevel(200);
+  test('above 150% resting orders are left alone', () {
+    gate.updateMarginLevel(150.1);
     expect(gate.shouldCancelRestingOrders, isFalse);
-    gate.updateMarginLevel(290);
+    gate.updateMarginLevel(199.9);
     expect(gate.shouldCancelRestingOrders, isFalse);
   });
 

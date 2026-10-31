@@ -48,42 +48,39 @@ class RiskGate {
   bool get marginGateTripped =>
       _marginLevel != null && _marginLevel! <= marginGateThresholdPct;
 
-  /// Below this margin level every resting (placed, not yet triggered)
-  /// pending order the app placed is cancelled (2026-10-25, per the user:
-  /// "whenever the margin level is less than 200 ... the app need to close
-  /// active untriggered trades once margin is less than 200"). Used to be
-  /// tied to [marginGateThresholdPct] (150%). The hard open block stays at
-  /// 150%; ignited pairs and manual copies keep their existing exemptions.
-  static const double pendingOrderCancelBelowPct = 200;
-
-  bool get shouldCancelRestingOrders =>
-      _marginLevel != null && _marginLevel! < pendingOrderCancelBelowPct;
+  /// Resting (placed, not yet triggered) pending orders the app placed are
+  /// cancelled at the same 150% floor that blocks new opens (2026-11-01,
+  /// v1.6.57). Was 200% (2026-10-25), but every open on this broker goes
+  /// through a stop order after the market order's Invalid-fill rejection,
+  /// so a 200% cancel would delete the very orders the 150% floor now
+  /// allows. Ignited pairs and manual copies keep their exemptions.
+  bool get shouldCancelRestingOrders => marginGateTripped;
 
   double? get marginLevel => _marginLevel;
 
-  /// Margin-level-tiered concurrent-position cap (2026-10-15, per the
-  /// user, after a real margin stop-out: "what if there is good margin
-  /// level... why you need to setup a fixed max positions?" - correctly
-  /// pointing out a FLAT cap is a blunt proxy for risk, when the real
-  /// thing that matters (margin level) is already tracked live. Null
-  /// means "no cap at all" - the user's own "if margin is more than
-  /// 300%... max position is open" (i.e. unrestricted). Below
-  /// [marginGateThresholdPct] this is moot anyway - [gate] already blocks
-  /// every open outright at that point, position count or not.
-  static int? positionCapFor(double? marginLevel) {
-    if (marginLevel == null || marginLevel > 300) return null;
-    if (marginLevel > 200) return 6;
-    if (marginLevel > marginGateThresholdPct) return 3;
-    return 0;
+  /// The margin level after opening [newNotional] more exposure (2026-11-01,
+  /// v1.6.57, per the user: "i think we should do the margin in different
+  /// way so i can have more running trades" - replaces the fixed 6/3 trade
+  /// counts, which treated a \$310 BTC trade the same as a \$30 DOGE trade).
+  /// MT5 reports no per-symbol margin here, so the new trade's margin is
+  /// estimated from the rate the account pays now: [margin] / [exposureNotional]
+  /// (live: \$21.08 on \$538.75, about 3.9%). Null = nothing open to measure
+  /// from, so there is nothing for the floor to protect yet.
+  static double? projectedMarginLevel({
+    required double equity,
+    required double margin,
+    required double exposureNotional,
+    required double newNotional,
+  }) {
+    if (margin <= 0 || exposureNotional <= 0) return null;
+    return equity / (margin + margin / exposureNotional * newNotional) * 100;
   }
 
-  /// Same margin tiers as [positionCapFor], but scaling the SIZE of the
-  /// next trade instead of how many can run at once (2026-10-15, per the
-  /// user - the companion half of the same idea: shrink new exposure as
-  /// real risk rises, not just count it). 1.0 = full size (margin > 300%,
-  /// or no live reading yet - never shrinks a trade before the first real
-  /// margin snapshot arrives). Below [marginGateThresholdPct] is moot for
-  /// the same reason as [positionCapFor] - nothing opens there regardless.
+  /// Scales the SIZE of the next trade as margin tightens (2026-10-15, per
+  /// the user: shrink new exposure as real risk rises). 1.0 = full size
+  /// (margin > 300%, or no live reading yet - never shrinks a trade before
+  /// the first real margin snapshot arrives). Below [marginGateThresholdPct]
+  /// is moot - nothing opens there regardless.
   static double marginSizeScaleFor(double? marginLevel) {
     if (marginLevel == null || marginLevel > 300) return 1.0;
     if (marginLevel > 200) return 0.6;
@@ -128,17 +125,20 @@ class RiskGate {
   /// [bypassMarginGate] (2026-10-17, per the user: "margin level has
   /// nothing to do with manual ignited pair. so if margin level is less
   /// than rule, still this ignited pair will run once it is triggered") -
-  /// skips BOTH margin-level rules (the hard [marginGateTripped] block and
-  /// the margin-tiered position cap, [positionCapFor]) for a pair the user
-  /// explicitly ignited via the Dashboard's thunder icon. Every other gate
-  /// (kill switch, cooldown, daily loss limit, per-symbol max-positions)
-  /// still applies unchanged - the user only ever singled out margin level.
+  /// skips the hard [marginGateTripped] block for a pair the user explicitly
+  /// ignited via the Dashboard's thunder icon. Every other gate (kill
+  /// switch, cooldown, daily loss limit, per-symbol max-positions) still
+  /// applies unchanged - the user only ever singled out margin level.
   ///
   /// [replacingOne] (2026-10-21, v1.6.35): the caller is about to CLOSE one
   /// position of this same symbol/category and reopen it (a worm10
   /// recycle), so the open is net-neutral - that one position is not
-  /// counted against either cap, otherwise a recycle at exactly the cap
-  /// would block itself. Every other rule applies unchanged.
+  /// counted against the per-symbol cap, otherwise a recycle at exactly the
+  /// cap would block itself. Every other rule applies unchanged.
+  ///
+  /// The 150% floor's "would THIS trade go below it" half needs the trade's
+  /// size and a live account read, so it runs at send time in the engine
+  /// (`_marginFloorBlockReason`) - this gate only blocks once already there.
   GateResult gate(
     String action,
     String symbol,
@@ -172,25 +172,7 @@ class RiskGate {
         'Daily loss limit hit: ${_state.dayPnlPct}% <= -${_config.dailyLossLimitPct}%',
       );
     }
-    // Margin-level-tiered concurrent-position cap (2026-10-15, per the
-    // user, after a real margin stop-out) - see [positionCapFor]'s own
-    // doc comment for the full reasoning and exact tiers. A flat count
-    // cap would have been a blunt proxy for risk; this ties the limit to
-    // the actual thing that matters (live margin level), tightening as
-    // real risk rises and getting out of the way entirely above 300%.
-    // Checked BEFORE the per-symbol cap so the more general limit is what
-    // the user sees in the block reason when both would apply.
-    final cap = bypassMarginGate ? null : positionCapFor(_marginLevel);
     final replaced = replacingOne ? 1 : 0;
-    if (cap != null) {
-      final totalOpen = _state.openPositions.values.fold(0, (a, b) => a + b) - replaced;
-      if (totalOpen >= cap) {
-        return GateResult.blocked(
-          'Margin-tiered position cap: $totalOpen/$cap open '
-          '(margin level ${_marginLevel!.toStringAsFixed(1)}%)',
-        );
-      }
-    }
     final perSymbol = (_state.openPositions[key] ?? 0) - replaced;
     if (perSymbol >= _config.maxPerSymbol) {
       return GateResult.blocked(

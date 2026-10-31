@@ -1980,6 +1980,24 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-01 (v1.6.57+105)** — **A 150% margin floor replaces the fixed
+  trade counts**. Per the user: "i think we should do the margin in different
+  way so i can have more running trades", then "150% floor implement and
+  deploy", and "keep in your calculations the volume ... also read from mt5".
+  The 6 (200-300%) and 3 (150-200%) trade limits are gone. Before each new
+  trade the engine reads equity, margin, open positions and resting orders
+  fresh from MT5 and opens only if margin level after this trade, at its real
+  volume x contract size x price, stays above 150%. MT5 gives no per-symbol
+  margin here, so the trade's margin is estimated at the account's current
+  margin / exposure rate (live: \$21.08 on \$538.75, about 3.9%). Resting
+  orders count as exposure; if MT5 can't be read the trade waits. Auto +\$5
+  copies respect the floor at their real size; ignited pairs and manual copies
+  stay exempt. Running trades are never closed by it. Resting orders are now
+  cancelled at 150%, not 200% (the 2026-10-25 rule): every open on this broker
+  goes through a stop order, so 200% would delete what the floor allows - not
+  separately asked for, flagged to the user. Size scaling (60% at 200-300%, 30%
+  at 150-200%) is unchanged; the user has not chosen on it yet.
+
 - **2026-10-30 (v1.6.56+104)** — **A stuck TradingView can no longer be
   hammered until the PC hangs**. Found live: the Windows PC froze around
   2026-10-29 22:00Z (Kernel-Power 41, hard reboot at 01:04 local), ~25 min

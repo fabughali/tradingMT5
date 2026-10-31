@@ -12,7 +12,7 @@ import '../../core/core_storage.dart';
 /// way while margin sat at 92.9%). Deliberately NOT used for the automated
 /// +$5 milestone path - that one fully respects the margin gate by design
 /// ([EngineService._processAutoCopyMilestones] already refuses to even
-/// attempt a new copy once [RiskGate.positionCapFor] hits 0), so its own
+/// attempt a new copy once [RiskGate.marginGateTripped] is true), so its own
 /// pending orders are left exposed to the normal sweep on purpose.
 class ManualCopyPendingOrderStore {
   ManualCopyPendingOrderStore(this._storage);

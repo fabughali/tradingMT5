@@ -6,10 +6,9 @@ import 'package:trading_mt5/data/models/app_config.dart';
 import 'package:trading_mt5/data/models/auto_category.dart';
 import 'package:trading_mt5/data/risk/risk_gate.dart';
 
-/// 2026-10-21 (v1.6.35): a worm10 recycle pre-checks its reopen with
-/// `replacingOne: true` - the position being recycled is freed by the close,
-/// so a recycle at exactly the cap must pass, while one far over the cap
-/// (the live BNB case: 14 open, cap 3) must still be blocked.
+/// 2026-11-01 (v1.6.57): the gate no longer counts total trades. A worm10
+/// recycle pre-checks its reopen with `replacingOne: true`, which still frees
+/// its own slot under the per-symbol cap; the 150% block still applies.
 void main() {
   late Directory dir;
   late RiskGate gate;
@@ -20,23 +19,30 @@ void main() {
   });
   tearDown(() => dir.deleteSync(recursive: true));
 
-  void openN(int n) {
+  void openOthers(int n) {
     for (var i = 0; i < n; i++) {
       gate.openPosition('SYM$i.lv', AutoCategory.oneHour);
     }
   }
 
-  test('BNB live case: 14 open, cap 3 (margin 168.6%) - recycle pre-check blocks', () {
-    openN(13);
-    gate.openPosition('BNBUSD.lv', AutoCategory.oneHour);
+  test('many open at 168% no longer blocks a different pair by count', () {
+    openOthers(14);
     gate.updateMarginLevel(168.6);
-    final r = gate.gate('open', 'BNBUSD.lv', AutoCategory.oneHour, replacingOne: true);
-    expect(r.allowed, isFalse);
+    expect(gate.gate('open', 'BNBUSD.lv', AutoCategory.oneHour).allowed, isTrue);
   });
 
-  test('exactly at the cap: a plain open is blocked, a recycle (replacing one) is allowed', () {
-    openN(5);
-    gate.openPosition('BNBUSD.lv', AutoCategory.oneHour); // 6 open, cap 6 at 250%
+  test('at or below 150% every open is blocked, recycle included', () {
+    gate.openPosition('BNBUSD.lv', AutoCategory.oneHour);
+    gate.updateMarginLevel(150);
+    expect(gate.gate('open', 'ETHUSD.lv', AutoCategory.oneHour).allowed, isFalse);
+    expect(gate.gate('open', 'BNBUSD.lv', AutoCategory.oneHour, replacingOne: true).allowed, isFalse);
+  });
+
+  test('per-symbol cap: a plain reopen is blocked, a recycle is allowed', () {
+    final max = AppConfig.defaultConfig.risk.maxPerSymbol;
+    for (var i = 0; i < max; i++) {
+      gate.openPosition('BNBUSD.lv', AutoCategory.oneHour);
+    }
     gate.updateMarginLevel(250);
     expect(gate.gate('open', 'BNBUSD.lv', AutoCategory.oneHour).allowed, isFalse);
     expect(gate.gate('open', 'BNBUSD.lv', AutoCategory.oneHour, replacingOne: true).allowed, isTrue);

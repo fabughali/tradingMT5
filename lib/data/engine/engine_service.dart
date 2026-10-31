@@ -831,7 +831,6 @@ class EngineService {
   DateTime _lastMarginCheckAt = DateTime.fromMillisecondsSinceEpoch(0);
   static const _marginCheckInterval = Duration(seconds: 30);
   bool _marginGateWasTripped = false;
-  bool _pendingCancelWasActive = false;
 
   Future<void> _maybeRefreshMarginGate() async {
     if (DateTime.now().difference(_lastMarginCheckAt) < _marginCheckInterval) {
@@ -869,25 +868,55 @@ class EngineService {
       }
       _marginGateWasTripped = isTripped;
 
-      // 2026-10-25, per the user: resting orders are cancelled below 200%
-      // margin level, not only once the hard 150% gate trips - see
-      // [RiskGate.pendingOrderCancelBelowPct].
-      final cancelPending = risk.shouldCancelRestingOrders;
-      if (cancelPending && !_pendingCancelWasActive) {
-        logger.log(
-          'MARGIN: margin level ${marginLevel!.toStringAsFixed(1)}% < '
-          '${RiskGate.pendingOrderCancelBelowPct.toStringAsFixed(0)}% - cancelling every '
-          'untriggered pending order this app placed (ignited pairs and manual copies exempt).',
-          level: 'WARNING',
-        );
-      }
-      _pendingCancelWasActive = cancelPending;
-      if (cancelPending) {
+      // Same 150% floor as new opens since v1.6.57 - see
+      // [RiskGate.shouldCancelRestingOrders].
+      if (risk.shouldCancelRestingOrders) {
         await _cancelAllRestingPendingOrders();
       }
     } catch (e, st) {
       logger.log('Margin gate refresh failed: $e\n$st', level: 'ERROR');
     }
+  }
+
+  /// Why a new trade of [newNotional] must not be sent, or null if it may:
+  /// the 150% floor (2026-11-01, v1.6.57, see
+  /// [RiskGate.projectedMarginLevel]). Reads the account and positions fresh
+  /// rather than using the 30s-old [RiskGate.marginLevel], so a burst of
+  /// opens in one sweep each sees the ones before it. Resting orders count
+  /// as exposure too - they use margin the moment they trigger. If MT5 can't
+  /// be read the trade is held back rather than sent blind.
+  Future<String?> _marginFloorBlockReason(double newNotional) async {
+    final double equity;
+    final double margin;
+    var exposure = 0.0;
+    var resting = 0.0;
+    try {
+      final account = (await mt5.getAccountInfo())['account'] as Map<String, dynamic>?;
+      final eq = (account?['equity'] as num?)?.toDouble();
+      final mg = (account?['margin'] as num?)?.toDouble();
+      if (eq == null || mg == null) return 'MARGIN FLOOR: account figures unavailable - not opening';
+      equity = eq;
+      margin = mg;
+      final open = await mt5.getOpenPositions();
+      double num0(Object? v) => v is num ? v.toDouble() : double.tryParse('$v') ?? 0;
+      for (final p in (open['positions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
+        exposure += num0(p['volume']) * num0(p['contract_size']) * num0(p['price_open']);
+      }
+      for (final o in (open['orders'] as List? ?? const []).cast<Map<String, dynamic>>()) {
+        resting += num0(o['volume_current']) * num0(o['contract_size']) * num0(o['price_order']);
+      }
+    } catch (e) {
+      return 'MARGIN FLOOR: could not read the account ($e) - not opening';
+    }
+    final projected = RiskGate.projectedMarginLevel(
+      equity: equity,
+      margin: margin,
+      exposureNotional: exposure,
+      newNotional: newNotional + resting,
+    );
+    if (projected == null || projected > RiskGate.marginGateThresholdPct) return null;
+    return 'MARGIN FLOOR: this trade would take margin level to '
+        '${projected.toStringAsFixed(1)}% (limit ${RiskGate.marginGateThresholdPct.toStringAsFixed(0)}%) - waiting';
   }
 
   /// Exempt resting orders already logged as "left alone" - logged once per
@@ -4776,8 +4805,7 @@ class EngineService {
     // succeeds or bottoms out at the floor.
     final volumeStep = (info['volume_step'] as num?)?.toDouble() ?? volumeMin;
     final volKey = '${category.wireValue}|${mapping.tradingViewSymbol}';
-    // Margin-level-tiered size scaling (2026-10-15, per the user - the
-    // companion half of [RiskGate.positionCapFor]'s own cap: shrink new
+    // Margin-level-tiered size scaling (2026-10-15, per the user: shrink new
     // exposure as real risk rises, not just count it). Applied to the
     // DESIRED volume, not the final try - [tryVolume] below is already
     // clamped to never exceed [desiredVolume] AND never drop below
@@ -4815,6 +4843,18 @@ class EngineService {
     );
     final point = (info['point'] as num?)?.toDouble() ?? 0.0;
     final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
+
+    // The 150% floor, with this trade's real size. Ignited pairs skip it,
+    // same as every other margin rule.
+    if (!ignitedPairs.isIgnited(mapping.tradingViewSymbol)) {
+      final contractSize = (info['contract_size'] as num?)?.toDouble() ?? 1.0;
+      final blocked = await _marginFloorBlockReason(tryVolume * contractSize * entry);
+      if (blocked != null) {
+        logger.log('$mt5Symbol ($category): $blocked');
+        waitingReasons.record(mapping.tradingViewSymbol, blocked);
+        return false;
+      }
+    }
 
     // Spread guard REMOVED (2026-10-25, v1.6.39, per the user: "there
     // should be no limit for the gap whenever the trade is open ... $1 or
@@ -5504,6 +5544,17 @@ class EngineService {
     // "keep it unlimited").
     final entry = direction == TradeDirection.long ? ask : bid;
 
+    // Auto copies respect the 150% floor at their real size; manual copies
+    // stay exempt from margin rules, as they always were.
+    if (reasonLabel != 'manual') {
+      final contractSize = (info['contract_size'] as num?)?.toDouble() ?? 1.0;
+      final blocked = await _marginFloorBlockReason(copyVolume * contractSize * entry);
+      if (blocked != null) {
+        logger.log('$mt5Symbol ($category): $reasonLabel copy: $blocked');
+        return (success: false, failureReason: blocked);
+      }
+    }
+
     // 2026-10-25 (v1.6.38), per the user: no -$1 stop-loss on copies any
     // more ("for ... copied trades, sll has no effect once p&l is zero or
     // less"). The copy is sent with NO broker SL; it closes with its parent
@@ -5735,13 +5786,12 @@ class EngineService {
   /// each ORIGINAL (lowest-ticket) position's highest $5 milestone
   /// already consumed in [autoCopyMilestones], so a position sitting at
   /// +\$5 forever only ever triggers ONE copy, not one per cycle. Unlike
-  /// the manual path, THIS one fully respects the margin-tiered position
-  /// cap ("if margin level is more than +150% or whatever margin rules
-  /// applies") - a milestone that's blocked by margin is simply left
-  /// un-consumed and retried next cycle, never skipped.
+  /// the manual path, THIS one fully respects the 150% margin floor ("if
+  /// margin level is more than +150% or whatever margin rules applies") - a
+  /// milestone that's blocked by margin is simply left un-consumed and
+  /// retried next cycle, never skipped.
   Future<void> _processAutoCopyMilestones(AutoCategory category) async {
-    final cap = RiskGate.positionCapFor(risk.marginLevel);
-    if (cap == 0) return;
+    if (risk.marginGateTripped) return;
     if (risk.killSwitchTripped) return;
 
     final openResult = await mt5.getOpenPositions();
@@ -5795,8 +5845,7 @@ class EngineService {
       // stop and leave the rest for next cycle the moment one is blocked,
       // rather than skipping ahead and losing track of it.
       while (consumed < targetMilestone) {
-        final freshCap = RiskGate.positionCapFor(risk.marginLevel);
-        if (freshCap == 0) break;
+        if (risk.marginGateTripped) break;
         // Re-confirm the original is still open right before copying it.
         final stillOpen = ((await mt5.getOpenPositions(symbol: mapping.mt5Symbol))['positions'] as List? ?? const [])
             .any((p) => _parseTicket((p as Map<String, dynamic>)['position_id']) == lowestTicket);
