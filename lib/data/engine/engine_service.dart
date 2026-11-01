@@ -2179,8 +2179,8 @@ class EngineService {
         // 0 and this whole mechanism would just quietly repeat the identical
         // failed kill every 3 attempts forever, with nothing ever surfacing
         // that the "fix" was never actually taking effect. See
-        // [taskkillByBinaryPath]'s own doc comment.
-        await taskkillByBinaryPath(binaryPath, onLog: logger.log);
+        // [taskkillOwnTradingView]'s own doc comment.
+        await taskkillOwnTradingView(binaryPath, config.cdp.port, onLog: logger.log);
         // The name-based kill can miss the process that actually holds the
         // port (see [taskkillTradingViewByPort]) - if CDP still answers,
         // kill whatever TradingView process owns it, by PID.

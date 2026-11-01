@@ -38,4 +38,53 @@ Active Connections
   test('CRLF output parses the same', () {
     expect(parseNetstatPortOwnerPids(netstat.replaceAll('\n', '\r\n'), 9222), [9548]);
   });
+
+  group('ownTradingViewPidsToKill', () {
+    const exe = r'"C:\Program Files\WindowsApps\TradingView.Desktop_3.4.1.8194_x64__n534cwy3pjxzj\TradingView.exe"';
+    const defaultDir = r'--user-data-dir="C:\Users\DELL\AppData\Roaming\TradingView"';
+
+    TradingViewProcess proc(int pid, int parent, String? args) =>
+        TradingViewProcess(pid: pid, parentPid: parent, commandLine: args == null ? null : '$exe $args');
+
+    // Real command lines from this PC (2026-11-01).
+    final ours = [
+      proc(19976, 3960, '--remote-debugging-port=9222'),
+      proc(4876, 19976, '--type=renderer $defaultDir --no-zygote --remote-debugging-port=9222 --lang=en-US'),
+      proc(5000, 19976, '--type=gpu-process $defaultDir --no-sandbox'),
+    ];
+    final pionex = [
+      proc(7000, 900, r'--remote-debugging-port=9333 --user-data-dir="C:\tv-pionex"'),
+      proc(7001, 7000, r'--type=renderer --user-data-dir="C:\tv-pionex" --remote-debugging-port=9333'),
+      proc(7002, 7000, r'--type=gpu-process --user-data-dir="C:\tv-pionex"'),
+    ];
+
+    test('kills our main process only, its children go with it', () {
+      expect(ownTradingViewPidsToKill(ours, 9222), [19976]);
+    });
+
+    test('never touches an instance on another port', () {
+      expect(ownTradingViewPidsToKill(pionex, 9222), isEmpty);
+      expect(ownTradingViewPidsToKill([...pionex, ...ours], 9222), [19976]);
+    });
+
+    test('a longer port with the same digits is not ours', () {
+      expect(ownTradingViewPidsToKill([proc(1, 2, '--remote-debugging-port=92220')], 9222), isEmpty);
+    });
+
+    test('a child left behind on our port is still killed', () {
+      expect(ownTradingViewPidsToKill([ours[1]], 9222), [4876]);
+    });
+
+    test('a plain TradingView holding the default folder is killed', () {
+      expect(ownTradingViewPidsToKill([proc(1, 2, '')], 9222), [1]);
+    });
+
+    test('no port but its own data folder is left alone', () {
+      expect(ownTradingViewPidsToKill([proc(1, 2, r'--user-data-dir="C:\other"')], 9222), isEmpty);
+    });
+
+    test('an unreadable command line is left alone', () {
+      expect(ownTradingViewPidsToKill([proc(1, 2, null)], 9222), isEmpty);
+    });
+  });
 }

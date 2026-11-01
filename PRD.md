@@ -1980,6 +1980,16 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-01 (v1.6.60+108)** — **TradingView recovery kills only this app's
+  own instance**. The user made TradingPionex fully independent, with its own
+  TradingView on port 9333, and a read-only check found TradingMT5 ran
+  `taskkill /F /IM TradingView.exe` on every relaunch and stuck-recovery, which
+  kills every instance on the PC. "yes build it". Windows now lists the
+  processes with their command lines and kills only ones on our `cdp.port`, or
+  a main process with no debug port and no data folder of its own (it holds the
+  default folder and would swallow our relaunch), with `/T` for children. Other
+  ports, other data folders and unreadable command lines are left alone. The
+  kill by port stays as the fallback. Linux `pkill -f` is unchanged.
 - **2026-11-01 (v1.6.59+107)** — **Power off and closing the window need a 5s
   hold**. At 15:22:47 local Power went off and the window closed, about 2.5s
   after a RustDesk session opened (RustDesk log), with 12 trades running. The

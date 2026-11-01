@@ -217,7 +217,10 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Current state (keep this updated)
 
-- Version: repo `1.6.59+107` (2026-11-01). Releases since 1.6.25 are summarised in PRD
+- TradingPionex runs on this PC too, fully independent, with its own TradingView on
+  port 9333. TradingMT5 stays on 9222 and must never kill TradingView by name
+  (`ownTradingViewPidsToKill`, v1.6.60).
+- Version: repo `1.6.60+108` (2026-11-01). Releases since 1.6.25 are summarised in PRD
   §20 (closed-candle rule, ignite, Market Watch auto-add, dollar SLL, spread guard,
   recycle pre-check, pending-cancel <200%, SLL profit-only, no spread limit, resting-order volume sync, chart DATA check before any read). Windows install status: check
   `VersionInfo.FileVersion` (never assume). Linux not redeployed from Windows (no SSH) —

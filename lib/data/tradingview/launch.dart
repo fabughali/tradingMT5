@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 /// The private, isolated X display TradingView Desktop always runs on -
@@ -306,11 +307,11 @@ Future<bool> _launchTradingViewWindows(
   void Function(String message, {String? level})? onLog,
 }) async {
   // Verified, not fire-and-forget (2026-10-16) - see
-  // [taskkillByBinaryPath]'s own doc comment: launching a fresh instance
+  // [taskkillOwnTradingView]'s own doc comment: launching a fresh instance
   // right after a kill that silently failed just adds a SECOND process
   // fighting the first one for the same port, which looks identical to
   // "TradingView won't come up" from the caller's side.
-  await taskkillByBinaryPath(config.binaryPath, onLog: onLog);
+  await taskkillOwnTradingView(config.binaryPath, port, onLog: onLog);
   await Future<void>.delayed(const Duration(seconds: 2));
 
   await Process.start(
@@ -327,71 +328,107 @@ Future<bool> _launchTradingViewWindows(
   return false;
 }
 
-/// Asks `tasklist` directly whether [imageName] is still actually running -
-/// used to VERIFY a `taskkill` call really took effect rather than trusting
-/// its exit code blindly (2026-10-16, per the user, after a real Windows
-/// stall: the engine's "TradingView not ready" check failed in a loop for
-/// roughly 10 hours straight with no recovery, matching exactly what
-/// happens if `taskkill` silently fails - e.g. "Access is denied" against a
-/// Microsoft Store/MSIX-packaged app, which can resist a plain non-elevated
-/// kill - and nothing ever notices, so every subsequent attempt just
-/// reconnects to the SAME stuck process and fails the same way forever).
-Future<bool> isWindowsImageRunning(String imageName) async {
+/// One running TradingView process, as Windows reports it.
+class TradingViewProcess {
+  const TradingViewProcess({required this.pid, required this.parentPid, required this.commandLine});
+
+  final int pid;
+  final int parentPid;
+
+  /// Null when Windows wouldn't say - such a process is never killed.
+  final String? commandLine;
+}
+
+/// Which of [processes] belong to this app (2026-11-01, v1.6.60, per the user:
+/// TradingPionex runs its own TradingView on port 9333 and the two apps must be
+/// 100% independent; `taskkill /IM` killed every instance on the machine).
+/// Ours: anything on our [port], or a main process with no debug port and no
+/// data folder of its own, because that one holds the default folder and would
+/// swallow our relaunch. Children of a killed process are left out, since
+/// `taskkill /T` takes them with it.
+List<int> ownTradingViewPidsToKill(List<TradingViewProcess> processes, int port) {
+  bool isOurs(String commandLine) {
+    final debugPort = RegExp(r'--remote-debugging-port=(\d+)').firstMatch(commandLine);
+    if (debugPort != null) return int.parse(debugPort.group(1)!) == port;
+    return !commandLine.contains('--type=') && !commandLine.contains('--user-data-dir');
+  }
+
+  final ours = {
+    for (final p in processes)
+      if (p.commandLine != null && isOurs(p.commandLine!)) p.pid: p,
+  };
+  return [
+    for (final p in ours.values)
+      if (!ours.containsKey(p.parentPid)) p.pid,
+  ];
+}
+
+/// Every running [imageName] process with its command line, or null if Windows
+/// couldn't be asked.
+Future<List<TradingViewProcess>?> _listWindowsProcesses(String imageName) async {
   try {
-    final result = await Process.run('tasklist', [
-      '/FI',
-      'IMAGENAME eq $imageName',
-      '/NH',
-    ]);
-    return (result.stdout as String).toUpperCase().contains(
-      imageName.toUpperCase(),
-    );
+    final result = await Process.run('powershell', [
+      '-NoProfile',
+      '-Command',
+      "ConvertTo-Json -Compress -InputObject @(Get-CimInstance Win32_Process -Filter 'Name=''$imageName''' "
+          '| Select-Object ProcessId,ParentProcessId,CommandLine)',
+    ]).timeout(const Duration(seconds: 15));
+    if (result.exitCode != 0) return null;
+    return [
+      for (final p in (jsonDecode(result.stdout as String) as List).cast<Map<String, dynamic>>())
+        TradingViewProcess(
+          pid: (p['ProcessId'] as num).toInt(),
+          parentPid: (p['ParentProcessId'] as num).toInt(),
+          commandLine: p['CommandLine'] as String?,
+        ),
+    ];
   } catch (_) {
-    // Can't verify - assume it's NOT confirmed-gone, so the caller treats
-    // this the same as "kill may not have worked" rather than silently
-    // moving on.
-    return true;
+    return null;
   }
 }
 
-/// `taskkill /IM` wants just the executable's filename, not a full path -
-/// unlike Linux's `pkill -f`, which matches anywhere in the command line.
-/// Unlike the original version of this function, this one VERIFIES the
-/// process is actually gone afterward (via [isWindowsImageRunning]) and
-/// retries a few times before giving up - see that function's own doc
-/// comment for exactly why that verification matters. Returns true only
-/// once the image is confirmed no longer running.
-Future<bool> taskkillByBinaryPath(
-  String binaryPath, {
+/// Kills this app's own TradingView and no other instance - see
+/// [ownTradingViewPidsToKill]. VERIFIES it's actually gone afterward and retries
+/// a few times (2026-10-16, per the user, after a real Windows stall: the
+/// engine's "TradingView not ready" check failed in a loop for roughly 10 hours
+/// with no recovery, matching exactly what happens if `taskkill` silently fails
+/// and nothing notices). Returns true only once none of ours is left running.
+Future<bool> taskkillOwnTradingView(
+  String binaryPath,
+  int port, {
   void Function(String message, {String? level})? onLog,
 }) async {
   final imageName = binaryPath.split(RegExp(r'[\\/]')).last;
   for (var attempt = 1; attempt <= 3; attempt++) {
-    try {
-      final result = await Process.run('taskkill', ['/F', '/IM', imageName]);
-      if (result.exitCode != 0) {
-        onLog?.call(
-          'taskkill /IM $imageName exited ${result.exitCode} (attempt '
-          '$attempt/3): ${(result.stderr as String).trim()}',
-          level: 'WARNING',
-        );
-      }
-    } catch (e) {
+    final processes = await _listWindowsProcesses(imageName);
+    if (processes == null) {
       onLog?.call(
-        'taskkill /IM $imageName threw (attempt $attempt/3): $e',
+        'Could not list $imageName processes (attempt $attempt/3) - killing nothing.',
         level: 'WARNING',
       );
+    } else {
+      final pids = ownTradingViewPidsToKill(processes, port);
+      if (pids.isEmpty) return true;
+      for (final pid in pids) {
+        try {
+          final result = await Process.run('taskkill', ['/F', '/T', '/PID', '$pid']);
+          onLog?.call(
+            'TradingView kill: taskkill /F /T /PID $pid exited ${result.exitCode} (attempt $attempt/3)'
+            '${result.exitCode == 0 ? '' : ': ${(result.stderr as String).trim()}'}',
+            level: result.exitCode == 0 ? 'INFO' : 'WARNING',
+          );
+        } catch (e) {
+          onLog?.call('TradingView kill: PID $pid threw (attempt $attempt/3): $e', level: 'WARNING');
+        }
+      }
     }
     await Future<void>.delayed(const Duration(milliseconds: 500));
-    if (!await isWindowsImageRunning(imageName)) return true;
-    onLog?.call(
-      'taskkill /IM $imageName did not actually stop it (attempt $attempt/3) - retrying.',
-      level: 'WARNING',
-    );
   }
+  final left = await _listWindowsProcesses(imageName);
+  if (left != null && ownTradingViewPidsToKill(left, port).isEmpty) return true;
   onLog?.call(
-    'taskkill /IM $imageName could not terminate it after 3 attempts - it '
-    'may need admin rights or manual intervention (check Task Manager).',
+    'TradingView kill: could not stop this app\'s TradingView (port $port) after 3 attempts - '
+    'it may need admin rights or manual intervention (check Task Manager).',
     level: 'CRITICAL',
   );
   return false;
@@ -490,7 +527,7 @@ Future<bool> stopTradingView(
   void Function(String message, {String? level})? onLog,
 }) async {
   if (Platform.isWindows) {
-    await taskkillByBinaryPath(config.binaryPath, onLog: onLog);
+    await taskkillOwnTradingView(config.binaryPath, port, onLog: onLog);
   } else {
     try {
       await Process.run('pkill', ['-9', '-f', config.binaryPath]);
