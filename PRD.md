@@ -1980,6 +1980,16 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-01 (v1.6.59+107)** — **Power off and closing the window need a 5s
+  hold**. At 15:22:47 local Power went off and the window closed, about 2.5s
+  after a RustDesk session opened (RustDesk log), with 12 trades running. The
+  user: "i didn't do it". RustDesk doesn't log clicks, so a stray tap is the
+  likely cause, not a proven one. Per the user: "the confirmation need the long
+  press of 5 Seconds but cancel can be one click". Keep running and a tap
+  outside the dialog both cancel. Turning Power on needs no prompt, and closing
+  with Power off doesn't ask, so the silent installer still works. Each
+  window-close answer is logged.
+
 - **2026-11-01 (v1.6.58+106)** — **Floor estimate, margin refresh, refused
   closes**. Per the user: "yes build it". (1) v1.6.57's floor overshot to 137%:
   it priced a new trade at the account average (3.9%, pulled down by BTC) while

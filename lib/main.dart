@@ -15,6 +15,7 @@ import 'data/logging/app_logger.dart';
 import 'data/mt5/mt5_launcher.dart';
 import 'data/providers/app_providers.dart';
 import 'l10n/app_localizations.dart';
+import 'widgets/power_off_confirm.dart';
 
 /// One instance, reused by every hook below — cheap to construct (just
 /// wraps file-backed stores) but no reason to build it twice.
@@ -133,6 +134,7 @@ Future<void> main() async {
   // here gets a chance to run in that case.
   _exitListener = AppLifecycleListener(
     onExitRequested: () async {
+      if (!await _confirmCloseWhilePowerOn()) return AppExitResponse.cancel;
       await _controlRepo.pause();
       GuiInstanceLock.release();
       return AppExitResponse.exit;
@@ -150,6 +152,32 @@ Future<void> main() async {
       exit(0);
     });
   }
+}
+
+/// The prompt showing now, so a second close click waits on it instead of
+/// stacking another dialog.
+Future<bool>? _closePrompt;
+
+/// True if the window may close. Power off needs no prompt, so the silent
+/// installer's close still works. Each answer is logged, because the log alone
+/// couldn't tell a window close from a Power click on 2026-11-01.
+Future<bool> _confirmCloseWhilePowerOn() {
+  if (!_controlRepo.isPowerOn) return Future.value(true);
+  return _closePrompt ??= () async {
+    try {
+      final context = CoreRouter.router.routerDelegate.navigatorKey.currentContext;
+      if (context == null) return true;
+      final confirmed = await confirmPowerOff(context, closingApp: true);
+      AppLogger(CoreStorage.instance).log(
+        confirmed
+            ? '[USER] Window close confirmed with Power on.'
+            : '[USER] Window close cancelled - Power stays on.',
+      );
+      return confirmed;
+    } finally {
+      _closePrompt = null;
+    }
+  }();
 }
 
 Future<void> _ensureMt5OnStartup() async {

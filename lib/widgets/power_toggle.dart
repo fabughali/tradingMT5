@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/models/power_health.dart';
 import '../data/providers/app_providers.dart';
+import 'power_off_confirm.dart';
 
 /// The Power switch plus its live health indicator (2026-09-20, per the
 /// user). Power always starts off whenever the GUI (re)launches — forced in
@@ -135,7 +136,8 @@ class _PowerToggleState extends ConsumerState<PowerToggle>
                     shown.withValues(alpha: 0.5),
                   ),
                   trackOutlineColor: WidgetStateProperty.all(shown),
-                  onChanged: (on) {
+                  onChanged: (on) async {
+                    if (!on && !await confirmPowerOff(context, closingApp: false)) return;
                     on ? repo.resume() : repo.pause();
                     ref.invalidate(controlToggleStateProvider);
                     ref.invalidate(engineStatusProvider);
