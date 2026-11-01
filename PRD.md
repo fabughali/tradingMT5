@@ -1980,6 +1980,22 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-01 (v1.6.58+106)** — **Floor estimate, margin refresh, refused
+  closes**. Per the user: "yes build it". (1) v1.6.57's floor overshot to 137%:
+  it priced a new trade at the account average (3.9%, pulled down by BTC) while
+  the alts added really cost about 6.7%. A new trade now counts at 7% or the
+  account average, whichever is higher, so fewer trades fit. (2) The Power-on
+  sweep never refreshed the margin reading, so it stayed at 239.1% from 21:51
+  to 22:09 UTC while trades were added; it now refreshes between pairs. (3)
+  Equiti closed the crypto market at about 06:59 UTC: quotes froze and margin
+  held went from about \$35 to \$54.39 (level 149% to 97%). MT5 answered the
+  audit's AVAX close with `#10018 Market closed` / `#10031 No connection`, not
+  an error, so the app recorded a close that never happened (one false History
+  row every ~10 minutes), forgot the ticket, and tried to open the opposite
+  trade; only the margin gate stopped it. A refused close, or a ticket still
+  open after the close, now throws before history or the reopen. The false AVAX
+  rows already in `bot-history.jsonl` are left as they are.
+
 - **2026-11-01 (v1.6.57+105)** — **A 150% margin floor replaces the fixed
   trade counts**. Per the user: "i think we should do the margin in different
   way so i can have more running trades", then "150% floor implement and

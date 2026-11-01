@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import '../../core/core_storage.dart';
 import '../models/app_config.dart';
 import '../models/auto_category.dart';
@@ -66,6 +68,10 @@ class RiskGate {
   /// estimated from the rate the account pays now: [margin] / [exposureNotional]
   /// (live: \$21.08 on \$538.75, about 3.9%). Null = nothing open to measure
   /// from, so there is nothing for the floor to protect yet.
+  ///
+  /// The rate never goes below [minNewTradeMarginRate] (2026-11-01, v1.6.58):
+  /// the account average is pulled down by the BTC trade, so 3.9% let margin
+  /// overshoot the floor to 137% when the alts added really cost 6.7%.
   static double? projectedMarginLevel({
     required double equity,
     required double margin,
@@ -73,8 +79,12 @@ class RiskGate {
     required double newNotional,
   }) {
     if (margin <= 0 || exposureNotional <= 0) return null;
-    return equity / (margin + margin / exposureNotional * newNotional) * 100;
+    final rate = max(margin / exposureNotional, minNewTradeMarginRate);
+    return equity / (margin + rate * newNotional) * 100;
   }
+
+  /// Lowest margin rate assumed for a new trade - see [projectedMarginLevel].
+  static const minNewTradeMarginRate = 0.07;
 
   /// Scales the SIZE of the next trade as margin tightens (2026-10-15, per
   /// the user: shrink new exposure as real risk rises). 1.0 = full size

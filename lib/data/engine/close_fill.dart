@@ -1,3 +1,14 @@
+/// Why MT5 refused a close, or null if [result] (from
+/// `trade_close_single_position`) doesn't report a refusal. MT5 answers a
+/// refused close normally instead of with an error (found live 2026-11-01:
+/// AVAX `#10018 Market closed`), so without this the app recorded a close that
+/// never happened and went on to open the opposite trade.
+String? closeRejectedReason(Map<String, dynamic> result) {
+  final retcode = result['retcode'];
+  if (retcode is! num || retcode == 10009 || retcode == 10008) return null;
+  return 'retcode=$retcode ${result['retcode_details'] ?? ''}'.trim();
+}
+
 /// The app's own closes record history from the last live snapshot taken
 /// BEFORE the close was sent, so the exit price and profit were the quote of
 /// that moment, not the real fill (found live 2026-10-27: BCH ticket

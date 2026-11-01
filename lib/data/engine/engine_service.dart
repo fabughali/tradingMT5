@@ -2479,6 +2479,9 @@ class EngineService {
         // / ratchet protection for ~20 minutes. Self-throttled to 30s, same
         // sequential call the normal per-symbol loop already makes.
         await _maybeApplySlRatchet();
+        // Same gap for the margin reading (2026-11-01, v1.6.58): it stayed at
+        // 239.1% from 21:51 to 22:09 UTC while this sweep added trades.
+        await _maybeRefreshMarginGate();
         try {
           final currentSymbols = _loadSymbolsFresh();
           final mapping = currentSymbols.firstWhere(
@@ -5121,7 +5124,12 @@ class EngineService {
     } catch (_) {
       // History just gets "—" for these two columns this time.
     }
-    await mt5.closePosition(symbol: mt5Symbol, positionTicket: ticket);
+    try {
+      await _sendCloseOrThrow(mt5Symbol, ticket);
+    } catch (_) {
+      _closedTickets.remove(ticket);
+      rethrow;
+    }
     // 2026-10-14, per the user: "include the P&L value in history card ...
     // +11.02 (+33.45%)" / "include the sll setup at the trade terminal" -
     // both need live-looked-up data ([getMarketWatchSymbol]'s contract
@@ -5215,6 +5223,32 @@ class EngineService {
     await _closeCopiesOf(category, tvSymbol, mt5Symbol, excludeTicket: ticket);
   }
 
+  /// Sends the close and throws unless the position really went (2026-11-01,
+  /// v1.6.58, see [closeRejectedReason]). Throwing stops every caller before
+  /// it records history or opens the opposite trade; the signal check simply
+  /// tries again next cycle. Also checks MT5's open list, so a refusal in a
+  /// shape [closeRejectedReason] doesn't know is still caught.
+  Future<void> _sendCloseOrThrow(String mt5Symbol, int ticket) async {
+    final result = await mt5.closePosition(symbol: mt5Symbol, positionTicket: ticket);
+    final rejected = closeRejectedReason(result);
+    if (rejected != null) {
+      throw Mt5ClientException('$mt5Symbol: MT5 refused to close ticket=$ticket: $rejected');
+    }
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await Future<void>.delayed(const Duration(milliseconds: 500));
+      final Map<String, dynamic> open;
+      try {
+        open = await mt5.getOpenPositions(symbol: mt5Symbol);
+      } catch (e) {
+        logger.log('$mt5Symbol: could not re-check ticket=$ticket after its close: $e', level: 'WARNING');
+        return;
+      }
+      final positions = (open['positions'] as List? ?? const []).cast<Map<String, dynamic>>();
+      if (!positions.any((p) => _parseTicket(p['position_id']) == ticket)) return;
+    }
+    throw Mt5ClientException('$mt5Symbol: ticket=$ticket is still open after its close was sent.');
+  }
+
   /// [position] with the real close price/profit from MT5's position history
   /// (see [withActualCloseFill]). Tries twice, 500ms apart, since the closed
   /// record can lag the close call; falls back to the pre-close snapshot.
@@ -5285,7 +5319,7 @@ class EngineService {
         '$mt5Symbol ($category): closing copy ticket=$copyTicket - its parent trade just closed.',
       );
       try {
-        await mt5.closePosition(symbol: mt5Symbol, positionTicket: copyTicket);
+        await _sendCloseOrThrow(mt5Symbol, copyTicket);
       } catch (e) {
         logger.log('$mt5Symbol ($category): failed to close copy ticket=$copyTicket: $e', level: 'ERROR');
         continue;

@@ -23,19 +23,34 @@ void main() {
 
     test('a small trade stays above the floor, a big one does not', () {
       expect(after(30)!, greaterThan(RiskGate.marginGateThresholdPct)); // DOGE-sized
-      expect(after(310)!, greaterThan(RiskGate.marginGateThresholdPct)); // BTC-sized
-      expect(after(77000)!, lessThan(RiskGate.marginGateThresholdPct)); // a 1-lot BTC copy
+      expect(after(310)!, lessThan(RiskGate.marginGateThresholdPct)); // BTC-sized
     });
 
-    test('the trade count alone never blocks: 11 about-\$75 trades on \$50 fit, 12 do not', () {
+    test('the trade count alone never blocks: 10 about-\$75 trades on \$50 fit, 11 do not', () {
       double? withOpen(int n) => RiskGate.projectedMarginLevel(
         equity: 50,
         margin: n * 3.0,
         exposureNotional: n * 75.0,
         newNotional: 75,
       );
-      expect(withOpen(10)!, greaterThan(150));
-      expect(withOpen(11)!, lessThanOrEqualTo(150));
+      expect(withOpen(9)!, greaterThan(150));
+      expect(withOpen(10)!, lessThanOrEqualTo(150));
+    });
+
+    test('a new trade costs at least 7%, even when the account average is lower', () {
+      // Live 2026-10-31: TRX passed at the 3.9% average, margin then hit 137%.
+      expect(after(100), closeTo(49.93 / (21.08 + 7) * 100, 0.01));
+    });
+
+    test('a higher account average is used as it is', () {
+      // Live 2026-11-01: margin jumped to \$54.39 on about \$750 (7.25%).
+      final level = RiskGate.projectedMarginLevel(
+        equity: 100,
+        margin: 54.39,
+        exposureNotional: 750,
+        newNotional: 100,
+      );
+      expect(level, closeTo(100 / (54.39 + 54.39 / 750 * 100) * 100, 0.01));
     });
 
     test('nothing open means nothing to measure from - never blocks', () {

@@ -217,7 +217,7 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 
 ## Current state (keep this updated)
 
-- Version: repo `1.6.57+105` (2026-11-01). Releases since 1.6.25 are summarised in PRD
+- Version: repo `1.6.58+106` (2026-11-01). Releases since 1.6.25 are summarised in PRD
   §20 (closed-candle rule, ignite, Market Watch auto-add, dollar SLL, spread guard,
   recycle pre-check, pending-cancel <200%, SLL profit-only, no spread limit, resting-order volume sync, chart DATA check before any read). Windows install status: check
   `VersionInfo.FileVersion` (never assume). Linux not redeployed from Windows (no SSH) —
@@ -229,7 +229,10 @@ the actual cross-machine source of truth — the backups folder is a local-only 
   sits in the install folder (unused, safe to delete).
 - Windows installs since, same silent-installer method with Power off: v1.6.54
   (2026-10-27 17:55Z) and v1.6.56+104 (2026-10-30 ~04:25Z, CI asset sha256
-  8e3053f9...). Installed = 1.6.56+104 (GUI + engine).
+  8e3053f9...), then v1.6.57+105 (2026-10-31 ~21:45Z). Check `FileVersion` for
+  anything newer.
+- Equiti closes crypto at times (seen 2026-11-01 06:59Z, a Sunday): quotes freeze,
+  margin held jumps ~54%, closes return `#10018 Market closed`.
 - Windows PC is on Insider/preview build 26300 - Windows Update auto-rebooted it
   2026-10-29 04:39 local (engine off ~20h), and it hard-froze 2026-10-29 ~22:00Z
   while a stuck TradingView was being force-killed (see PRD v1.6.56).
