@@ -1980,6 +1980,24 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-04 (v1.6.63+111)** — **Shared TradingView: TradingMT5 uses only its
+  own chart tab**. TradingView allows one live session per account, so
+  TradingMT5 and TradingPionex now share ONE TradingView on port 9222, each on
+  its own chart tab (MT5: layout `sdsxZ9HR`; Pionex: a layout named "Pionex").
+  Per the user: connect only to its own tab by layout ID (config setting);
+  never read, switch or change any other tab, and never fall back to one;
+  never open tabs or windows (the free plan allows 2 chart connections); only
+  restart TradingView when MT5's own tab is truly stuck. Done:
+  `cdp.layout_id` in config.json plus a "Chart layout ID" field on Settings;
+  `getChartTarget` picks only the page at `/chart/<layoutId>/` and throws
+  `OwnChartTabMissingException` otherwise (logged as an error, no reload, no
+  restart); the open connection's `location.href` is re-checked every cycle;
+  the stuck ladder now reloads only our own tab first and force-kills
+  TradingView only if still stuck for another 3 tries (3 kills / 30 min cap
+  kept); a debug port that's slow to answer while TradingView is still running
+  goes through that ladder instead of an instant kill-and-relaunch (seen
+  20:21 local the same day). A unit test fails if any code opens a tab/window
+  or navigates one.
 - **2026-11-04 (v1.6.62+110)** — **Retry a refused trigger price with the live
   quote**. The first v1.6.61 ignite of ETH (sell 0.6) failed: the market order
   got the usual 10030, then the sell stop at 2419.0 got 10015 "Invalid price"

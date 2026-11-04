@@ -161,6 +161,7 @@ class ConnectionsCard extends ConsumerStatefulWidget {
 class _ConnectionsCardState extends ConsumerState<ConnectionsCard> {
   late final TextEditingController _tvHostCtrl;
   late final TextEditingController _tvPortCtrl;
+  late final TextEditingController _tvLayoutCtrl;
   late final TextEditingController _mt5HostCtrl;
   late final TextEditingController _mt5PortCtrl;
   late final TextEditingController _mt5KeyCtrl;
@@ -172,6 +173,7 @@ class _ConnectionsCardState extends ConsumerState<ConnectionsCard> {
   // not change"). Updated on load and after every successful save.
   late String _tvHostSaved;
   late String _tvPortSaved;
+  late String _tvLayoutSaved;
   late String _mt5HostSaved;
   late String _mt5PortSaved;
   late String _mt5KeySaved;
@@ -190,12 +192,14 @@ class _ConnectionsCardState extends ConsumerState<ConnectionsCard> {
     final config = repo.currentConfig;
     _tvHostSaved = config.cdp.host;
     _tvPortSaved = config.cdp.port.toString();
+    _tvLayoutSaved = config.cdp.layoutId;
     _mt5HostSaved = config.mt5.mcpHost;
     _mt5PortSaved = config.mt5.mcpPort.toString();
     _mt5KeySaved = repo.currentMt5ApiKey;
 
     _tvHostCtrl = TextEditingController(text: _tvHostSaved)..addListener(_onFieldChanged);
     _tvPortCtrl = TextEditingController(text: _tvPortSaved)..addListener(_onFieldChanged);
+    _tvLayoutCtrl = TextEditingController(text: _tvLayoutSaved)..addListener(_onFieldChanged);
     _mt5HostCtrl = TextEditingController(text: _mt5HostSaved)..addListener(_onFieldChanged);
     _mt5PortCtrl = TextEditingController(text: _mt5PortSaved)..addListener(_onFieldChanged);
     _mt5KeyCtrl = TextEditingController(text: _mt5KeySaved)..addListener(_onFieldChanged);
@@ -207,13 +211,17 @@ class _ConnectionsCardState extends ConsumerState<ConnectionsCard> {
   void dispose() {
     _tvHostCtrl.dispose();
     _tvPortCtrl.dispose();
+    _tvLayoutCtrl.dispose();
     _mt5HostCtrl.dispose();
     _mt5PortCtrl.dispose();
     _mt5KeyCtrl.dispose();
     super.dispose();
   }
 
-  bool get _tvDirty => _tvHostCtrl.text != _tvHostSaved || _tvPortCtrl.text != _tvPortSaved;
+  bool get _tvDirty =>
+      _tvHostCtrl.text != _tvHostSaved ||
+      _tvPortCtrl.text != _tvPortSaved ||
+      _tvLayoutCtrl.text != _tvLayoutSaved;
   bool get _mt5Dirty =>
       _mt5HostCtrl.text != _mt5HostSaved ||
       _mt5PortCtrl.text != _mt5PortSaved ||
@@ -292,10 +300,15 @@ class _ConnectionsCardState extends ConsumerState<ConnectionsCard> {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid port number.')));
       return;
     }
-    ref.read(controlRepositoryProvider).updateCdpConfig(host: _tvHostCtrl.text.trim(), port: port);
+    ref.read(controlRepositoryProvider).updateCdpConfig(
+      host: _tvHostCtrl.text.trim(),
+      port: port,
+      layoutId: _tvLayoutCtrl.text.trim(),
+    );
     setState(() {
       _tvHostSaved = _tvHostCtrl.text;
       _tvPortSaved = _tvPortCtrl.text;
+      _tvLayoutSaved = _tvLayoutCtrl.text;
     });
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Saved. Restart the engine for this to take effect.')),
@@ -351,6 +364,18 @@ class _ConnectionsCardState extends ConsumerState<ConnectionsCard> {
                   controller: _tvPortCtrl,
                   decoration: const InputDecoration(labelText: 'Port', isDense: true),
                   keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 2,
+                child: TextField(
+                  controller: _tvLayoutCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Chart layout ID',
+                    hintText: 'from /chart/<id>/',
+                    isDense: true,
+                  ),
                 ),
               ),
             ],

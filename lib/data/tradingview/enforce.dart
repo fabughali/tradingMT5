@@ -634,8 +634,8 @@ class EnforceResult {
 /// End-to-end: close all indicators, then open the two custom scripts, then
 /// verify — ported 1:1 from lib/enforce.js `enforceCustomScripts`. Idempotent
 /// across repeated runs without a TradingView restart.
-Future<EnforceResult> enforceCustomScripts(String host, int port) async {
-  final cdp = await connectToChart(host, port);
+Future<EnforceResult> enforceCustomScripts(String host, int port, {required String layoutId}) async {
+  final cdp = await connectToChart(host, port, layoutId: layoutId);
   try {
     final apiReady = await waitForChartApiReady(cdp);
     if (!apiReady) {
@@ -801,8 +801,8 @@ Future<bool> isSupertrendPresent(CdpClient cdp) async {
 /// Same end-to-end shape as [enforceCustomScripts] (close everything, add
 /// the required scripts, verify) but for the Supertrend Plus + worm_9_26
 /// combo.
-Future<EnforceResult> enforceSupertrendPlus(String host, int port) async {
-  final cdp = await connectToChart(host, port);
+Future<EnforceResult> enforceSupertrendPlus(String host, int port, {required String layoutId}) async {
+  final cdp = await connectToChart(host, port, layoutId: layoutId);
   try {
     final apiReady = await waitForChartApiReady(cdp);
     if (!apiReady) {
@@ -943,8 +943,8 @@ Future<bool> isWorm10Present(CdpClient cdp) async {
 
 /// Same end-to-end shape as [enforceSupertrendPlus] but for the
 /// worm_10_26 + spy_9_26 combo.
-Future<EnforceResult> enforceWorm10(String host, int port) async {
-  final cdp = await connectToChart(host, port);
+Future<EnforceResult> enforceWorm10(String host, int port, {required String layoutId}) async {
+  final cdp = await connectToChart(host, port, layoutId: layoutId);
   try {
     final apiReady = await waitForChartApiReady(cdp);
     if (!apiReady) {

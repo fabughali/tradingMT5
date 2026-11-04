@@ -34,10 +34,16 @@ class Mt5Config {
 /// signal-reading connection tradingPionex uses, ported unchanged since
 /// signal reading is entirely broker-agnostic.
 class CdpConfig {
-  const CdpConfig({required this.host, required this.port});
+  const CdpConfig({required this.host, required this.port, this.layoutId = ''});
 
   final String host;
   final int port;
+
+  /// TradingMT5's own TradingView chart tab: the `<layoutId>` in
+  /// `/chart/<layoutId>/` (2026-11-04, v1.6.63 - one TradingView is shared
+  /// with TradingPionex, each app on its own tab). Empty = connect to
+  /// nothing; never guessed.
+  final String layoutId;
 
   /// No fallback host/port - same reasoning as [Mt5Config.fromJson]'s own
   /// doc comment. See `config.example.json` for `cdp.host`/`cdp.port`
@@ -52,10 +58,10 @@ class CdpConfig {
         'config.example.json for what to fill in.',
       );
     }
-    return CdpConfig(host: host, port: port);
+    return CdpConfig(host: host, port: port, layoutId: (json?['layout_id'] as String? ?? '').trim());
   }
 
-  Map<String, dynamic> toJson() => {'host': host, 'port': port};
+  Map<String, dynamic> toJson() => {'host': host, 'port': port, 'layout_id': layoutId};
 }
 
 class RiskConfig {

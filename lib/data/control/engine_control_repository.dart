@@ -435,13 +435,13 @@ class EngineControlRepository {
   /// cycle - see [EngineService._loadSymbolsFresh]) - a changed host/port
   /// here needs an engine restart to actually take effect, which the
   /// Settings screen must say explicitly rather than implying it's instant.
-  void updateCdpConfig({required String host, required int port}) {
+  void updateCdpConfig({required String host, required int port, required String layoutId}) {
     final json = Map<String, dynamic>.from(
       _storage.readJsonObject(_storage.configFile) ?? AppConfig.defaultConfig.toJson(),
     );
-    json['cdp'] = {'host': host, 'port': port};
+    json['cdp'] = {'host': host, 'port': port, 'layout_id': layoutId};
     _storage.writeJson(_storage.configFile, json);
-    _logUserAction('TradingView connection config saved: $host:$port (Settings).');
+    _logUserAction('TradingView connection config saved: $host:$port, layout $layoutId (Settings).');
   }
 
   /// Same as [updateCdpConfig] but for `config.json`'s `mt5` block

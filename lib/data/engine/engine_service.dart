@@ -2140,12 +2140,51 @@ class EngineService {
   DateTime? _tvBackoffUntil;
   DateTime? _lastBackoffAttempt;
 
+  /// Shared TradingView (2026-11-04, v1.6.63, per the user: "Recovery only
+  /// restarts TradingView when MT5's own tab is truly stuck, because a
+  /// restart also takes down Pionex's tab"): the first time our tab hits the
+  /// stuck threshold, only our own tab is reloaded. TradingView is
+  /// force-killed only if it is still stuck for another full threshold after
+  /// that reload. Cleared on a healthy connect.
+  bool _ownTabReloadTried = false;
+
+  /// Reloads TradingMT5's own chart tab only - never any other tab.
+  Future<void> _reloadOwnChartTab() async {
+    CdpClient? client;
+    try {
+      client = await connectToChart(
+        config.cdp.host,
+        config.cdp.port,
+        layoutId: config.cdp.layoutId,
+        maxRetries: 1,
+      );
+      await client.send('Page.reload', const {'ignoreCache': false});
+      await Future<void>.delayed(const Duration(seconds: 20));
+    } catch (e) {
+      logger.log('TRADINGVIEW WATCHDOG: own-tab reload failed: $e', level: 'ERROR');
+    } finally {
+      client?.close();
+    }
+  }
+
   Future<void> _forceRelaunchTradingViewIfStuck(String home) async {
     _consecutiveStuckAttempts++;
     if (_consecutiveStuckAttempts < _forceRelaunchTradingViewThreshold) {
       return;
     }
     _consecutiveStuckAttempts = 0;
+    if (!_ownTabReloadTried) {
+      _ownTabReloadTried = true;
+      logger.log(
+        'TRADINGVIEW WATCHDOG: our chart tab /chart/${config.cdp.layoutId}/ failed '
+        '$_forceRelaunchTradingViewThreshold times in a row - reloading only that tab '
+        '(no restart yet; a restart would also close TradingPionex\'s tab).',
+        level: 'CRITICAL',
+      );
+      await _reloadOwnChartTab();
+      return;
+    }
+    _ownTabReloadTried = false;
     final now = DateTime.now();
     _forceKillTimes.removeWhere((t) => now.difference(t) > _forceKillWindow);
     if (_forceKillTimes.length >= _maxForceKillsPerWindow) {
@@ -2162,10 +2201,10 @@ class EngineService {
     }
     _forceKillTimes.add(now);
     logger.log(
-      'TRADINGVIEW WATCHDOG: CDP port reachable but TradingView never '
-      'cooperated $_forceRelaunchTradingViewThreshold times in a row - '
-      'looks alive but stuck, not genuinely down. Force-killing it now so '
-      'the next connect attempt starts it fresh.',
+      'TRADINGVIEW WATCHDOG: our chart tab is still stuck after reloading it '
+      '($_forceRelaunchTradingViewThreshold more failures) - force-killing '
+      'TradingView now so the next connect attempt starts it fresh. This also '
+      'closes TradingPionex\'s tab.',
       level: 'CRITICAL',
     );
     try {
@@ -2321,6 +2360,20 @@ class EngineService {
     }
     final technique = _activeTechnique();
     if (_cdp != null && !_cdp!.dead) {
+      // Shared TradingView (v1.6.63): the connected page must still be our
+      // own layout - if someone switched that tab to another layout, drop it
+      // rather than touch a chart that isn't ours.
+      final href = '${await _cdp!.evaluate('location.href')}';
+      if (!isOwnChartUrl(href, config.cdp.layoutId)) {
+        _cdp!.close();
+        _cdp = null;
+        logger.log(
+          'TRADINGVIEW: the connected tab is now $href, not our layout '
+          '/chart/${config.cdp.layoutId}/ - disconnected, doing nothing.',
+          level: 'ERROR',
+        );
+        throw OwnChartTabMissingException(config.cdp.layoutId);
+      }
       if (await _indicatorsReadyFor(technique, _cdp!)) return;
       logger.log('Indicators missing on an already-open chart — re-enforcing.');
     } else if (_cdp != null) {
@@ -2336,6 +2389,15 @@ class EngineService {
       final tvLaunchConfig = await _tradingViewLaunchConfig(home);
       if (!isTradingViewInstalled(tvLaunchConfig)) {
         throw TradingViewNotInstalledException(tvLaunchConfig.binaryPath);
+      }
+      // Shared TradingView (v1.6.63): a port that didn't answer within 8s
+      // while TradingView is still running is "maybe stuck", not "down" -
+      // go through the stuck ladder (own-tab reload first) instead of an
+      // immediate kill-and-relaunch that would also close Pionex's tab
+      // (seen 2026-11-04 20:21 local: one slow answer -> instant kill).
+      if (await isTradingViewRunningOnPort(tvLaunchConfig.binaryPath, port) == true) {
+        await _forceRelaunchTradingViewIfStuck(home);
+        throw StateError('TradingView is running but its debug port $port did not answer');
       }
       _writeStatus(
         health: PowerHealthState.checking,
@@ -2356,7 +2418,14 @@ class EngineService {
 
     final CdpClient client;
     try {
-      client = _cdp ?? await connectToChart(host, port);
+      client = _cdp ?? await connectToChart(host, port, layoutId: config.cdp.layoutId);
+    } on OwnChartTabMissingException catch (e) {
+      // Our tab isn't open: a setup problem, not a stuck TradingView. Never
+      // reload or restart for it (a restart would also take down
+      // TradingPionex's tab) and never use another tab.
+      _cdp = null;
+      logger.log('TRADINGVIEW: ${e.message}', level: 'ERROR');
+      rethrow;
     } catch (e) {
       // Found live 2026-10-07 ("trading view is loading forever"): a
       // TradingView process that still accepts a bare TCP connect to the
@@ -2391,7 +2460,7 @@ class EngineService {
       // 2026-10-18, per the user: all three techniques now read the same
       // worm_10_26 + spy_9_26 pair (see [_indicatorsReadyFor]'s own doc
       // comment) - one shared enforcement function for all of them.
-      final enforceResult = await enforceWorm10(host, port);
+      final enforceResult = await enforceWorm10(host, port, layoutId: config.cdp.layoutId);
       final ok = enforceResult.finalMsb && enforceResult.finalRsi;
       if (!ok) {
         client.close();
@@ -2406,6 +2475,7 @@ class EngineService {
       await ensureChartStyle(client, ChartStyle.heikinAshi);
     }
     _consecutiveStuckAttempts = 0;
+    _ownTabReloadTried = false;
     _tvBackoffUntil = null;
     _lastBackoffAttempt = null;
     _cdp = client;

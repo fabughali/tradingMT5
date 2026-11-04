@@ -180,29 +180,50 @@ CdpTarget _toTarget(Map<String, dynamic> t) => CdpTarget(
   webSocketDebuggerUrl: t['webSocketDebuggerUrl'] as String,
 );
 
-/// Fetches `/json/list` and returns the first TradingView chart page target
-/// (preferring `tradingview.com/chart`, falling back to any tradingview page).
-Future<CdpTarget?> getChartTarget(String host, int port) async {
-  final targets = await _fetchJsonList(host, port);
-  Map<String, dynamic>? pick(bool Function(String url) matches) {
-    for (final t in targets) {
-      if (t['type'] == 'page' && matches((t['url'] ?? '').toString())) return t;
-    }
-    return null;
-  }
+/// TradingMT5's own chart tab is not open in TradingView (or no layout ID is
+/// configured). Never a reason to restart TradingView or use another tab.
+class OwnChartTabMissingException extends CdpException {
+  OwnChartTabMissingException(String layoutId)
+    : super(
+        layoutId.isEmpty
+            ? 'no TradingView layout ID configured (config.json cdp.layout_id) - doing nothing'
+            : 'own chart tab /chart/$layoutId/ not found - doing nothing',
+      );
+}
 
-  final chartTarget =
-      pick(
-        (url) => RegExp(
-          'tradingview\\.com/chart',
-          caseSensitive: false,
-        ).hasMatch(url),
-      ) ??
-      pick((url) => RegExp('tradingview', caseSensitive: false).hasMatch(url));
-  return chartTarget == null ? null : _toTarget(chartTarget);
+/// Whether [url] is the chart page of layout [layoutId]
+/// (`https://www.tradingview.com/chart/<layoutId>/...`).
+bool isOwnChartUrl(String url, String layoutId) {
+  if (layoutId.isEmpty) return false;
+  final uri = Uri.tryParse(url);
+  if (uri == null || !uri.host.toLowerCase().endsWith('tradingview.com')) return false;
+  final segments = uri.pathSegments;
+  return segments.length >= 2 && segments[0] == 'chart' && segments[1] == layoutId;
+}
+
+/// The one page target that is TradingMT5's own chart tab, or null
+/// (2026-11-04, v1.6.63, per the user: TradingMT5 and TradingPionex share one
+/// TradingView, each on its own tab; "it never reads, switches or changes any
+/// other tab ... It never falls back to another tab").
+Map<String, dynamic>? pickOwnChartTarget(List<Map<String, dynamic>> targets, String layoutId) {
+  for (final t in targets) {
+    if (t['type'] == 'page' && isOwnChartUrl((t['url'] ?? '').toString(), layoutId)) return t;
+  }
+  return null;
+}
+
+/// Fetches `/json/list` and returns TradingMT5's own chart tab - the page
+/// whose URL is `/chart/<layoutId>/`. Throws [OwnChartTabMissingException]
+/// when it isn't there; there is no fallback to any other tab.
+Future<CdpTarget> getChartTarget(String host, int port, {required String layoutId}) async {
+  final targets = await _fetchJsonList(host, port);
+  final own = pickOwnChartTarget(targets, layoutId);
+  if (own == null) throw OwnChartTabMissingException(layoutId);
+  return _toTarget(own);
 }
 
 /// Lists every visible TradingView page target (not just the first match).
+/// Read-only listing from `/json/list` - never connects to any of them.
 Future<List<CdpTarget>> listTradingViewTargets(String host, int port) async {
   final targets = await _fetchJsonList(host, port);
   return targets
@@ -223,6 +244,7 @@ Future<List<CdpTarget>> listTradingViewTargets(String host, int port) async {
 Future<CdpClient> connectToChart(
   String host,
   int port, {
+  required String layoutId,
   // Lowered from 5, 2026-10-05, per the user ("fix the bug so the engine
   // will never stuck for 5 min") — paired with CoreConstants.cdpRequestTimeout
   // dropping from 60s to 8s, this caps the worst case here at roughly
@@ -233,13 +255,13 @@ Future<CdpClient> connectToChart(
   Object? lastError;
   for (var attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      final target = await getChartTarget(host, port);
-      if (target == null)
-        throw CdpException('No TradingView chart target found');
+      final target = await getChartTarget(host, port, layoutId: layoutId);
       final socket = await WebSocket.connect(target.webSocketDebuggerUrl);
       final client = CdpClient(socket);
       await client.send('Runtime.enable');
       return client;
+    } on OwnChartTabMissingException {
+      rethrow;
     } catch (e) {
       lastError = e;
       final delayMs = (baseDelay.inMilliseconds * (1 << attempt)).clamp(

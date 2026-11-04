@@ -387,6 +387,17 @@ Future<List<TradingViewProcess>?> _listWindowsProcesses(String imageName) async 
   }
 }
 
+/// Whether a TradingView process started with our debug [port] is running
+/// (Windows only; null = couldn't tell). Used so a CDP port that is slow to
+/// answer is treated as "maybe stuck", not "not running" - relaunching kills
+/// the shared TradingView, TradingPionex's tab included (2026-11-04, v1.6.63).
+Future<bool?> isTradingViewRunningOnPort(String binaryPath, int port) async {
+  if (!Platform.isWindows) return null;
+  final processes = await _listWindowsProcesses(binaryPath.split(RegExp(r'[\\/]')).last);
+  if (processes == null) return null;
+  return processes.any((p) => p.commandLine?.contains('--remote-debugging-port=$port') ?? false);
+}
+
 /// Kills this app's own TradingView and no other instance - see
 /// [ownTradingViewPidsToKill]. VERIFIES it's actually gone afterward and retries
 /// a few times (2026-10-16, per the user, after a real Windows stall: the
