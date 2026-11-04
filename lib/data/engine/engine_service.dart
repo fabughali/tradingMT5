@@ -4633,6 +4633,23 @@ class EngineService {
     return DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000 < checkAt;
   }
 
+  /// The current (bid, ask) for [mt5Symbol] from Market Watch, or null if
+  /// MT5 gives no usable quote.
+  Future<(double, double)?> _liveQuote(String mt5Symbol) async {
+    try {
+      final r = await mt5.getMarketWatchSymbol(mt5Symbol);
+      final symbols = (r['symbols'] as List?) ?? const [];
+      if (symbols.isEmpty) return null;
+      final s = symbols.first as Map<String, dynamic>;
+      final bid = (s['bid'] as num?)?.toDouble();
+      final ask = (s['ask'] as num?)?.toDouble();
+      if (bid == null || ask == null || bid <= 0 || ask <= 0) return null;
+      return (bid, ask);
+    } catch (_) {
+      return null;
+    }
+  }
+
   double _roundToDigits(double v, int digits) {
     var mult = 1.0;
     for (var i = 0; i < digits; i++) {
@@ -4944,21 +4961,38 @@ class EngineService {
             ? stopsLevelPoints * point
             : point;
         final buffer = minDistance;
-        final triggerPrice = _roundToDigits(
-          direction == TradeDirection.long ? ask + buffer : bid - buffer,
-          digits,
-        );
-        result = await mt5.sendPendingOrder(
-          symbol: mt5Symbol,
-          type: direction == TradeDirection.long ? 'buy_stop' : 'sell_stop',
-          volume: tryVolume,
-          price: triggerPrice,
-          sl: sl,
-          tp: tp,
-          fillingType: 'ioc',
-          comment: 'trading_mt5 ${category.wireValue}',
-        );
-        retcode = (result['retcode'] as num?)?.toInt();
+        // 10015 "Invalid price" = the market moved past the trigger between
+        // the quote read and the send (2026-11-04, v1.6.62, ignited ETH sell
+        // stop at 2419.0 refused). Re-read the live quote and resend, up to 3
+        // tries, instead of waiting a whole sweep for the next attempt.
+        var liveBid = bid;
+        var liveAsk = ask;
+        for (var attempt = 1; attempt <= 3; attempt++) {
+          final triggerPrice = _roundToDigits(
+            direction == TradeDirection.long ? liveAsk + buffer : liveBid - buffer,
+            digits,
+          );
+          result = await mt5.sendPendingOrder(
+            symbol: mt5Symbol,
+            type: direction == TradeDirection.long ? 'buy_stop' : 'sell_stop',
+            volume: tryVolume,
+            price: triggerPrice,
+            sl: sl,
+            tp: tp,
+            fillingType: 'ioc',
+            comment: 'trading_mt5 ${category.wireValue}',
+          );
+          retcode = (result['retcode'] as num?)?.toInt();
+          if (retcode != 10015 || attempt == 3) break;
+          final fresh = await _liveQuote(mt5Symbol);
+          if (fresh == null) break;
+          logger.log(
+            '$mt5Symbol ($category): trigger $triggerPrice refused (Invalid price) - '
+            'price moved; retrying with the live quote (bid=${fresh.$1}, ask=${fresh.$2}).',
+          );
+          liveBid = fresh.$1;
+          liveAsk = fresh.$2;
+        }
         viaPendingFallback = true;
       }
       if (retcode != null && retcode != 10009) {

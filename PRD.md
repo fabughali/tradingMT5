@@ -1980,6 +1980,14 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-04 (v1.6.62+110)** — **Retry a refused trigger price with the live
+  quote**. The first v1.6.61 ignite of ETH (sell 0.6) failed: the market order
+  got the usual 10030, then the sell stop at 2419.0 got 10015 "Invalid price"
+  because ETH had moved past it in the moment between the quote read and the
+  send - the open then waited a whole sweep (~15 min) to try again. The user:
+  "fix the price so eth fills now... is this a bug". A 10015 on the
+  immediate-trigger fallback now re-reads the live bid/ask and resends, up to 3
+  tries, before giving up. Volume (0.6) was not the cause (that would be 10014).
 - **2026-11-04 (v1.6.61+109)** — **Ignite acts on the current signal at once**.
   ETH was ignited at 18:09 local; its current signal was SELL_OPEN1 on the
   still-forming 18:00 candle, so the closed-candle rule deferred it and the
