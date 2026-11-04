@@ -1980,6 +1980,17 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-04 (v1.6.61+109)** — **Ignite acts on the current signal at once**.
+  ETH was ignited at 18:09 local; its current signal was SELL_OPEN1 on the
+  still-forming 18:00 candle, so the closed-candle rule deferred it and the
+  normal pending wait would have held it until 20:00. The user: "ignite does
+  not wait for signal ... ignite should work on current signal ... not
+  according to future signal" and "first fix the code then deploy then let the
+  app decide". Hybrid Decision (worm10) now skips both the closed-candle check
+  and the one-extra-candle wait for an ignited pair with nothing running; the
+  triple read still applies, and ignite is still one-shot and margin-exempt.
+  This replaces the 2026-10-20 "ignite respects the closed-candle rule" part
+  for ignited pairs only; everything else keeps the closed-candle rule.
 - **2026-11-01 (v1.6.60+108)** — **TradingView recovery kills only this app's
   own instance**. The user made TradingPionex fully independent, with its own
   TradingView on port 9333, and a read-only check found TradingMT5 ran

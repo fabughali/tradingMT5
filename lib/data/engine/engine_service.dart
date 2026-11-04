@@ -3438,8 +3438,14 @@ class EngineService {
 
     final existing = await _findAppPosition(mt5Symbol, category, tvSymbol);
 
+    // An ignited pair with nothing running acts on its CURRENT signal right
+    // away (2026-11-04, v1.6.61, per the user: "ignite does not wait for
+    // signal ... ignite should work on current signal ... not according to
+    // future signal") - no closed-candle wait, no one-extra-candle wait.
+    final igniteNow = existing == null && ignitedPairs.isIgnited(tvSymbol);
+
     final pending = worm10Pending.get(barKey);
-    if (!immediate && pending != null) {
+    if (!immediate && !igniteNow && pending != null) {
       final checkAt = pending.barTime + category.candlePeriod.inSeconds * 2;
       final nowEpoch = DateTime.now().toUtc().millisecondsSinceEpoch ~/ 1000;
       if (nowEpoch < checkAt) return;
@@ -3892,7 +3898,7 @@ class EngineService {
     final latestWire = worm10EventKindToWire(latest.kind);
     // See [isCandleClosed] (2026-10-20) - this exact gate is where the live
     // BTC flip on a 2-minute-old candle went through.
-    final actNow = _immediateMayActOn(immediate, latest.time, category, tvSymbol, 'worm10 $latestWire');
+    final actNow = igniteNow || _immediateMayActOn(immediate, latest.time, category, tvSymbol, 'worm10 $latestWire');
     if (!actNow && (pending == null || pending.kind != latest.kind || pending.barTime != latest.time)) {
       worm10Pending.set(barKey, latest.kind, latest.time);
       logger.log(
@@ -3902,7 +3908,12 @@ class EngineService {
       return;
     }
     if (immediate && !actNow && _extraCandleWaitStillRunning(pending!.barTime, category)) return;
-    if (actNow) {
+    if (igniteNow) {
+      logger.log(
+        '$tvSymbol ($category): IGNITED - worm10 $latestWire@${latest.time} '
+        'triple-confirmed, acting on the current signal now (no candle wait).',
+      );
+    } else if (actNow) {
       logger.log(
         '$tvSymbol ($category): technique switch reverse check - '
         'worm10 $latestWire@${latest.time} triple-confirmed, acting immediately.',
