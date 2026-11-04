@@ -1980,6 +1980,23 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-04 (v1.6.64+112)** — **Shared tab-owner rule**. Both chart tabs on
+  9222 turned out to have the same URL, `/chart/sdsxZ9HR/`, because the free
+  plan saves only one layout ("Unnamed") - so v1.6.63's URL match could grab
+  Pionex's tab. Per the user's shared rule (TradingPionex uses the same one
+  with "tradingpionex"): each app tags its own tab with sessionStorage
+  `tvTabOwner` ("tradingmt5"). MT5 reads every `/chart/` tab's tag
+  (read-only) and uses the one tagged "tradingmt5"; if none, it claims one
+  untagged tab with the shared single-evaluate claim script; if none is free
+  and fewer than 2 chart tabs are open, it opens ONE tab on the Unnamed
+  layout (`PUT /json/new`, once per engine run), waits for the chart, and
+  claims it. A tab tagged by anyone else is never used, switched, reloaded or
+  closed. If a tab doesn't answer the tag read and none is ours, nothing is
+  claimed or opened (it may be ours, hung) and the stuck ladder counts it.
+  The connected tab's tag is re-checked every cycle; after a TradingView
+  restart the tags are gone and the claim runs again. MT5's live tab was
+  tagged by hand with the claim script before the install so the first claim
+  couldn't land on Pionex's tab.
 - **2026-11-04 (v1.6.63+111)** — **Shared TradingView: TradingMT5 uses only its
   own chart tab**. TradingView allows one live session per account, so
   TradingMT5 and TradingPionex now share ONE TradingView on port 9222, each on

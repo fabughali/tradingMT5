@@ -2360,20 +2360,22 @@ class EngineService {
     }
     final technique = _activeTechnique();
     if (_cdp != null && !_cdp!.dead) {
-      // Shared TradingView (v1.6.63): the connected page must still be our
-      // own layout - if someone switched that tab to another layout, drop it
-      // rather than touch a chart that isn't ours.
+      // Shared TradingView (v1.6.64): the connected tab must still carry our
+      // owner tag and still be a chart page - otherwise drop it and look
+      // again under the tab-owner rule (a TradingView restart wipes tags).
+      final tag = await _cdp!.evaluate(readTabOwnerScript);
       final href = '${await _cdp!.evaluate('location.href')}';
-      if (!isOwnChartUrl(href, config.cdp.layoutId)) {
+      if (tag != mt5TabOwner || !isOwnChartUrl(href, config.cdp.layoutId)) {
         _cdp!.close();
         _cdp = null;
         logger.log(
-          'TRADINGVIEW: the connected tab is now $href, not our layout '
-          '/chart/${config.cdp.layoutId}/ - disconnected, doing nothing.',
-          level: 'ERROR',
+          'TRADINGVIEW: the connected tab is no longer ours (tag=$tag, url=$href) - '
+          'disconnected; finding our tab again.',
+          level: 'WARNING',
         );
-        throw OwnChartTabMissingException(config.cdp.layoutId);
       }
+    }
+    if (_cdp != null && !_cdp!.dead) {
       if (await _indicatorsReadyFor(technique, _cdp!)) return;
       logger.log('Indicators missing on an already-open chart — re-enforcing.');
     } else if (_cdp != null) {
@@ -2418,7 +2420,7 @@ class EngineService {
 
     final CdpClient client;
     try {
-      client = _cdp ?? await connectToChart(host, port, layoutId: config.cdp.layoutId);
+      client = _cdp ?? await connectToChart(host, port, layoutId: config.cdp.layoutId, log: (m) => logger.log('TRADINGVIEW TAB: $m'));
     } on OwnChartTabMissingException catch (e) {
       // Our tab isn't open: a setup problem, not a stuck TradingView. Never
       // reload or restart for it (a restart would also take down

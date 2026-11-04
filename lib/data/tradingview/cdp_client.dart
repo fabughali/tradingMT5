@@ -180,45 +180,234 @@ CdpTarget _toTarget(Map<String, dynamic> t) => CdpTarget(
   webSocketDebuggerUrl: t['webSocketDebuggerUrl'] as String,
 );
 
-/// TradingMT5's own chart tab is not open in TradingView (or no layout ID is
-/// configured). Never a reason to restart TradingView or use another tab.
+/// TradingMT5 has no chart tab it may use. Never a reason to restart
+/// TradingView or to use another app's tab.
 class OwnChartTabMissingException extends CdpException {
-  OwnChartTabMissingException(String layoutId)
-    : super(
-        layoutId.isEmpty
-            ? 'no TradingView layout ID configured (config.json cdp.layout_id) - doing nothing'
-            : 'own chart tab /chart/$layoutId/ not found - doing nothing',
-      );
+  OwnChartTabMissingException(super.message);
 }
 
-/// Whether [url] is the chart page of layout [layoutId]
-/// (`https://www.tradingview.com/chart/<layoutId>/...`).
+/// Whether [url] is a TradingView chart page
+/// (`https://www.tradingview.com/chart/<layoutId>/...`), of layout
+/// [layoutId] when one is set.
 bool isOwnChartUrl(String url, String layoutId) {
-  if (layoutId.isEmpty) return false;
   final uri = Uri.tryParse(url);
   if (uri == null || !uri.host.toLowerCase().endsWith('tradingview.com')) return false;
   final segments = uri.pathSegments;
-  return segments.length >= 2 && segments[0] == 'chart' && segments[1] == layoutId;
+  if (segments.length < 2 || segments[0] != 'chart' || segments[1].isEmpty) return false;
+  return layoutId.isEmpty || segments[1] == layoutId;
 }
 
-/// The one page target that is TradingMT5's own chart tab, or null
-/// (2026-11-04, v1.6.63, per the user: TradingMT5 and TradingPionex share one
-/// TradingView, each on its own tab; "it never reads, switches or changes any
-/// other tab ... It never falls back to another tab").
-Map<String, dynamic>? pickOwnChartTarget(List<Map<String, dynamic>> targets, String layoutId) {
-  for (final t in targets) {
-    if (t['type'] == 'page' && isOwnChartUrl((t['url'] ?? '').toString(), layoutId)) return t;
+// Shared tab-owner rule (2026-11-04, v1.6.64, per the user): on the free plan
+// both apps' tabs are the same saved layout, so the URL can't tell them apart.
+// Each app tags its own tab in that tab's sessionStorage; TradingPionex uses
+// the identical rule with "tradingpionex".
+const tabOwnerKey = 'tvTabOwner';
+const mt5TabOwner = 'tradingmt5';
+const readTabOwnerScript = 'sessionStorage.getItem("$tabOwnerKey")';
+
+/// Claims a tab for [owner] in ONE evaluate, so two apps can't take the same
+/// tab: "mine", "taken:<other>" or "claimed".
+String claimTabScript(String owner) =>
+    '(function(){var k="$tabOwnerKey",v=sessionStorage.getItem(k);'
+    'if(v==="$owner")return "mine";if(v)return "taken:"+v;'
+    'sessionStorage.setItem(k,"$owner");return "claimed";})()';
+
+/// Runs [expression] in one tab and returns its value; throws if the tab
+/// can't be reached.
+typedef TabEvaluator = Future<dynamic> Function(Map<String, dynamic> target, String expression);
+
+/// Opens ONE new chart tab and returns its target once its chart is loaded,
+/// or null.
+typedef ChartTabOpener = Future<Map<String, dynamic>?> Function();
+
+/// Free plan: at most this many chart tabs; a third closes the oldest.
+const maxChartTabs = 2;
+
+/// Picks TradingMT5's tab under the shared tab-owner rule:
+/// 1. read every chart tab's tag (read-only) - exactly one "tradingmt5" wins;
+/// 2. else claim one untagged tab;
+/// 3. else, only with fewer than [maxChartTabs] chart tabs open, [openTab]
+///    once and claim that.
+/// A tab tagged by anyone else is never used. Returns null when nothing is
+/// usable; [log] says why.
+Future<Map<String, dynamic>?> selectOwnChartTab({
+  required List<Map<String, dynamic>> targets,
+  required String layoutId,
+  required TabEvaluator evaluate,
+  ChartTabOpener? openTab,
+  String owner = mt5TabOwner,
+  void Function(String message)? log,
+}) async {
+  bool usable(Object? claim) => claim == 'claimed' || claim == 'mine';
+  final chartTabs = [
+    for (final t in targets)
+      if (t['type'] == 'page' && isOwnChartUrl((t['url'] ?? '').toString(), layoutId)) t,
+  ];
+  final mine = <Map<String, dynamic>>[];
+  final untagged = <Map<String, dynamic>>[];
+  final unreadable = <String>[];
+  for (final t in chartTabs) {
+    try {
+      final tag = await evaluate(t, readTabOwnerScript);
+      if (tag == owner) {
+        mine.add(t);
+      } else if (tag == null) {
+        untagged.add(t);
+      }
+    } catch (e) {
+      unreadable.add('${t['id']}: $e');
+    }
+  }
+  if (mine.length > 1) {
+    log?.call('${mine.length} chart tabs are tagged "$owner" - using none of them');
+    return null;
+  }
+  if (mine.length == 1) return mine.single;
+  // A tab that didn't answer may be our own, hung - never claim or open
+  // another one on a guess. Thrown as a plain CdpException so the engine's
+  // stuck ladder (own-tab reload first) counts it.
+  if (unreadable.isNotEmpty) {
+    throw CdpException('could not read the owner tag of ${unreadable.join('; ')}');
+  }
+  for (final t in untagged) {
+    try {
+      final claim = await evaluate(t, claimTabScript(owner));
+      if (usable(claim)) {
+        log?.call('claimed chart tab ${t['id']} as "$owner"');
+        return t;
+      }
+      log?.call('tab ${t['id']} was $claim - skipping it');
+    } catch (e) {
+      log?.call('could not claim tab ${t['id']}: $e');
+    }
+  }
+  if (openTab == null) {
+    log?.call('no "$owner" chart tab and none free to claim');
+    return null;
+  }
+  if (chartTabs.length >= maxChartTabs) {
+    log?.call(
+      'no "$owner" chart tab, none free to claim, and ${chartTabs.length} chart tabs are '
+      'already open - not opening another (the free plan allows $maxChartTabs)',
+    );
+    return null;
+  }
+  final opened = await openTab();
+  if (opened == null) return null;
+  try {
+    final claim = await evaluate(opened, claimTabScript(owner));
+    if (usable(claim)) {
+      log?.call('opened and claimed chart tab ${opened['id']} as "$owner"');
+      return opened;
+    }
+    log?.call('the tab this app opened was $claim - not using it');
+  } catch (e) {
+    log?.call('could not claim the tab this app opened: $e');
   }
   return null;
 }
 
-/// Fetches `/json/list` and returns TradingMT5's own chart tab - the page
-/// whose URL is `/chart/<layoutId>/`. Throws [OwnChartTabMissingException]
-/// when it isn't there; there is no fallback to any other tab.
-Future<CdpTarget> getChartTarget(String host, int port, {required String layoutId}) async {
+Future<dynamic> _evaluateOnTarget(Map<String, dynamic> target, String expression) async {
+  final socket = await WebSocket.connect(target['webSocketDebuggerUrl'] as String)
+      .timeout(CoreConstants.cdpRequestTimeout);
+  final client = CdpClient(socket);
+  try {
+    return await client.evaluate(expression);
+  } finally {
+    client.close();
+  }
+}
+
+/// Set once this engine process has opened its one allowed chart tab.
+bool _openedChartTabThisProcess = false;
+
+const _chartReadyProbe = '''(function() {
+  try {
+    var wv = window.TradingViewApi && window.TradingViewApi._activeChartWidgetWV;
+    var widget = wv && wv.value && wv.value();
+    return !!(widget && widget._chartWidget && widget._chartWidget.model && widget._chartWidget.model());
+  } catch (e) { return false; }
+})()''';
+
+/// The ONLY place this app opens anything in TradingView: one new tab on
+/// the saved "Unnamed" layout, at most once per engine process, then waits
+/// up to 60s for its chart to load. Never closes a tab.
+Future<Map<String, dynamic>?> _openOneChartTab(
+  String host,
+  int port,
+  String layoutId,
+  void Function(String message)? log,
+) async {
+  if (_openedChartTabThisProcess) {
+    log?.call('already opened one chart tab this run - not opening another');
+    return null;
+  }
+  if (layoutId.isEmpty) {
+    log?.call('no layout ID configured (config.json cdp.layout_id) - not opening a tab');
+    return null;
+  }
+  _openedChartTabThisProcess = true;
+  final url = 'https://www.tradingview.com/chart/$layoutId/';
+  final http = HttpClient();
+  Map<String, dynamic> created;
+  try {
+    final request = await http
+        .openUrl('PUT', Uri.parse('http://$host:$port/json/new?$url'))
+        .timeout(CoreConstants.cdpJsonListTimeout);
+    final response = await request.close().timeout(CoreConstants.cdpJsonListTimeout);
+    final body = await response.transform(utf8.decoder).join();
+    if (response.statusCode != 200) {
+      log?.call('opening a chart tab failed: HTTP ${response.statusCode} $body');
+      return null;
+    }
+    created = jsonDecode(body) as Map<String, dynamic>;
+  } catch (e) {
+    log?.call('opening a chart tab failed: $e');
+    return null;
+  } finally {
+    http.close(force: true);
+  }
+  log?.call('opened one chart tab ${created['id']} at $url - waiting for it to load');
+  final deadline = DateTime.now().add(const Duration(seconds: 60));
+  while (DateTime.now().isBefore(deadline)) {
+    try {
+      if (await _evaluateOnTarget(created, _chartReadyProbe) == true) return created;
+    } catch (_) {}
+    await Future<void>.delayed(const Duration(seconds: 2));
+  }
+  log?.call('the chart tab this app opened (${created['id']}) did not load within 60s - not using it');
+  return null;
+}
+
+/// Fetches `/json/list` and returns TradingMT5's own chart tab per
+/// [selectOwnChartTab]. Throws [OwnChartTabMissingException] when there is
+/// none; there is no fallback to any other tab.
+Future<CdpTarget> getChartTarget(
+  String host,
+  int port, {
+  required String layoutId,
+  void Function(String message)? log,
+}) async {
   final targets = await _fetchJsonList(host, port);
-  final own = pickOwnChartTarget(targets, layoutId);
-  if (own == null) throw OwnChartTabMissingException(layoutId);
+  final reasons = <String>[];
+  final own = await selectOwnChartTab(
+    targets: targets,
+    layoutId: layoutId,
+    evaluate: _evaluateOnTarget,
+    openTab: () => _openOneChartTab(host, port, layoutId, (m) {
+      reasons.add(m);
+      log?.call(m);
+    }),
+    log: (m) {
+      reasons.add(m);
+      log?.call(m);
+    },
+  );
+  if (own == null) {
+    throw OwnChartTabMissingException(
+      'no usable "$mt5TabOwner" chart tab (${reasons.isEmpty ? 'none found' : reasons.last}) - doing nothing',
+    );
+  }
   return _toTarget(own);
 }
 
@@ -245,6 +434,7 @@ Future<CdpClient> connectToChart(
   String host,
   int port, {
   required String layoutId,
+  void Function(String message)? log,
   // Lowered from 5, 2026-10-05, per the user ("fix the bug so the engine
   // will never stuck for 5 min") — paired with CoreConstants.cdpRequestTimeout
   // dropping from 60s to 8s, this caps the worst case here at roughly
@@ -255,7 +445,7 @@ Future<CdpClient> connectToChart(
   Object? lastError;
   for (var attempt = 0; attempt < maxRetries; attempt++) {
     try {
-      final target = await getChartTarget(host, port, layoutId: layoutId);
+      final target = await getChartTarget(host, port, layoutId: layoutId, log: log);
       final socket = await WebSocket.connect(target.webSocketDebuggerUrl);
       final client = CdpClient(socket);
       await client.send('Runtime.enable');
