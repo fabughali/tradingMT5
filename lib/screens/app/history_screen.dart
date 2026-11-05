@@ -99,6 +99,8 @@ class HistoryScreen extends ConsumerWidget {
     // engine has written this reason since the worm10 technique shipped,
     // but it was never given a label here - 39 recycles showed "Unknown".
     'worm10_recycle' => 'Recycled (same signal)',
+    'user_tp' => 'Your TP trigger',
+    'user_sl' => 'Your SL trigger',
     _ => 'Unknown',
   };
 
@@ -112,6 +114,8 @@ class HistoryScreen extends ConsumerWidget {
     'parent_closed' => Colors.indigo,
     'sll_baseline' || 'sll_ratchet' => Colors.red,
     'worm10_recycle' => Colors.teal,
+    'user_tp' => Colors.green,
+    'user_sl' => Colors.red,
     _ => scheme.outline,
   };
 
@@ -532,6 +536,8 @@ class _HistoryCard extends StatelessWidget {
     'closed_by_user' => 'Closed by you (Dashboard or MT5).',
     'closed_by_app' => 'Closed by the app.',
     'parent_closed' => 'Closed together with its parent trade.',
+    'user_tp' => 'Your take-profit trigger was reached.',
+    'user_sl' => 'Your stop-loss trigger was reached.',
     'sll_ratchet' => 'SLL closed it after profit fell back to the locked level.',
     'sll_baseline' => 'Old -\$5 SLL baseline close (before v1.6.38).',
     _ => 'Close reason not recorded.',

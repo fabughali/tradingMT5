@@ -144,6 +144,10 @@ class DashboardScreen extends ConsumerWidget {
                 ref.read(controlRepositoryProvider).setDesiredVolume(tvSymbol, volume);
                 ref.invalidate(autoTradesProvider);
               },
+              onSetTrigger: (key, side, trigger, label) {
+                ref.read(controlRepositoryProvider).setUserTrigger(key, side, trigger, label);
+                ref.invalidate(autoTradesProvider);
+              },
               onToggleAutoVolume: (tvSymbol, on) {
                 ref.read(controlRepositoryProvider).setAutoVolume(tvSymbol, on);
                 ref.invalidate(autoTradesProvider);

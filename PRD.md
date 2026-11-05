@@ -1980,6 +1980,24 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-05 (v1.6.67+115)** — **User TP/SL triggers**. Per the user: "set take
+  profit and stop loss triggers in three ways - P&L percentage, dollars, price ... for
+  any auto trade even if this trade not filled or filled", "once the trigger is set,
+  app need to watch the trigger value not something equivalent to it", cleared on
+  close, "copy trades has no tp/sl set ... unless user set them", checked every 5 sec.
+  - Card menu (running: the more menu; waiting: a new more icon) -> "TP / SL trigger":
+    each side is P&L % (the card's %: profit / (volume x contract x entry)), P&L $ (the
+    card's $) or price. A TP must be better than now and an SL worse (P&L % / $ above /
+    below the current value; price above / below on a buy, the mirror on a sell). A
+    waiting pair starts from P&L 0; a price trigger needs a known direction.
+  - Engine: own 5s timer (`USER TRIGGER ...` log lines), separate from the SLL sweep
+    (which can be 70-99s apart). It compares the live value in the trigger's own unit;
+    on a hit it market-closes ONLY that ticket (copies keep their own); History shows
+    "Your TP trigger"/"Your SL trigger". A waiting pair's trigger moves onto its main
+    ticket when it fills; a ticket's trigger is cleared once the trade is gone (after 3
+    reads in a row, so one bad read never drops it). Stored in `logs/user-triggers.json`.
+  - App-side, like the SLL: no protection while the engine is off; the real MT5 SL/TP
+    stay at the 40/60 levels.
 - **2026-11-05 (v1.6.66+114)** — **Empty indicator read is never "stable"**. Per the
   user: "margin is too high but no open trades ... is that a bug?" Yes. After
   TradingView was restarted at 16:10Z, most pairs logged `no worm10 event yet`

@@ -21,6 +21,7 @@ import '../models/signal.dart';
 import '../models/watched_symbol.dart';
 import '../mt5/mt5_client.dart';
 import '../engine/volume_step.dart';
+import '../identity/user_trigger_store.dart';
 
 final storageProvider = Provider<CoreStorage>((ref) => CoreStorage.instance);
 
@@ -395,6 +396,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
           if (int.tryParse(e.toString()) != null) int.parse(e.toString()),
       };
       final tradeVolumes = TradeVolumeStore(storage);
+      final userTriggerStore = UserTriggerStore(storage);
       // One bulk call covers every symbol's volume_min/step/max (2026-10-03)
       // - same data [WatchedSymbol] already parses for the New Order
       // screen's stepper, reused here instead of a per-row MT5 round trip.
@@ -645,6 +647,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               pnlPercent: pnlPercentForRow,
               slRatchetThreshold: slRatchetThreshold,
               ticket: ticket,
+              userTriggers: ticket == null ? const UserTriggers() : userTriggerStore.get(ticketTriggerKey(ticket)),
               openedAt: DateTime.tryParse(
                 position['create_time'] as String? ?? '',
               ),
@@ -694,6 +697,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               tvSymbol: tvSymbol,
               mt5Symbol: mt5Symbol,
               status: AutoTradeStatus.waitingPending,
+              userTriggers: userTriggerStore.get(pairTriggerKey(tvSymbol)),
               isAutoManaged: isAutoManaged,
               isPaused: isPaused,
               isLastTagged: isLastTagged,
@@ -735,6 +739,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               tvSymbol: tvSymbol,
               mt5Symbol: mt5Symbol,
               status: AutoTradeStatus.waitingNoSignal,
+              userTriggers: userTriggerStore.get(pairTriggerKey(tvSymbol)),
               isAutoManaged: isAutoManaged,
               isPaused: isPaused,
               isLastTagged: isLastTagged,

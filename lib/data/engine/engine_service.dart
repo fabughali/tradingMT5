@@ -33,6 +33,7 @@ import '../identity/terminate_request_store.dart';
 import '../identity/pnl_series_store.dart';
 import '../identity/trade_signal_trace_store.dart';
 import '../identity/trade_volume_store.dart';
+import '../identity/user_trigger_store.dart';
 import '../identity/unpause_check_request_store.dart';
 import '../identity/waiting_reason_store.dart';
 import '../identity/widen_applied_store.dart';
@@ -65,6 +66,7 @@ import 'close_fill.dart';
 import 'sl_ratchet_ladder.dart';
 import 'resting_order_check.dart';
 import 'auto_volume.dart';
+import 'user_trigger_check.dart';
 import 'volume_step.dart';
 import 'worm10_decision.dart';
 
@@ -148,6 +150,7 @@ class EngineService {
     lastCheckedStore = LastCheckedStore(storage);
     pendingSignals = PendingSignalStore(storage);
     tradeVolumes = TradeVolumeStore(storage);
+    userTriggers = UserTriggerStore(storage);
     widenApplied = WidenAppliedStore(storage);
     firstOpen = FirstOpenStore(storage);
     newPairWait = NewPairWaitStore(storage);
@@ -246,6 +249,7 @@ class EngineService {
   late final LastCheckedStore lastCheckedStore;
   late final PendingSignalStore pendingSignals;
   late final TradeVolumeStore tradeVolumes;
+  late final UserTriggerStore userTriggers;
   late final FirstOpenStore firstOpen;
   late final NewPairWaitStore newPairWait;
   late final SupertrendPendingStore supertrendPending;
@@ -528,6 +532,130 @@ class EngineService {
       }
     } catch (e) {
       logger.log('P&L sample failed: $e', level: 'ERROR');
+    }
+  }
+
+  // ---- User TP/SL triggers (v1.6.67, 2026-11-05) ------------------------
+  // Per the user: TP/SL in P&L %, dollars or price, set from a card's menu on
+  // a waiting or running trade, checked every 5s, each in its own unit (the
+  // card's P&L %, the card's $, the live price - never a converted
+  // equivalent), cleared when the trade closes. Copies have their own (none
+  // unless the user sets one on the copy). A hit closes ONLY that ticket with
+  // a market close; reconciliation then records it as user_tp/user_sl.
+  final Map<int, (String, String)> _userTriggerCloses = {};
+  final Map<int, int> _userTriggerMisses = {};
+  Timer? _userTriggerTimer;
+  bool _userTriggerBusy = false;
+  static const _userTriggerInterval = Duration(seconds: 5);
+
+  void _startUserTriggerTimer() {
+    _userTriggerTimer ??= Timer.periodic(_userTriggerInterval, (_) async {
+      if (_userTriggerBusy || _stopRequested) return;
+      _userTriggerBusy = true;
+      try {
+        await _checkUserTriggers();
+      } catch (e) {
+        logger.log('USER TRIGGER: check failed ($e) - retrying in 5s', level: 'WARNING');
+      } finally {
+        _userTriggerBusy = false;
+      }
+    });
+  }
+
+  Future<void> _checkUserTriggers() async {
+    if (userTriggers.all().isEmpty) return;
+    final open = await mt5.getOpenPositions();
+    final positions = ((open['positions'] as List?) ?? const [])
+        .cast<Map<String, dynamic>>()
+        .where((p) => ((p['comment'] as String?) ?? '').startsWith('trading_mt5'))
+        .toList();
+    final byTicket = <int, Map<String, dynamic>>{
+      for (final p in positions)
+        if (_parseTicket(p['position_id']) != null) _parseTicket(p['position_id'])!: p,
+    };
+    final mappings = _loadSymbolsFresh();
+
+    // A waiting pair's triggers move onto its main (non-copy) ticket once it fills.
+    for (final key in userTriggers.all().keys.where((k) => k.startsWith('pair:')).toList()) {
+      final tv = key.substring(5);
+      final mt5Symbol = mappings
+          .where((m) => m.tradingViewSymbol.toUpperCase() == tv)
+          .map((m) => m.mt5Symbol.toUpperCase())
+          .firstOrNull;
+      if (mt5Symbol == null) continue;
+      final main = byTicket.entries
+          .where((e) => '${e.value['symbol']}'.toUpperCase() == mt5Symbol && !copyPositions.isCopy(e.key))
+          .map((e) => e.key)
+          .firstOrNull;
+      if (main == null) continue;
+      if (!userTriggers.get(ticketTriggerKey(main)).isEmpty) {
+        // The running trade already has its own - the waiting one was for it too.
+        userTriggers.remove(key);
+        continue;
+      }
+      userTriggers.bind(key, ticketTriggerKey(main));
+      logger.log('USER TRIGGER: $tv filled as ticket=$main - its waiting TP/SL now watch that trade.');
+    }
+
+    if (_contractSizes.isEmpty || DateTime.now().difference(_contractSizesAt) > const Duration(minutes: 10)) {
+      _contractSizes = {
+        for (final w in await mt5.getWatchedSymbols())
+          (w['symbol'] as String).toUpperCase(): (w['contract_size'] as num?)?.toDouble() ?? 1.0,
+      };
+      _contractSizesAt = DateTime.now();
+    }
+
+    for (final entry in userTriggers.all().entries.where((e) => e.key.startsWith('ticket:')).toList()) {
+      final ticket = int.tryParse(entry.key.substring(7));
+      if (ticket == null) continue;
+      final p = byTicket[ticket];
+      if (p == null) {
+        // Cleared on close - after 3 misses in a row (15s), so one bad read
+        // never drops a live trade's trigger.
+        final misses = (_userTriggerMisses[ticket] ?? 0) + 1;
+        _userTriggerMisses[ticket] = misses;
+        if (misses >= 3) {
+          userTriggers.remove(entry.key);
+          _userTriggerMisses.remove(ticket);
+          logger.log('USER TRIGGER: ticket=$ticket is no longer open - its TP/SL cleared.');
+        }
+        continue;
+      }
+      _userTriggerMisses.remove(ticket);
+      if (_userTriggerCloses.containsKey(ticket)) continue; // close already sent
+      final mt5Symbol = '${p['symbol']}';
+      final profit = (p['profit'] as num?)?.toDouble();
+      final volume = (p['volume'] as num?)?.toDouble() ?? 0;
+      final priceOpen = (p['price_open'] as num?)?.toDouble() ?? 0;
+      final price = (p['price_last'] as num?)?.toDouble() ?? (p['price_current'] as num?)?.toDouble();
+      final contractSize = _contractSizes[mt5Symbol.toUpperCase()] ?? 1.0;
+      final notional = volume * contractSize * priceOpen;
+      final pct = profit != null && notional > 0 ? profit / notional * 100 : null;
+      final isLong = (p['action'] as String?) != 'sell';
+      final t = entry.value;
+      String? reason;
+      UserTrigger? hit;
+      if (t.tp != null && userTriggerHit(trigger: t.tp!, isTp: true, isLong: isLong, pct: pct, usd: profit, price: price)) {
+        reason = 'user_tp';
+        hit = t.tp;
+      } else if (t.sl != null &&
+          userTriggerHit(trigger: t.sl!, isTp: false, isLong: isLong, pct: pct, usd: profit, price: price)) {
+        reason = 'user_sl';
+        hit = t.sl;
+      }
+      if (reason == null || hit == null) continue;
+      final live = 'P&L \$${profit?.toStringAsFixed(2)} (${pct?.toStringAsFixed(2)}%), price $price';
+      final detail = '${reason == 'user_tp' ? 'Take profit' : 'Stop loss'} trigger ${hit.describe()} reached - $live.';
+      logger.log('USER TRIGGER: $mt5Symbol ticket=$ticket ${reason == 'user_tp' ? 'TP' : 'SL'} ${hit.describe()} '
+          'reached ($live) - closing this trade.');
+      _userTriggerCloses[ticket] = (reason, detail);
+      try {
+        await _sendCloseOrThrow(mt5Symbol, ticket);
+        userTriggers.remove(entry.key);
+      } catch (e) {
+        _userTriggerCloses.remove(ticket);
+        logger.log('USER TRIGGER: close of $mt5Symbol ticket=$ticket failed ($e) - will retry in 5s.', level: 'ERROR');
+      }
     }
   }
 
@@ -1361,6 +1489,7 @@ class EngineService {
   Future<void> run() async {
     _startedAt; // force initialization now, not lazily on first read
     logger.log('Engine starting.');
+    _startUserTriggerTimer();
     // One-time v1.6.29 cleanup of stale imported volume step-downs - see
     // [TradeVolumeStore.clearAllAttempts]. A marker file makes sure it runs
     // exactly once per data directory, never on later restarts.
@@ -1865,7 +1994,13 @@ class EngineService {
       final String detail;
       bool near(double? a, double? b) =>
           a != null && b != null && b != 0 && (a - b).abs() / b.abs() < 0.001;
-      if (mt5CloseReason == 'stop loss') {
+      // v1.6.67: closed by the user's own TP/SL trigger (see
+      // [_maybeCheckUserTriggers]) - recorded as such, not "closed by user".
+      final userTriggerClose = _userTriggerCloses.remove(ticket);
+      if (userTriggerClose != null) {
+        stopReason = userTriggerClose.$1;
+        detail = userTriggerClose.$2;
+      } else if (mt5CloseReason == 'stop loss') {
         stopReason = 'stop_loss';
         detail = 'Closed by MT5 hitting its own stop-loss price.';
       } else if (mt5CloseReason == 'take profit') {

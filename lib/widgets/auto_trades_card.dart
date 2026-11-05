@@ -7,6 +7,8 @@ import '../data/identity/pnl_series_store.dart';
 import '../data/models/auto_category.dart';
 import '../data/engine/volume_step.dart';
 import '../data/models/auto_trade_row.dart';
+import '../data/identity/user_trigger_store.dart';
+import '../data/engine/user_trigger_check.dart';
 import '../utilities/auto_cycle.dart';
 import 'live_pnl_dialog.dart';
 import 'pnl_chart.dart';
@@ -27,6 +29,7 @@ class AutoTradesCard extends StatefulWidget {
     required this.onTerminate,
     required this.onChangeVolume,
     this.onToggleAutoVolume,
+    this.onSetTrigger,
     required this.onAddCopy,
     required this.onIgnite,
     required this.onFavorite,
@@ -75,6 +78,10 @@ class AutoTradesCard extends StatefulWidget {
   /// tvSymbol, Auto volume on/off (v1.6.65, per the user: "a toggle button
   /// or a checkbox next to volume (auto)").
   final void Function(String, bool)? onToggleAutoVolume;
+
+  /// (key, side tp|sl, trigger or null to clear, label) - user TP/SL
+  /// trigger, v1.6.67.
+  final void Function(String, String, UserTrigger?, String)? onSetTrigger;
 
   /// tvSymbol — Multiplier column's "+" control (2026-10-15, per the
   /// user): request one additional copy trade on this pair, same
@@ -525,6 +532,146 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     ),
   );
 
+  /// Short "TP +4.00% · SL -$3.00" line for a card, or null when none set.
+  static String? _triggerSummary(AutoTradeRow row) {
+    final t = row.userTriggers;
+    if (t.isEmpty) return null;
+    return [
+      if (t.tp != null) 'TP ${t.tp!.describe()}',
+      if (t.sl != null) 'SL ${t.sl!.describe()}',
+    ].join(' · ');
+  }
+
+  /// TP/SL trigger dialog (v1.6.67, per the user): P&L %, dollars or price,
+  /// for a running trade (its own ticket - a copy has its own) or a waiting
+  /// pair. A TP must be better than now, an SL worse - checked here with the
+  /// same rule the engine uses.
+  Future<void> _showTriggerDialog(BuildContext context, AutoTradeRow row) async {
+    final running = row.status == AutoTradeStatus.running && row.ticket != null;
+    final key = running ? ticketTriggerKey(row.ticket!) : pairTriggerKey(row.tvSymbol);
+    final label = running ? '${row.mt5Symbol} #${row.ticket}${row.isCopy ? ' (copy)' : ''}' : '${row.tvSymbol} (next trade)';
+    final isLong = row.direction == null ? null : row.direction!.toLowerCase().contains('buy');
+    final price = running ? row.currentPrice : row.price;
+    final kinds = {for (final s in ['tp', 'sl']) s: (s == 'tp' ? row.userTriggers.tp : row.userTriggers.sl)?.kind ?? TriggerKind.usd};
+    final ctrls = {
+      for (final s in ['tp', 'sl'])
+        s: TextEditingController(
+          text: '${(s == 'tp' ? row.userTriggers.tp : row.userTriggers.sl)?.value ?? ''}',
+        ),
+    };
+    final errors = <String, String?>{'tp': null, 'sl': null};
+    String unitLabel(TriggerKind k) => switch (k) {
+          TriggerKind.pct => 'P&L %',
+          TriggerKind.usd => 'P&L \$',
+          TriggerKind.price => 'Price',
+        };
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          Widget side(String s) {
+            final existing = s == 'tp' ? row.userTriggers.tp : row.userTriggers.sl;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  s == 'tp' ? 'Take profit' : 'Stop loss',
+                  style: TextStyle(fontWeight: FontWeight.w700, color: s == 'tp' ? Colors.green : Colors.red),
+                ),
+                if (existing != null) Text('Now set: ${existing.describe()}', style: const TextStyle(fontSize: 12)),
+                Row(
+                  children: [
+                    DropdownButton<TriggerKind>(
+                      value: kinds[s],
+                      items: [
+                        for (final k in TriggerKind.values) DropdownMenuItem(value: k, child: Text(unitLabel(k))),
+                      ],
+                      onChanged: (k) => setLocal(() => kinds[s] = k ?? TriggerKind.usd),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: TextField(
+                        controller: ctrls[s],
+                        keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true),
+                        decoration: InputDecoration(isDense: true, hintText: unitLabel(kinds[s]!)),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () {
+                        final v = double.tryParse(ctrls[s]!.text.trim());
+                        if (v == null) {
+                          setLocal(() => errors[s] = 'Type a number');
+                          return;
+                        }
+                        final t = UserTrigger(kinds[s]!, v);
+                        final bad = userTriggerInvalidReason(
+                          trigger: t,
+                          isTp: s == 'tp',
+                          isLong: isLong,
+                          pct: row.pnlPercent,
+                          usd: row.profit,
+                          price: price,
+                          filled: running,
+                        );
+                        if (bad != null) {
+                          setLocal(() => errors[s] = bad);
+                          return;
+                        }
+                        widget.onSetTrigger!(key, s, t, label);
+                        Navigator.of(ctx).pop();
+                      },
+                      child: const Text('Set'),
+                    ),
+                    if (existing != null)
+                      TextButton(
+                        onPressed: () {
+                          widget.onSetTrigger!(key, s, null, label);
+                          Navigator.of(ctx).pop();
+                        },
+                        child: const Text('Clear'),
+                      ),
+                  ],
+                ),
+                if (errors[s] != null)
+                  Text(errors[s]!, style: const TextStyle(color: Colors.red, fontSize: 12)),
+              ],
+            );
+          }
+
+          return AlertDialog(
+            title: Text('TP / SL trigger - $label'),
+            content: SizedBox(
+              width: 420,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    running
+                        ? 'Now: P&L ${row.profit?.toStringAsFixed(2) ?? '?'} \$ '
+                            '(${row.pnlPercent?.toStringAsFixed(2) ?? '?'}%), price ${price ?? '?'}'
+                        : 'Not filled yet - P&L starts at 0 when it fills. Cleared when the trade closes.',
+                    style: const TextStyle(fontSize: 12),
+                  ),
+                  const SizedBox(height: 12),
+                  side('tp'),
+                  const SizedBox(height: 14),
+                  side('sl'),
+                  const SizedBox(height: 8),
+                  const Text('Checked every 5 seconds; closes with a market order.', style: TextStyle(fontSize: 11)),
+                ],
+              ),
+            ),
+            actions: [TextButton(onPressed: () => Navigator.of(ctx).pop(), child: const Text('Close'))],
+          );
+        },
+      ),
+    );
+    for (final c in ctrls.values) {
+      c.dispose();
+    }
+  }
+
   Widget _volumeControl(AutoTradeRow row, ColorScheme scheme) {
     if (row.isCopy) {
       return Tooltip(
@@ -866,6 +1013,8 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                       ),
                       const SizedBox(height: 8),
                       _kv('Volume', _volumeReadout(row, scheme), scheme),
+                      if (_triggerSummary(row) != null)
+                        _kv('Trigger', Text(_triggerSummary(row)!, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)), scheme),
                     ],
                   ),
                 ),
@@ -953,6 +1102,8 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
             widget.onTogglePause(row.tvSymbol, !row.isPaused);
           case 'copy':
             widget.onAddCopy(row.tvSymbol);
+          case 'triggers':
+            _showTriggerDialog(context, row);
           case 'terminate':
             _confirmTerminate(context, row);
         }
@@ -1023,6 +1174,17 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
           )
         else
           const PopupMenuItem(enabled: false, child: Text('Copy volume is fixed at 1 lot')),
+        if (widget.onSetTrigger != null)
+          PopupMenuItem(
+            value: 'triggers',
+            child: Row(
+              children: [
+                const Icon(Icons.flag_circle_outlined, size: 20),
+                const SizedBox(width: 10),
+                Expanded(child: Text(row.userTriggers.isEmpty ? 'TP / SL trigger' : 'TP / SL trigger (set)')),
+              ],
+            ),
+          ),
         PopupMenuItem(
           value: 'copy',
           enabled: canAddCopy,
@@ -1113,6 +1275,21 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                     : 'Favorite - give this pair priority once margin allows',
                 onPressed: () => widget.onFavorite(row.tvSymbol, !row.isFavorite),
               ),
+              if (widget.onSetTrigger != null)
+                PopupMenuButton<String>(
+                  tooltip: 'More',
+                  padding: EdgeInsets.zero,
+                  child: Icon(Icons.more_vert, size: 18, color: scheme.onSurfaceVariant),
+                  onSelected: (v) {
+                    if (v == 'triggers') _showTriggerDialog(context, row);
+                  },
+                  itemBuilder: (_) => [
+                    PopupMenuItem(
+                      value: 'triggers',
+                      child: Text(row.userTriggers.isEmpty ? 'TP / SL trigger' : 'TP / SL trigger (set)'),
+                    ),
+                  ],
+                ),
             ],
           ),
           Text(_ago(row.lastCheckedAt), style: small),
@@ -1148,6 +1325,8 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
           ),
           const SizedBox(height: 4),
           _kv('Volume', _volumeControl(row, scheme), scheme),
+          if (_triggerSummary(row) != null)
+            _kv('Trigger', Text(_triggerSummary(row)!, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600)), scheme),
           Row(
             children: [
               _pauseButton(row, scheme),

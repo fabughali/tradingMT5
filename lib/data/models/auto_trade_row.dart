@@ -1,3 +1,4 @@
+import '../identity/user_trigger_store.dart';
 /// One row of the Dashboard's "Auto-Managed Trades" table (2026-09-29, per
 /// the user: "a table .. a list of currenly running trades, filled trades,
 /// waiting trades"). Every symbol in [config.symbols] gets exactly one row,
@@ -55,6 +56,7 @@ class AutoTradeRow {
     this.sendVolume,
     this.sendWhy,
     this.isAutoVolume = false,
+    this.userTriggers = const UserTriggers(),
     this.startCandidateTag,
     this.startCandidateAt,
     this.startCandidateEta,
@@ -243,6 +245,10 @@ class AutoTradeRow {
   /// Auto volume on for this pair (v1.6.65) - the engine picks the size;
   /// [sendVolume]/[sendWhy] then show the engine's latest Auto number.
   final bool isAutoVolume;
+
+  /// The user's own TP/SL triggers for this trade (running: its ticket;
+  /// waiting: the pair) - v1.6.67.
+  final UserTriggers userTriggers;
 
   /// The live view of a not-yet-confirmed candidate signal for a row with
   /// NO running position or resting order yet (2026-10-03, per the user:

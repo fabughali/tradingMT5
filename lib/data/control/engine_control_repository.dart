@@ -19,6 +19,7 @@ import '../identity/ignited_pair_store.dart';
 import '../models/backtest_row.dart';
 import '../identity/terminate_request_store.dart';
 import '../identity/trade_volume_store.dart';
+import '../identity/user_trigger_store.dart';
 import '../identity/unpause_check_request_store.dart';
 import '../logging/app_logger.dart';
 import '../models/app_config.dart';
@@ -49,6 +50,7 @@ class EngineControlRepository {
       _backtestRequests = BacktestRequestStore(_storage),
       _backtestResults = BacktestResultStore(_storage),
       _tradeVolumes = TradeVolumeStore(_storage),
+      _userTriggers = UserTriggerStore(_storage),
       _retired = RetiredStore(_storage),
       _pendingSignals = PendingSignalStore(_storage),
       _supertrendPending = SupertrendPendingStore(_storage),
@@ -68,6 +70,7 @@ class EngineControlRepository {
   final BacktestRequestStore _backtestRequests;
   final BacktestResultStore _backtestResults;
   final TradeVolumeStore _tradeVolumes;
+  final UserTriggerStore _userTriggers;
   final RetiredStore _retired;
   final PendingSignalStore _pendingSignals;
   final SupertrendPendingStore _supertrendPending;
@@ -395,6 +398,17 @@ class EngineControlRepository {
   /// desired/attempt/last-applied state from its PREVIOUS life as an auto
   /// pair, so it starts clean at the broker minimum exactly like a pair
   /// that had never been traded before.
+  /// User TP/SL trigger (v1.6.67): sets or clears ([trigger] null) one side
+  /// ('tp'/'sl') for a running ticket or a waiting pair - see
+  /// [UserTriggerStore]. The engine checks it every 5s.
+  void setUserTrigger(String key, String side, UserTrigger? trigger, String label) {
+    _userTriggers.setSide(key, side, trigger);
+    _logUserAction(
+      '${side == 'tp' ? 'Take-profit' : 'Stop-loss'} trigger for $label '
+      '${trigger == null ? 'cleared' : 'set to ${trigger.describe()}'} (Dashboard).',
+    );
+  }
+
   /// Auto volume on/off for [tvSymbol]'s next open (v1.6.65, per the user).
   void setAutoVolume(String tvSymbol, bool on) {
     _tradeVolumes.setAuto('${AutoCategory.oneHour.wireValue}|$tvSymbol', on);

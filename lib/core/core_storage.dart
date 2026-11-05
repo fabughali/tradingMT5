@@ -332,6 +332,9 @@ class CoreStorage {
   /// in [tradeVolumeFile] (`auto`).
   String get autoVolumePlanFile => p.join(logsDir, 'auto-volume-plan.json');
 
+  /// User TP/SL triggers (v1.6.67) - see [UserTriggerStore].
+  String get userTriggersFile => p.join(logsDir, 'user-triggers.json');
+
   /// The category (1m/1H/1D) chosen per symbol via the Next Trade/Check-card
   /// knob — defaults to 1H when a symbol has never been touched.
   String get pairCategoriesFile => p.join(logsDir, 'pair-categories.json');
