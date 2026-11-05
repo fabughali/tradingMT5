@@ -3771,7 +3771,14 @@ class EngineService {
     // chart already showing the right symbol.
     if (chartView.switched) {
       var stable = false;
-      for (var attempt = 0; attempt < 6; attempt++) {
+      // v1.6.66 (2026-11-05, per the user: "margin is too high but no open
+      // trades"): after a switch the worm_10_26 plot data can be EMPTY for
+      // 4-8s (sampled live: TRX/UNI 0 rows, XLM 0 rows until ~8s later).
+      // Two empty reads used to "agree" and count as stable, so most pairs
+      // logged "no worm10 event yet" and were skipped. An empty read is
+      // never stable - wait for real data (up to 10 x 2s).
+      const settleAttempts = 10;
+      for (var attempt = 0; attempt < settleAttempts; attempt++) {
         await Future<void>.delayed(const Duration(seconds: 2));
         final recheck = await readWorm10Signals(
           cdp,
@@ -3782,15 +3789,18 @@ class EngineService {
         );
         final prevLast = check.zigzag.signals.isEmpty ? null : check.zigzag.signals.last;
         final nextLast = recheck.zigzag.signals.isEmpty ? null : recheck.zigzag.signals.last;
-        final agree = prevLast?.time == nextLast?.time && prevLast?.tag == nextLast?.tag;
+        final agree = nextLast != null && prevLast?.time == nextLast.time && prevLast?.tag == nextLast.tag;
         check = recheck;
         if (agree) {
           stable = true;
           break;
         }
         logger.log(
-          '$tvSymbol ($category): worm10 signal data still settling after '
-          'the symbol switch (attempt ${attempt + 1}/6) - retrying.',
+          nextLast == null
+              ? '$tvSymbol ($category): worm10 indicator data not calculated yet after '
+                  'the symbol switch (attempt ${attempt + 1}/$settleAttempts) - waiting.'
+              : '$tvSymbol ($category): worm10 signal data still settling after '
+                  'the symbol switch (attempt ${attempt + 1}/$settleAttempts) - retrying.',
         );
       }
       if (!stable) {

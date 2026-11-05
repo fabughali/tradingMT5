@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-05 (v1.6.66+114)** — **Empty indicator read is never "stable"**. Per the
+  user: "margin is too high but no open trades ... is that a bug?" Yes. After
+  TradingView was restarted at 16:10Z, most pairs logged `no worm10 event yet`
+  (56 empty vs 9 real reads in 15 min). Sampled live on TradingMT5's own tab: right
+  after a symbol switch the worm_10_26 plot data holds 0 rows for 4-8s (TRX, UNI 0
+  rows; XLM 0 rows until ~8s later, then 400 rows with BUY/SELL/HH/LL). The settle
+  check compared two reads 2s apart - two EMPTY reads "agreed", counted as stable,
+  and the pair was skipped. Now an empty read never counts as stable; the engine
+  waits up to 10 x 2s for real data (`worm10 indicator data not calculated yet ...`).
+  Also found the same afternoon: TradingMT5's tab had become HIDDEN behind Pionex's
+  tab in one TradingView window - a hidden tab's chart data stops loading and the
+  Indicators dialog never opens, which caused the 15:01-16:10Z stall. Keep the two
+  tabs in separate windows.
 - **2026-11-05 (v1.6.65+113)** — **Auto volume**. Per the user: "if volume set to
   (auto) then app decide what volume is good for achieving max gain and not reaching
   margin less than 150 ... once it is not set to auto, then volume is fixed", goals
