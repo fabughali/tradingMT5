@@ -326,6 +326,12 @@ class CoreStorage {
   /// never changes — this only affects the NEXT open (fresh or recycled).
   String get tradeVolumeFile => p.join(logsDir, 'trade-volume.json');
 
+  /// Auto volume plan (2026-11-05, v1.6.65): per volume key, the size the
+  /// engine's Auto volume would send now and why - written ONLY by the
+  /// engine, read by the Dashboard card. The Auto on/off flag itself lives
+  /// in [tradeVolumeFile] (`auto`).
+  String get autoVolumePlanFile => p.join(logsDir, 'auto-volume-plan.json');
+
   /// The category (1m/1H/1D) chosen per symbol via the Next Trade/Check-card
   /// knob — defaults to 1H when a symbol has never been touched.
   String get pairCategoriesFile => p.join(logsDir, 'pair-categories.json');

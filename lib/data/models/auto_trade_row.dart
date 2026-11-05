@@ -54,6 +54,7 @@ class AutoTradeRow {
     this.attemptVolume,
     this.sendVolume,
     this.sendWhy,
+    this.isAutoVolume = false,
     this.startCandidateTag,
     this.startCandidateAt,
     this.startCandidateEta,
@@ -238,6 +239,10 @@ class AutoTradeRow {
   /// the card volume, why (2026-10-25). Null when unknown.
   final double? sendVolume;
   final String? sendWhy;
+
+  /// Auto volume on for this pair (v1.6.65) - the engine picks the size;
+  /// [sendVolume]/[sendWhy] then show the engine's latest Auto number.
+  final bool isAutoVolume;
 
   /// The live view of a not-yet-confirmed candidate signal for a row with
   /// NO running position or resting order yet (2026-10-03, per the user:

@@ -36,6 +36,39 @@ class TradeVolumeStore {
   double? attempt(String key) => (_entry(key)['attempt'] as num?)?.toDouble();
   double? lastApplied(String key) => (_entry(key)['last_applied'] as num?)?.toDouble();
 
+  /// Auto volume on for this pair (2026-11-05, v1.6.65, per the user: "a
+  /// toggle button or a checkbox next to volume (auto)"). Off (missing) =
+  /// the card volume is sent exactly as set.
+  bool isAuto(String key) => _entry(key)['auto'] == true;
+
+  void setAuto(String key, bool on) {
+    final map = Map<String, dynamic>.from(_readRaw());
+    final e = Map<String, dynamic>.from(map[key] as Map<String, dynamic>? ?? const {});
+    if (on) {
+      e['auto'] = true;
+    } else {
+      e.remove('auto');
+    }
+    e.remove('attempt');
+    map[key] = e;
+    _write(map);
+  }
+
+  /// The engine's latest Auto volume for [key] (see [setAutoPlan]).
+  ({double volume, String why, String at})? autoPlan(String key) {
+    final e = (_storage.readJsonObject(_storage.autoVolumePlanFile) ?? const {})[key] as Map<String, dynamic>?;
+    final v = (e?['volume'] as num?)?.toDouble();
+    if (e == null || v == null) return null;
+    return (volume: v, why: e['why'] as String? ?? '', at: e['at'] as String? ?? '');
+  }
+
+  /// Engine only: records what Auto volume would send for [key] right now.
+  void setAutoPlan(String key, double volume, String why) {
+    final map = Map<String, dynamic>.from(_storage.readJsonObject(_storage.autoVolumePlanFile) ?? const {});
+    map[key] = {'volume': volume, 'why': why, 'at': DateTime.now().toUtc().toIso8601String()};
+    _storage.writeJson(_storage.autoVolumePlanFile, map);
+  }
+
   void setDesired(String key, double volume) {
     final map = Map<String, dynamic>.from(_readRaw());
     final e = Map<String, dynamic>.from(map[key] as Map<String, dynamic>? ?? const {});

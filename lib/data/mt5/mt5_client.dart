@@ -188,9 +188,10 @@ class Mt5Client {
   /// a position that vanished from [getOpenPositions] actually ended (SL
   /// hit, TP hit, or closed manually) when the engine's own [closePosition]
   /// was never the one to close it. Read-only.
-  Future<Map<String, dynamic>> getHistoryPositions({String? symbol}) =>
+  Future<Map<String, dynamic>> getHistoryPositions({String? symbol, String? datetimeFrom}) =>
       callTool('get_trading_history_positions', {
         if (symbol != null) 'symbol': symbol,
+        if (datetimeFrom != null) 'datetime_from': datetimeFrom,
       });
 
   /// Order (not position) history — used after a pending-order fallback

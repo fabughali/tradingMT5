@@ -181,6 +181,10 @@ the actual cross-machine source of truth — the backups folder is a local-only 
   restart of the engine runs this sweep over every open position — before v1.6.27 it
   flipped BTC on a 2-minute-old candle. Treat every restart as a trading event.
 
+- **Auto volume (v1.6.65, user's spec):** per-pair Auto checkbox. Auto = engine sizes
+  from margin room above 150% shared by 30-day DOLLAR ranking (app reads MT5 history
+  itself, hourly). Fixed = card volume as set, NO margin scaling (150% floor still
+  applies). Floor may go to 200% later if watching shows too many 100-150% cases.
 - **Worm10 consolidation**: "Supertrend Plus" and "Signal Flip" decision techniques both
   now read off the `worm_10_26` TradingView indicator (via `readWorm10Signals`), not
   their own old indicators (`supertrend`, `worm_9_26`/zigzag). The old reader functions

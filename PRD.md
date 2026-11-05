@@ -1980,6 +1980,29 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-05 (v1.6.65+113)** — **Auto volume**. Per the user: "if volume set to
+  (auto) then app decide what volume is good for achieving max gain and not reaching
+  margin less than 150 ... once it is not set to auto, then volume is fixed", goals
+  "max number of trades, less cases reaching 100-150% margin, max gain, watch history
+  ... best gain then apply max volume", "dollars are more important to me than
+  percentage", "app should do all history checkup", 150% floor for now (200% later if
+  watching shows too many low-margin cases), live immediately (no shadow mode).
+  - Each card has an **Auto** checkbox next to the volume (running cards: in the more
+    menu). Off by default on every pair.
+  - **Fixed** (Auto off): the card volume is sent exactly as set - the 0.3/0.6 margin
+    size scaling is gone. The 150% MARGIN FLOOR still blocks a trade that won't fit.
+  - **Auto**: the engine reads MT5's closed positions of the last 30 days itself,
+    hourly, in dollars (profit + swaps + commission). Pairs with 5+ trades ranked:
+    top third x2, middle x1, bottom x0.5, any pair that lost x0.5; fewer trades x1.
+    Room = equity/1.5 - margin - resting orders' margin - margin kept for waiting
+    fixed/ignited pairs that could really open (smallest first; one that can never fit,
+    like ETH 0.6, is not kept). The room is shared by weight among every auto pair
+    waiting to open; volume = share / (margin rate x contract x price), floored to the
+    broker grid, within min/max. Mixed auto + fixed trades: every open trade counts
+    via the account's real margin. Ignited pairs still send their card volume.
+  - An Auto pair's resting order is not re-sized (would churn every 30s); no "never
+    below last fill" floor for Auto. Log lines: `AUTO VOLUME ...`; the GUI reads the
+    engine's latest number from `logs/auto-volume-plan.json`.
 - **2026-11-04 (v1.6.64+112)** — **Shared tab-owner rule**. Both chart tabs on
   9222 turned out to have the same URL, `/chart/sdsxZ9HR/`, because the free
   plan saves only one layout ("Unnamed") - so v1.6.63's URL match could grab

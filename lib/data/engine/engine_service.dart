@@ -64,6 +64,7 @@ import 'candle_closed.dart';
 import 'close_fill.dart';
 import 'sl_ratchet_ladder.dart';
 import 'resting_order_check.dart';
+import 'auto_volume.dart';
 import 'volume_step.dart';
 import 'worm10_decision.dart';
 
@@ -885,6 +886,182 @@ class EngineService {
   /// opens in one sweep each sees the ones before it. Resting orders count
   /// as exposure too - they use margin the moment they trigger. If MT5 can't
   /// be read the trade is held back rather than sent blind.
+  // ---- Auto volume (v1.6.65, 2026-11-05) - see auto_volume.dart. --------
+  // The app does the history check itself (per the user: "app should do all
+  // history checkup"): MT5's own closed positions of the last 30 days, in
+  // dollars, refreshed hourly.
+  Map<String, double> _autoWeights = const {};
+  Map<String, PairHistory> _autoHistory = const {};
+  DateTime _autoWeightsAt = DateTime.fromMillisecondsSinceEpoch(0);
+  static const _autoWeightsInterval = Duration(hours: 1);
+
+  Future<void> _refreshAutoWeightsIfStale() async {
+    if (DateTime.now().difference(_autoWeightsAt) < _autoWeightsInterval) return;
+    try {
+      final from = DateTime.now().toUtc().subtract(const Duration(days: 30));
+      final result = await mt5.getHistoryPositions(
+        datetimeFrom: from.toIso8601String().split('.').first,
+      );
+      double n(Object? v) => v is num ? v.toDouble() : double.tryParse('$v') ?? 0;
+      final pnl = <String, double>{};
+      final count = <String, int>{};
+      for (final p in ((result['positions'] as List?) ?? const []).cast<Map<String, dynamic>>()) {
+        final s = (p['symbol'] as String?)?.toUpperCase();
+        if (s == null) continue;
+        pnl[s] = (pnl[s] ?? 0) + n(p['profit']) + n(p['swaps']) + n(p['commission']);
+        count[s] = (count[s] ?? 0) + 1;
+      }
+      _autoHistory = {for (final s in pnl.keys) s: PairHistory(pnl: pnl[s]!, trades: count[s]!)};
+      _autoWeights = autoPairWeights(_autoHistory);
+      _autoWeightsAt = DateTime.now();
+      final ranked = _autoHistory.entries.toList()..sort((a, b) => b.value.pnl.compareTo(a.value.pnl));
+      logger.log(
+        'AUTO VOLUME: 30-day history ranked (${ranked.length} pairs): '
+        '${ranked.map((e) => '${e.key} \$${e.value.pnl.toStringAsFixed(2)}/${e.value.trades} x${_autoWeights[e.key]}').join(', ')}',
+      );
+    } catch (e) {
+      logger.log('AUTO VOLUME: could not read the 30-day history ($e) - keeping the last ranking', level: 'WARNING');
+      _autoWeightsAt = DateTime.now().subtract(_autoWeightsInterval - const Duration(minutes: 5));
+    }
+  }
+
+  double _autoWeightFor(String mt5Symbol) => _autoWeights[mt5Symbol.toUpperCase()] ?? 1.0;
+
+  /// Auto volume for one pair right now (see [autoVolumeFor]). Margin room
+  /// above 150% is shared by weight among every auto pair WAITING to open
+  /// (auto-managed, not paused/retired/Last, nothing open or resting on its
+  /// symbol, plus this pair), after setting aside room for waiting fixed and
+  /// ignited pairs that could really open. Null if the account can't be
+  /// read - the caller then falls back to the card volume and the 150%
+  /// floor check decides.
+  Future<AutoVolume?> _autoVolumeFor(
+    AutoCategory category,
+    SymbolMapping mapping,
+    String volKey,
+    double price,
+    double volumeMin,
+    double volumeMax,
+    double volumeStep,
+    double contractSize,
+  ) async {
+    try {
+      await _refreshAutoWeightsIfStale();
+      final account = (await mt5.getAccountInfo())['account'] as Map<String, dynamic>?;
+      final equity = (account?['equity'] as num?)?.toDouble();
+      final margin = (account?['margin'] as num?)?.toDouble();
+      if (equity == null || margin == null) return null;
+      final open = await mt5.getOpenPositions();
+      double n(Object? v) => v is num ? v.toDouble() : double.tryParse('$v') ?? 0;
+      var exposure = 0.0;
+      var resting = 0.0;
+      final busy = <String>{};
+      for (final p in (open['positions'] as List? ?? const []).cast<Map<String, dynamic>>()) {
+        exposure += n(p['volume']) * n(p['contract_size']) * n(p['price_open']);
+        busy.add('${p['symbol']}'.toUpperCase());
+      }
+      for (final o in (open['orders'] as List? ?? const []).cast<Map<String, dynamic>>()) {
+        resting += n(o['volume_current']) * n(o['contract_size']) * n(o['price_order']);
+        busy.add('${o['symbol']}'.toUpperCase());
+      }
+      final rate = autoMarginRate(margin: margin, exposureNotional: exposure);
+      final room = equity / (RiskGate.marginGateThresholdPct / 100) - margin - resting * rate;
+
+      final watched = {
+        for (final w in await mt5.getWatchedSymbols()) '${w['symbol']}'.toUpperCase(): w,
+      };
+      final autoManaged = autoManagedByCategory[category];
+      final prefix = category.wireValue;
+      var totalWeight = _autoWeightFor(mapping.mt5Symbol);
+      final fixedNeeds = <FixedNeed>[];
+      final waitingAuto = <String>[mapping.mt5Symbol.toUpperCase()];
+      for (final m in _loadSymbolsFresh()) {
+        final sym = m.mt5Symbol.toUpperCase();
+        final tv = m.tradingViewSymbol;
+        if (sym == mapping.mt5Symbol.toUpperCase() || busy.contains(sym)) continue;
+        if (autoManaged == null || !autoManaged.isAutoManaged(tv)) continue;
+        if (retired.isRetiredBase(tv) || paused.isPaused(tv) || lastTag.isLastTagged(tv)) continue;
+        final key = '$prefix|$tv';
+        if (tradeVolumes.isAuto(key) && !ignitedPairs.isIgnited(tv)) {
+          totalWeight += _autoWeightFor(sym);
+          waitingAuto.add(sym);
+        } else {
+          final w = watched[sym];
+          final bid = n(w?['bid']);
+          if (w == null || bid <= 0) continue;
+          final vol = tradeVolumes.desired(key) ?? n(w['volume_min']);
+          fixedNeeds.add(FixedNeed(key, vol * n(w['contract_size']) * bid));
+        }
+      }
+      final reserved = reserveForFixed(room: room, rate: rate, needs: fixedNeeds);
+      final result = autoVolumeFor(
+        equity: equity,
+        margin: margin,
+        exposureNotional: exposure,
+        restingNotional: resting,
+        reservedMargin: reserved,
+        weight: _autoWeightFor(mapping.mt5Symbol),
+        totalWeight: totalWeight,
+        price: price,
+        contractSize: contractSize,
+        volumeMin: volumeMin,
+        volumeMax: volumeMax,
+        volumeStep: volumeStep,
+        floorPct: RiskGate.marginGateThresholdPct,
+      );
+      final hist = _autoHistory[mapping.mt5Symbol.toUpperCase()];
+      final why = '${result.why}, ${waitingAuto.length} auto pair(s) waiting'
+          '${reserved > 0 ? ', \$${reserved.toStringAsFixed(2)} kept for fixed pairs' : ''}'
+          ', 30d ${hist == null ? 'no history' : '\$${hist.pnl.toStringAsFixed(2)}/${hist.trades} trades'}';
+      tradeVolumes.setAutoPlan(volKey, result.volume, why);
+      return AutoVolume(result.volume, why, fits: result.fits);
+    } catch (e) {
+      logger.log('${mapping.mt5Symbol}: AUTO VOLUME could not be worked out ($e) - using the card volume',
+          level: 'WARNING');
+      return null;
+    }
+  }
+
+  /// Keeps the Dashboard's Auto number fresh for every waiting auto pair
+  /// (every 60s) - only for display; the size sent is always recomputed at
+  /// open time.
+  DateTime _lastAutoPlanRefreshAt = DateTime.fromMillisecondsSinceEpoch(0);
+
+  Future<void> _maybeRefreshAutoPlans() async {
+    if (DateTime.now().difference(_lastAutoPlanRefreshAt) < const Duration(seconds: 60)) return;
+    _lastAutoPlanRefreshAt = DateTime.now();
+    try {
+      const category = AutoCategory.oneHour;
+      final autoManaged = autoManagedByCategory[category];
+      if (autoManaged == null) return;
+      final mappings = _loadSymbolsFresh()
+          .where((m) => tradeVolumes.isAuto('${category.wireValue}|${m.tradingViewSymbol}'))
+          .where((m) => autoManaged.isAutoManaged(m.tradingViewSymbol))
+          .toList();
+      if (mappings.isEmpty) return;
+      final watched = {
+        for (final w in await mt5.getWatchedSymbols()) '${w['symbol']}'.toUpperCase(): w,
+      };
+      double n(Object? v) => v is num ? v.toDouble() : double.tryParse('$v') ?? 0;
+      for (final m in mappings) {
+        final w = watched[m.mt5Symbol.toUpperCase()];
+        if (w == null || n(w['ask']) <= 0) continue;
+        final volumeMin = n(w['volume_min']);
+        await _autoVolumeFor(
+          category,
+          m,
+          '${category.wireValue}|${m.tradingViewSymbol}',
+          n(w['ask']),
+          volumeMin,
+          n(w['volume_max']),
+          n(w['volume_step']) > 0 ? n(w['volume_step']) : volumeMin,
+          n(w['contract_size']) > 0 ? n(w['contract_size']) : 1.0,
+        );
+      }
+    } catch (e) {
+      logger.log('AUTO VOLUME: Dashboard refresh failed ($e)', level: 'WARNING');
+    }
+  }
+
   Future<String?> _marginFloorBlockReason(double newNotional) async {
     final double equity;
     final double margin;
@@ -1091,9 +1268,13 @@ class EngineService {
     if (volumeMin == null || bid == null || ask == null || bid <= 0 || ask <= 0) return;
     final volumeStep = (info['volume_step'] as num?)?.toDouble() ?? volumeMin;
     final volKey = '${category.wireValue}|$tvSymbol';
+    // An Auto pair's size is fixed once its order is placed (v1.6.65) -
+    // re-placing it whenever the Auto number moves would churn every 30s.
+    if (tradeVolumes.isAuto(volKey) && !ignitedPairs.isIgnited(tvSymbol)) return;
     final planned = plannedSendVolume(
       desired: tradeVolumes.desired(volKey),
-      marginScale: ignitedPairs.isIgnited(tvSymbol) ? 1.0 : RiskGate.marginSizeScaleFor(risk.marginLevel),
+      // Fixed volume is fixed (v1.6.65) - no margin scaling.
+      marginScale: 1.0,
       attempt: tradeVolumes.attempt(volKey),
       lastApplied: tradeVolumes.lastApplied(volKey),
       volumeMin: volumeMin,
@@ -1879,6 +2060,7 @@ class EngineService {
     await _maybeRefreshMarginGate();
     // Waiting orders follow a changed Dashboard volume (2026-10-25).
     await _maybeSyncRestingOrderVolumes();
+    await _maybeRefreshAutoPlans();
 
     await _reconcileClosedPositions();
 
@@ -2030,6 +2212,7 @@ class EngineService {
         // a symbol later in the same long sweep.
         await _maybeRefreshMarginGate();
         await _maybeSyncRestingOrderVolumes();
+        await _maybeRefreshAutoPlans();
         if (!(await _maybeRunHealthCheck())) return;
         try {
           // Re-read symbols from config.json fresh every cycle (rather than
@@ -4918,20 +5101,38 @@ class EngineService {
     // An ignited pair sends the full card volume (2026-10-25, per the user:
     // "do both" - ignite already skips the margin gate; "margin level has
     // nothing to do with manual ignited pair" now covers the size too).
-    final marginScale = ignitedPairs.isIgnited(mapping.tradingViewSymbol)
-        ? 1.0
-        : RiskGate.marginSizeScaleFor(risk.marginLevel);
-    final desiredVolumeRaw = tradeVolumes.desired(volKey) ?? volumeMin;
+    //
+    // v1.6.65 (2026-11-05, per the user: "once it is not set to auto, then
+    // volume is fixed"): a FIXED pair sends its card volume as set - the
+    // 0.3/0.6 margin scaling no longer applies (the 150% floor below still
+    // does). An AUTO pair gets [_autoVolumeFor]'s size instead; an ignited
+    // pair always sends its card volume, as before.
+    const marginScale = 1.0;
+    final ignitedNow = ignitedPairs.isIgnited(mapping.tradingViewSymbol);
+    final autoVolume = !ignitedNow && tradeVolumes.isAuto(volKey)
+        ? await _autoVolumeFor(
+            category,
+            mapping,
+            volKey,
+            entry,
+            volumeMin,
+            (info['volume_max'] as num?)?.toDouble() ?? 0,
+            volumeStep,
+            (info['contract_size'] as num?)?.toDouble() ?? 1.0,
+          )
+        : null;
+    final desiredVolumeRaw = autoVolume?.volume ?? tradeVolumes.desired(volKey) ?? volumeMin;
     // Snapped onto the broker's volume grid up front (2026-10-20, per the
     // user) - see [snapVolumeToStep]'s own doc comment: margin scaling
     // alone can turn a legal size into an off-grid one MT5 rejects with
     // 10014 before the order is even considered.
     final desiredVolume = snapVolumeToStep(
-      marginScale >= 1.0 ? desiredVolumeRaw : desiredVolumeRaw * marginScale,
+      desiredVolumeRaw,
       volumeMin: volumeMin,
       volumeStep: volumeStep,
     );
-    final floorVolume = tradeVolumes.lastApplied(volKey) ?? volumeMin;
+    // Auto decides the size itself - no "never below the last fill" floor.
+    final floorVolume = autoVolume != null ? volumeMin : tradeVolumes.lastApplied(volKey) ?? volumeMin;
     // Same computation [_maybeSyncRestingOrderVolumes] compares resting
     // orders against (2026-10-25) - one shared helper so the two can't
     // drift. Includes the final snap of a possibly off-grid persisted
@@ -4940,10 +5141,13 @@ class EngineService {
       desired: desiredVolumeRaw,
       marginScale: marginScale,
       attempt: tradeVolumes.attempt(volKey),
-      lastApplied: tradeVolumes.lastApplied(volKey),
+      lastApplied: autoVolume != null ? null : tradeVolumes.lastApplied(volKey),
       volumeMin: volumeMin,
       volumeStep: volumeStep,
     );
+    if (autoVolume != null) {
+      logger.log('$mt5Symbol ($category): AUTO VOLUME $tryVolume - ${autoVolume.why}');
+    }
     final point = (info['point'] as num?)?.toDouble() ?? 0.0;
     final stopsLevelPoints = (info['trade_stops_level'] as num?)?.toInt() ?? 0;
 
@@ -4979,7 +5183,7 @@ class EngineService {
       'vol=$tryVolume entry=$entry sl=$sl tp=$tp '
       '(range ${rangeBottom.toStringAsFixed(digits)}-${rangeTop.toStringAsFixed(digits)}'
       '${target.widenApplied ? ", widened" : ""})'
-      '${marginScale < 1.0 ? " [size scaled to ${(marginScale * 100).toStringAsFixed(0)}% - margin level ${risk.marginLevel?.toStringAsFixed(1)}%]" : ""}',
+      '${autoVolume != null ? " [auto volume]" : ""}',
     );
 
     var result = await mt5.sendMarketOrder(

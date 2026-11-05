@@ -26,6 +26,7 @@ class AutoTradesCard extends StatefulWidget {
     required this.onToggleLast,
     required this.onTerminate,
     required this.onChangeVolume,
+    this.onToggleAutoVolume,
     required this.onAddCopy,
     required this.onIgnite,
     required this.onFavorite,
@@ -70,6 +71,10 @@ class AutoTradesCard extends StatefulWidget {
   /// size for this pair's NEXT open. Never touches a currently-running
   /// trade's own size.
   final void Function(String, double) onChangeVolume;
+
+  /// tvSymbol, Auto volume on/off (v1.6.65, per the user: "a toggle button
+  /// or a checkbox next to volume (auto)").
+  final void Function(String, bool)? onToggleAutoVolume;
 
   /// tvSymbol — Multiplier column's "+" control (2026-10-15, per the
   /// user): request one additional copy trade on this pair, same
@@ -494,6 +499,32 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
   /// Next-open volume -/+ (same rules as the old table cell): a copy's
   /// volume is fixed; a pending change shows the current size struck
   /// through with the new one under it; an active step-down shows "sends X".
+  /// "Auto" checkbox next to the volume (v1.6.65, per the user). On = the
+  /// app picks the size; off = the card volume is sent as set.
+  Widget _autoVolumeCheckbox(AutoTradeRow row) => Tooltip(
+    message: row.isAutoVolume
+        ? 'Auto volume ON - the app picks the size (untick for a fixed volume)'
+        : 'Tick for Auto volume - the app picks the size from margin room and 30-day gains',
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          width: 28,
+          height: 28,
+          child: Checkbox(
+            value: row.isAutoVolume,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            visualDensity: VisualDensity.compact,
+            onChanged: widget.onToggleAutoVolume == null
+                ? null
+                : (on) => widget.onToggleAutoVolume!(row.tvSymbol, on ?? false),
+          ),
+        ),
+        const Text('Auto ', style: TextStyle(fontSize: 11)),
+      ],
+    ),
+  );
+
   Widget _volumeControl(AutoTradeRow row, ColorScheme scheme) {
     if (row.isCopy) {
       return Tooltip(
@@ -502,6 +533,29 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
           _fmtVolume(row.currentVolume ?? 1),
           style: TextStyle(fontWeight: FontWeight.w600, color: scheme.onSurfaceVariant),
         ),
+      );
+    }
+    // Auto volume (v1.6.65): the engine picks the size - no -/+, the
+    // engine's latest Auto number (greyed) and why instead.
+    if (row.isAutoVolume) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _autoVolumeCheckbox(row),
+              Tooltip(
+                message: row.sendWhy ?? 'Auto volume',
+                child: Text(
+                  row.sendVolume == null ? 'auto' : 'auto ${_fmtVolume(row.sendVolume!)}',
+                  style: TextStyle(fontWeight: FontWeight.w600, color: scheme.onSurfaceVariant),
+                ),
+              ),
+            ],
+          ),
+        ],
       );
     }
     final effective = row.desiredVolume ?? row.currentVolume ?? row.volumeMin;
@@ -519,6 +573,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
           child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            if (widget.onToggleAutoVolume != null) _autoVolumeCheckbox(row),
             IconButton(
               icon: const Icon(Icons.remove_circle_outline, size: 20),
               padding: EdgeInsets.zero,
@@ -860,10 +915,18 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
             color: changed ? scheme.onSurfaceVariant : null,
           ),
         ),
-        if (changed)
+        if (changed && !row.isAutoVolume)
           Text(
             _fmtVolume(next),
             style: const TextStyle(color: Colors.amber, fontWeight: FontWeight.w700, fontSize: 13),
+          ),
+        if (row.isAutoVolume && !row.isCopy)
+          Tooltip(
+            message: row.sendWhy ?? 'Auto volume',
+            child: Text(
+              row.sendVolume == null ? 'next: auto' : 'next: auto ${_fmtVolume(row.sendVolume!)}',
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
           ),
       ],
     );
@@ -896,6 +959,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
       },
       itemBuilder: (context) {
         var last = row.isLastTagged;
+        var autoVol = row.isAutoVolume;
         return [
         PopupMenuItem(
           value: 'pause',
@@ -925,6 +989,27 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
             ),
           ),
         ),
+        if (!row.isCopy && widget.onToggleAutoVolume != null)
+          PopupMenuItem(
+            child: StatefulBuilder(
+              builder: (context, setLocal) {
+                return Row(
+                  children: [
+                    const Icon(Icons.auto_mode, size: 20),
+                    const SizedBox(width: 10),
+                    const Expanded(child: Text('Auto volume (next open)')),
+                    Checkbox(
+                      value: autoVol,
+                      onChanged: (on) {
+                        widget.onToggleAutoVolume!(row.tvSymbol, on ?? false);
+                        setLocal(() => autoVol = on ?? false);
+                      },
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
         if (!row.isCopy)
           PopupMenuItem(
             child: _MenuVolumeStepper(

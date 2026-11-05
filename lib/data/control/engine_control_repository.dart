@@ -395,6 +395,14 @@ class EngineControlRepository {
   /// desired/attempt/last-applied state from its PREVIOUS life as an auto
   /// pair, so it starts clean at the broker minimum exactly like a pair
   /// that had never been traded before.
+  /// Auto volume on/off for [tvSymbol]'s next open (v1.6.65, per the user).
+  void setAutoVolume(String tvSymbol, bool on) {
+    _tradeVolumes.setAuto('${AutoCategory.oneHour.wireValue}|$tvSymbol', on);
+    _logUserAction(
+      'Volume for $tvSymbol set to ${on ? 'AUTO (the app picks the size)' : 'FIXED (card volume as set)'} (Dashboard).',
+    );
+  }
+
   void resetDesiredVolume(String tvSymbol) {
     _tradeVolumes.clear('${AutoCategory.oneHour.wireValue}|$tvSymbol');
   }

@@ -21,7 +21,6 @@ import '../models/signal.dart';
 import '../models/watched_symbol.dart';
 import '../mt5/mt5_client.dart';
 import '../engine/volume_step.dart';
-import '../risk/risk_gate.dart';
 
 final storageProvider = Provider<CoreStorage>((ref) => CoreStorage.instance);
 
@@ -465,16 +464,22 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
         final desiredVolume = tradeVolumes.desired(volKey);
         // What the next order really sends, and why if it differs from the
         // card (2026-10-25, per the user) - same rule the engine applies.
-        final send = explainPlannedSend(
-          desired: desiredVolume,
-          marginScale: RiskGate.marginSizeScaleFor(accountSnapshot?.marginLevel),
-          marginLevel: accountSnapshot?.marginLevel,
-          ignited: ignitedBases.contains(tvSymbol),
-          attempt: tradeVolumes.attempt(volKey),
-          lastApplied: tradeVolumes.lastApplied(volKey),
-          volumeMin: volumeMinForRow,
-          volumeStep: volumeStepForRow,
-        );
+        // Fixed volume is fixed from v1.6.65 - no margin scaling. An Auto
+        // pair shows the engine's latest Auto number and why.
+        final autoVolumeOn = tradeVolumes.isAuto(volKey) && !ignitedBases.contains(tvSymbol);
+        final autoPlan = autoVolumeOn ? tradeVolumes.autoPlan(volKey) : null;
+        final send = autoVolumeOn
+            ? (volume: autoPlan?.volume, why: autoPlan == null ? 'auto - not worked out yet' : 'auto: ${autoPlan.why}')
+            : explainPlannedSend(
+                desired: desiredVolume,
+                marginScale: 1.0,
+                marginLevel: accountSnapshot?.marginLevel,
+                ignited: ignitedBases.contains(tvSymbol),
+                attempt: tradeVolumes.attempt(volKey),
+                lastApplied: tradeVolumes.lastApplied(volKey),
+                volumeMin: volumeMinForRow,
+                volumeStep: volumeStepForRow,
+              );
         // Multiple positions can now share one symbol (the Multiplier
         // column's copy trades) - one row per position, all carrying the
         // SAME [copyCount] so the Dashboard can group/color them together.
@@ -674,6 +679,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               volumeLimitsKnown: watched != null,
               sendVolume: send.volume,
               sendWhy: send.why,
+              isAutoVolume: autoVolumeOn,
               investmentValue: notional,
               extraMargin: accountSnapshot?.marginFree,
               liquidationPrice: liquidationPriceForRow,
@@ -701,6 +707,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               volumeLimitsKnown: watched != null,
               sendVolume: send.volume,
               sendWhy: send.why,
+              isAutoVolume: autoVolumeOn,
               attemptVolume: tradeVolumes.attempt(volKey),
               direction: (order['type'] as String?)?.contains('sell') == true
                   ? 'sell'
@@ -742,6 +749,7 @@ final autoTradesProvider = StreamProvider.autoDispose<List<AutoTradeRow>>((
               volumeLimitsKnown: watched != null,
               sendVolume: send.volume,
               sendWhy: send.why,
+              isAutoVolume: autoVolumeOn,
               attemptVolume: tradeVolumes.attempt(volKey),
               startCandidateTag: candidateWireTag,
               startCandidateAt: candidateBarTime,
