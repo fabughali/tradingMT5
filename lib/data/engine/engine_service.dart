@@ -563,7 +563,7 @@ class EngineService {
   }
 
   Future<void> _checkUserTriggers() async {
-    if (userTriggers.all().isEmpty) return;
+    if (userTriggers.all().isEmpty && _readTriggerDefaults().isEmpty) return;
     final open = await mt5.getOpenPositions();
     final positions = ((open['positions'] as List?) ?? const [])
         .cast<Map<String, dynamic>>()
@@ -596,6 +596,8 @@ class EngineService {
       userTriggers.bind(key, ticketTriggerKey(main));
       logger.log('USER TRIGGER: $tv filled as ticket=$main - its waiting TP/SL now watch that trade.');
     }
+
+    await _syncUserTriggerDefaults(byTicket);
 
     if (_contractSizes.isEmpty || DateTime.now().difference(_contractSizesAt) > const Duration(minutes: 10)) {
       _contractSizes = {
@@ -659,6 +661,130 @@ class EngineService {
     }
   }
 
+
+  // 2026-11-06, per the user: "once user set tp/sl, then this should
+  // override tp/sl when it is set at the beginning of the trade" / "once
+  // user deactive tp/sl, then the default tp/sl will take place". While a
+  // ticket has a user TP (SL), its own broker TP (SL) is removed from MT5
+  // and saved here; when that user trigger is removed with the trade still
+  // open, the saved level goes back. If price is already past it by then,
+  // the trade is closed, exactly as the default would have done.
+  final Map<int, int> _userDefaultMisses = {};
+
+  Map<String, dynamic> _readTriggerDefaults() =>
+      Map<String, dynamic>.from(storage.readJsonObject(storage.userTriggerDefaultsFile) ?? const {});
+
+  Future<void> _syncUserTriggerDefaults(Map<int, Map<String, dynamic>> byTicket) async {
+    final defaults = _readTriggerDefaults();
+    final triggers = userTriggers.all();
+    final tickets = <int>{
+      for (final k in triggers.keys)
+        if (k.startsWith('ticket:') && int.tryParse(k.substring(7)) != null) int.parse(k.substring(7)),
+      for (final k in defaults.keys)
+        if (int.tryParse(k) != null) int.parse(k),
+    };
+    var changed = false;
+    for (final ticket in tickets) {
+      final p = byTicket[ticket];
+      if (p == null) {
+        if (!defaults.containsKey('$ticket')) continue;
+        final misses = (_userDefaultMisses[ticket] ?? 0) + 1;
+        _userDefaultMisses[ticket] = misses;
+        if (misses >= 3) {
+          defaults.remove('$ticket');
+          _userDefaultMisses.remove(ticket);
+          changed = true;
+        }
+        continue;
+      }
+      _userDefaultMisses.remove(ticket);
+      if (_userTriggerCloses.containsKey(ticket)) continue; // closing already
+      final mt5Symbol = '${p['symbol']}';
+      final isLong = (p['action'] as String?) != 'sell';
+      final price = (p['price_current'] as num?)?.toDouble() ?? (p['price_last'] as num?)?.toDouble();
+      final t = triggers[ticketTriggerKey(ticket)] ?? const UserTriggers();
+      final saved = Map<String, dynamic>.from(defaults['$ticket'] as Map? ?? const {});
+      final out = <String, double>{};
+      String? closeSide;
+      for (final side in const ['tp', 'sl']) {
+        final isTp = side == 'tp';
+        final current = (p[isTp ? 'take_profit' : 'stop_loss'] as num?)?.toDouble() ?? 0;
+        final savedValue = (saved[side] as num?)?.toDouble();
+        final action = brokerSideAction(
+          userActive: (isTp ? t.tp : t.sl) != null,
+          saved: savedValue,
+          current: current,
+          isTp: isTp,
+          isLong: isLong,
+          price: price,
+        );
+        switch (action) {
+          case BrokerSideAction.none:
+            break;
+          case BrokerSideAction.remove:
+            if (savedValue == null) saved[side] = current;
+            if (current != 0) out[side] = 0;
+          case BrokerSideAction.restore:
+            out[side] = savedValue!;
+          case BrokerSideAction.closeDefault:
+            closeSide = side;
+          case BrokerSideAction.dropSaved:
+            saved.remove(side);
+        }
+      }
+      if (closeSide != null) {
+        final isTp = closeSide == 'tp';
+        final level = saved[closeSide];
+        final detail = 'Your ${isTp ? "TP" : "SL"} trigger was removed and price $price was already past the '
+            'trade\'s own ${isTp ? "take-profit" : "stop-loss"} $level - closed as that default would have.';
+        logger.log('USER TRIGGER: $mt5Symbol ticket=$ticket - $detail');
+        _userTriggerCloses[ticket] = (isTp ? 'take_profit' : 'stop_loss', detail);
+        try {
+          await _sendCloseOrThrow(mt5Symbol, ticket);
+          defaults.remove('$ticket');
+          changed = true;
+        } catch (e) {
+          _userTriggerCloses.remove(ticket);
+          logger.log('USER TRIGGER: close of $mt5Symbol ticket=$ticket failed ($e) - will retry in 5s.', level: 'ERROR');
+        }
+        continue;
+      }
+      if (out.isNotEmpty) {
+        // Save the default to disk BEFORE removing it from MT5, so a crash
+        // right after the modify can never lose it.
+        defaults['$ticket'] = saved;
+        storage.writeJson(storage.userTriggerDefaultsFile, defaults);
+        try {
+          await mt5.modifyStopLossTakeProfit(symbol: mt5Symbol, positionTicket: ticket, sl: out['sl'], tp: out['tp']);
+          final what = out.entries
+              .map((e) => e.value == 0
+                  ? 'own ${e.key.toUpperCase()} ${saved[e.key]} removed (your trigger replaces it)'
+                  : 'own ${e.key.toUpperCase()} ${e.value} restored (your trigger was removed)')
+              .join(', ');
+          logger.log('USER TRIGGER: $mt5Symbol ticket=$ticket - $what.');
+          // A restored side stays saved until MT5 itself shows it back
+          // (dropSaved on the next check), so a silently failed modify
+          // never loses the default.
+        } catch (e) {
+          logger.log('USER TRIGGER: TP/SL change on $mt5Symbol ticket=$ticket failed ($e) - will retry in 5s.',
+              level: 'ERROR');
+          // Keep what was saved for a removal (so the default isn't lost);
+          // a failed restore stays saved and is retried.
+        }
+      }
+      final before = defaults['$ticket'];
+      if (saved.isEmpty) {
+        if (before != null) {
+          defaults.remove('$ticket');
+          changed = true;
+        }
+      } else {
+        defaults['$ticket'] = saved;
+        changed = true;
+      }
+    }
+    if (changed) storage.writeJson(storage.userTriggerDefaultsFile, defaults);
+  }
   Future<void> _maybeApplySlRatchet() async {
     final now = DateTime.now();
     final sinceLast = now.difference(_lastSlRatchetAt);

@@ -335,6 +335,10 @@ class CoreStorage {
   /// User TP/SL triggers (v1.6.67) - see [UserTriggerStore].
   String get userTriggersFile => p.join(logsDir, 'user-triggers.json');
 
+  /// The trade's own broker TP/SL saved while a user trigger overrides it
+  /// (2026-11-06) - engine-only, restored when the trigger is removed.
+  String get userTriggerDefaultsFile => p.join(logsDir, 'user-trigger-defaults.json');
+
   /// The category (1m/1H/1D) chosen per symbol via the Next Trade/Check-card
   /// knob — defaults to 1H when a symbol has never been touched.
   String get pairCategoriesFile => p.join(logsDir, 'pair-categories.json');

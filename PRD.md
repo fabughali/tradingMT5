@@ -1980,6 +1980,24 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-06 (v1.6.68+116)** — **A user TP/SL replaces the trade's own TP/SL**. Per
+  the user: "once user set tp/sl, then this should override tp/sl when it is set at the
+  beginning of the trade", "once user deactive tp/sl, then the default tp/sl will take
+  place", "if user set only tp, then tp will override not with sl. so sl will stay
+  default".
+  - Per side: while a ticket has a user TP, its own broker TP (the 60/40 level set at
+    open) is removed from MT5 (sent as 0) and saved in `logs/user-trigger-defaults.json`
+    (written BEFORE the modify). Same for SL. A side without a user trigger is untouched.
+  - User trigger removed with the trade still open: the saved level is put back on MT5
+    and stays saved until MT5 shows it back. If price is already past it, the trade is
+    closed right away as that default would have been (recorded as take_profit /
+    stop_loss).
+  - A waiting pair's trigger applies once it fills and binds to the ticket (<= 5s).
+    Copies are untouched unless they have their own trigger. Pure rule in
+    `brokerSideAction` (`user_trigger_check.dart`), tests in
+    `test/user_trigger_override_test.dart` (208 tests pass).
+  - Trade-off: with a user trigger on, that side has no broker-side level, so it is
+    only protected while the engine runs.
 - **2026-11-05 (v1.6.67+115)** — **User TP/SL triggers**. Per the user: "set take
   profit and stop loss triggers in three ways - P&L percentage, dollars, price ... for
   any auto trade even if this trade not filled or filled", "once the trigger is set,

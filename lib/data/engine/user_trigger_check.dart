@@ -61,3 +61,48 @@ String? userTriggerInvalidReason({
   };
   return '$name must be ${up ? 'above' : 'below'} $unit';
 }
+
+/// What the engine does with one side (TP or SL) of a trade's own broker
+/// level while a user trigger exists (2026-11-06, per the user: "once user
+/// set tp/sl, then this should override tp/sl when it is set at the
+/// beginning of the trade" / "once user deactive tp/sl, then the default
+/// tp/sl will take place").
+enum BrokerSideAction {
+  /// Nothing to change.
+  none,
+
+  /// Save the current broker level as the default and remove it (send 0).
+  remove,
+
+  /// The user trigger is gone - put the saved default back on MT5.
+  restore,
+
+  /// The user trigger is gone and price is already past the saved default,
+  /// which MT5 would have hit - close the trade now, as the default would.
+  closeDefault,
+
+  /// Nothing left to restore (the default was empty or is back already).
+  dropSaved,
+}
+
+/// [userActive]: a user trigger is set on this side. [saved]: the default
+/// level saved when it was removed (null = nothing saved, 0 = the trade had
+/// none). [current]: the level MT5 has now (0 = none).
+BrokerSideAction brokerSideAction({
+  required bool userActive,
+  required double? saved,
+  required double current,
+  required bool isTp,
+  required bool isLong,
+  double? price,
+}) {
+  if (userActive) {
+    if (saved == null) return BrokerSideAction.remove;
+    return current != 0 ? BrokerSideAction.remove : BrokerSideAction.none;
+  }
+  if (saved == null) return BrokerSideAction.none;
+  if (saved == 0 || current == saved) return BrokerSideAction.dropSaved;
+  if (price == null) return BrokerSideAction.none;
+  final hit = userTriggerHit(trigger: UserTrigger(TriggerKind.price, saved), isTp: isTp, isLong: isLong, price: price);
+  return hit ? BrokerSideAction.closeDefault : BrokerSideAction.restore;
+}
