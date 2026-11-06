@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-06 (v1.6.70+118)** — **User TP/SL closes in History right away, with who set
+  it and which type**. Per the user: "why it is not there in history?" (NEAR, closed by
+  its SL +$0.50 trigger at 17:17Z, still missing at 17:34Z) and "in history it should be
+  mentioned which tp/sl - is it default or by user - and what type of tp/sl is set by
+  user".
+  - Cause: the trigger close only sent the MT5 close; History was written later by
+    `_reconcileClosedPositions`, which runs once per full main-loop sweep (~20 min). Now
+    the close goes through `_closePosition` (same as SLL), which writes History at once.
+  - Reasons: `user_tp_pct|usd|price`, `user_sl_pct|usd|price` -> "Your TP (P&L %)",
+    "Your SL ($)", "Your TP (price)"...; MT5's own levels now read "Default TP (price)" /
+    "Default SL (price)". Old `user_tp`/`user_sl` rows keep their labels.
+  - A user TP/SL close (and the default-restore close) closes ONLY that ticket - copies
+    keep running (`closeCopies: false`), since copies have their own triggers.
 - **2026-11-06 (v1.6.69+117)** — **TP/SL icons on the card**. Per the user: "in the card
   you need to mention which set is done for tp and sl ... chart icon for price, % icon
   for percentage, $ icon for dollar ... at default setting use chart icon since default

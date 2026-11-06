@@ -650,10 +650,25 @@ class EngineService {
       final detail = '${reason == 'user_tp' ? 'Take profit' : 'Stop loss'} trigger ${hit.describe()} reached - $live.';
       logger.log('USER TRIGGER: $mt5Symbol ticket=$ticket ${reason == 'user_tp' ? 'TP' : 'SL'} ${hit.describe()} '
           'reached ($live) - closing this trade.');
-      _userTriggerCloses[ticket] = (reason, detail);
+      // 2026-11-06, per the user ("why it is not there in history?" / "it
+      // should be mentioned which tp/sl ... default or by user ... and what
+      // type"): closed through [_closePosition] so History gets it right
+      // away (not ~20 min later at the next reconcile), as e.g.
+      // user_sl_usd - side and the user's trigger type.
+      final typedReason = '${reason}_${hit.kind.name}';
+      _userTriggerCloses[ticket] = (typedReason, detail);
       try {
-        await _sendCloseOrThrow(mt5Symbol, ticket);
+        await _closePosition(
+          botCategories.categoryOf(ticket) ?? AutoCategory.oneHour,
+          _tvSymbolFor(mappings, mt5Symbol),
+          mt5Symbol,
+          p,
+          stopReason: typedReason,
+          closeCopies: false,
+          detail: detail,
+        );
         userTriggers.remove(entry.key);
+        _userTriggerCloses.remove(ticket); // History already written by _closePosition
       } catch (e) {
         _userTriggerCloses.remove(ticket);
         logger.log('USER TRIGGER: close of $mt5Symbol ticket=$ticket failed ($e) - will retry in 5s.', level: 'ERROR');
@@ -740,8 +755,17 @@ class EngineService {
         logger.log('USER TRIGGER: $mt5Symbol ticket=$ticket - $detail');
         _userTriggerCloses[ticket] = (isTp ? 'take_profit' : 'stop_loss', detail);
         try {
-          await _sendCloseOrThrow(mt5Symbol, ticket);
+          await _closePosition(
+            botCategories.categoryOf(ticket) ?? AutoCategory.oneHour,
+            _tvSymbolFor(_loadSymbolsFresh(), mt5Symbol),
+            mt5Symbol,
+            p,
+            stopReason: isTp ? 'take_profit' : 'stop_loss',
+            closeCopies: false,
+            detail: detail,
+          );
           defaults.remove('$ticket');
+          _userTriggerCloses.remove(ticket);
           changed = true;
         } catch (e) {
           _userTriggerCloses.remove(ticket);
@@ -2253,6 +2277,11 @@ class EngineService {
   /// Re-parses just the `symbols` array out of config.json on disk, instead
   /// of trusting the copy captured in `config` once at engine startup. Falls
   /// back to that startup copy if the file is missing/unreadable right now.
+  /// TradingView symbol for [mt5Symbol] (falls back to the MT5 name).
+  static String _tvSymbolFor(List<SymbolMapping> mappings, String mt5Symbol) =>
+      mappings.where((m) => m.mt5Symbol.toUpperCase() == mt5Symbol.toUpperCase()).map((m) => m.tradingViewSymbol).firstOrNull ??
+      mt5Symbol;
+
   List<SymbolMapping> _loadSymbolsFresh() {
     final json = storage.readJsonObject(storage.configFile);
     if (json == null) return config.symbols;
@@ -5688,6 +5717,7 @@ class EngineService {
     Signal? closeSignal,
     String stopReason = 'opposite_signal',
     String? detail,
+    bool closeCopies = true,
     // 2026-10-14, per the third decision technique (worm_10_26 + spy_9_26) -
     // that technique has its own six-way [Worm10EventKind], not the 4-way
     // [SignalTag] every other technique uses, and its own
@@ -5812,7 +5842,9 @@ class EngineService {
     // A copy's own SL/TP hit, or the parent's own baseline-SL hit, are
     // the passive exception the user carved out - those are caught
     // independently by [_reconcileClosedPositions], never through here.
-    await _closeCopiesOf(category, tvSymbol, mt5Symbol, excludeTicket: ticket);
+    // Not for a user TP/SL close (2026-11-06): copies have their own
+    // triggers, per the user, so only that ticket closes.
+    if (closeCopies) await _closeCopiesOf(category, tvSymbol, mt5Symbol, excludeTicket: ticket);
   }
 
   /// Sends the close and throws unless the position really went (2026-11-01,

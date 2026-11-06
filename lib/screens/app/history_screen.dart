@@ -73,8 +73,8 @@ class HistoryScreen extends ConsumerWidget {
 
   static String _reasonLabel(String? stopReason) => switch (stopReason) {
     'opposite_signal' => 'Opposite signal',
-    'take_profit' => 'Take profit',
-    'stop_loss' => 'Stop loss',
+    'take_profit' => 'Default TP (price)',
+    'stop_loss' => 'Default SL (price)',
     // 2026-10-15, per the user - added when the reconciliation mislabeling
     // bug was fixed (see engine_service.dart's own doc comment on this
     // exact stop reason): a genuine broker-forced margin stop-out is a
@@ -99,6 +99,14 @@ class HistoryScreen extends ConsumerWidget {
     // engine has written this reason since the worm10 technique shipped,
     // but it was never given a label here - 39 recycles showed "Unknown".
     'worm10_recycle' => 'Recycled (same signal)',
+    // 2026-11-06, per the user: History says whether a TP/SL was the
+    // trade's default or the user's own, and which type the user set.
+    'user_tp_pct' => 'Your TP (P&L %)',
+    'user_tp_usd' => 'Your TP (\$)',
+    'user_tp_price' => 'Your TP (price)',
+    'user_sl_pct' => 'Your SL (P&L %)',
+    'user_sl_usd' => 'Your SL (\$)',
+    'user_sl_price' => 'Your SL (price)',
     'user_tp' => 'Your TP trigger',
     'user_sl' => 'Your SL trigger',
     _ => 'Unknown',
@@ -114,8 +122,8 @@ class HistoryScreen extends ConsumerWidget {
     'parent_closed' => Colors.indigo,
     'sll_baseline' || 'sll_ratchet' => Colors.red,
     'worm10_recycle' => Colors.teal,
-    'user_tp' => Colors.green,
-    'user_sl' => Colors.red,
+    'user_tp' || 'user_tp_pct' || 'user_tp_usd' || 'user_tp_price' => Colors.green,
+    'user_sl' || 'user_sl_pct' || 'user_sl_usd' || 'user_sl_price' => Colors.red,
     _ => scheme.outline,
   };
 
@@ -530,14 +538,14 @@ class _HistoryCard extends StatelessWidget {
   static String _closeExplained(String? stopReason) => switch (stopReason) {
     'opposite_signal' => 'An opposite signal closed it.',
     'worm10_recycle' => 'The same open signal fired again - closed and reopened fresh.',
-    'take_profit' => 'MT5 hit the take-profit price.',
-    'stop_loss' => 'MT5 hit the stop-loss price.',
+    'take_profit' => "MT5 hit the trade's own default take-profit price.",
+    'stop_loss' => "MT5 hit the trade's own default stop-loss price.",
     'margin_stop_out' => 'The broker closed it at its margin stop-out level.',
     'closed_by_user' => 'Closed by you (Dashboard or MT5).',
     'closed_by_app' => 'Closed by the app.',
     'parent_closed' => 'Closed together with its parent trade.',
-    'user_tp' => 'Your take-profit trigger was reached.',
-    'user_sl' => 'Your stop-loss trigger was reached.',
+    'user_tp' || 'user_tp_pct' || 'user_tp_usd' || 'user_tp_price' => 'Your take-profit trigger was reached.',
+    'user_sl' || 'user_sl_pct' || 'user_sl_usd' || 'user_sl_price' => 'Your stop-loss trigger was reached.',
     'sll_ratchet' => 'SLL closed it after profit fell back to the locked level.',
     'sll_baseline' => 'Old -\$5 SLL baseline close (before v1.6.38).',
     _ => 'Close reason not recorded.',
