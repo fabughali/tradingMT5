@@ -20,7 +20,9 @@ void main() {
       ),
     ));
     final text = tester.widgetList<RichText>(find.byType(RichText)).map((r) => r.text.toPlainText()).join('|');
-    expect(text.indexOf('TP'), lessThan(text.indexOf('SL')));
+    expect(text.indexOf('2.6'), lessThan(text.indexOf('+0.50'))); // TP first
+    expect(text, isNot(contains('TP'))); // header says TP / SL
+    expect(text, isNot(contains('SL')));
     expect(text, contains('+0.50'));
     expect(text, isNot(contains('\$')));
     expect(find.byIcon(Icons.show_chart), findsOneWidget); // default TP

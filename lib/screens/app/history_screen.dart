@@ -833,6 +833,14 @@ class _HistoryCard extends StatelessWidget {
                         'Update: ${_signal(entry.updateSignalType, entry.updateSignalAt)}',
                         style: const TextStyle(fontSize: 11),
                       ),
+                    // 2026-11-06, per the user: a user trigger is named in
+                    // remarks too, not only in the TP / SL cell.
+                    if (entry.userTp != null)
+                      Text(TpSlReadout.remark('TP', entry.userTp!, HistoryScreen._fmtPrice),
+                          style: const TextStyle(fontSize: 11)),
+                    if (entry.userSl != null)
+                      Text(TpSlReadout.remark('SL', entry.userSl!, HistoryScreen._fmtPrice),
+                          style: const TextStyle(fontSize: 11)),
                     Text('SLL at close: ${entry.sllAtTermination ?? '—'}', style: const TextStyle(fontSize: 11)),
                     if (entry.extraMargin != null)
                       Text('Extra margin: \$${entry.extraMargin!.toStringAsFixed(2)}', style: const TextStyle(fontSize: 11)),

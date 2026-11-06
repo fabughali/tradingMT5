@@ -1980,6 +1980,18 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-06 (v1.6.72+120)** — **No duplicate TP/SL labels; user trigger in History
+  remarks**. Per the user: "the title is tp/sl but why in text still you add tp and sl
+  to text?" and "in card of history, if user set a trigger, then in section tp/sl should
+  be mentioned ... (nearusd) ... along with remarks section".
+  - Card and History "TP / SL" cells: just `icon value / icon value` (TP first). Only a
+    waiting pair's "Trigger" row (user sides only) keeps the TP/SL label.
+  - History remarks list "User TP trigger: P&L +5.00%", "User SL trigger: $ +0.50",
+    "User TP trigger: price ...".
+  - NEAR ticket 1665225950 (closed 17:17Z, before v1.6.71 stored triggers) backfilled in
+    `bot-history.jsonl` with `user_sl` {usd, 0.5}, from the engine log line
+    "[USER] Stop-loss trigger for NEARUSD.lv #1665225950 set to +$0.50"; file backed up
+    to `bot-history.jsonl.bak-before-near-backfill` first.
 - **2026-11-06 (v1.6.71+119)** — **TP/SL readout fixes on card and History**. Per the
   user: "in card, tp/sl text should be wrapped", "in dollar, place icon dollar and then
   number without text $", "start with tp then sl", "in history ... (your sl trigger) is

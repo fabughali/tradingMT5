@@ -38,14 +38,35 @@ class TpSlReadout extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    // With defaults the cell header already says "TP / SL", so no labels -
+    // just "icon value / icon value" (2026-11-06, per the user). A waiting
+    // pair shows only the user's sides, so those keep their TP/SL label.
+    final labels = !showDefaults;
     final sides = [
-      if (showDefaults || tp != null) _side('TP', tp, defaultTp, scheme),
-      if (showDefaults || sl != null) _side('SL', sl, defaultSl, scheme),
+      if (showDefaults || tp != null) _side('TP', tp, defaultTp, scheme, labels),
+      if (showDefaults || sl != null) _side('SL', sl, defaultSl, scheme, labels),
     ];
-    return Wrap(spacing: 10, runSpacing: 2, children: sides);
+    return Wrap(
+      spacing: 4,
+      runSpacing: 2,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        for (var i = 0; i < sides.length; i++) ...[
+          if (i > 0) Text(labels ? ' ' : '/', style: TextStyle(fontSize: 13, color: scheme.onSurfaceVariant)),
+          sides[i],
+        ],
+      ],
+    );
   }
 
-  Widget _side(String label, UserTrigger? user, double? fallback, ColorScheme scheme) {
+  /// "User SL trigger: $ +0.50" style text, for History's remarks.
+  static String remark(String label, UserTrigger t, String Function(double?) formatPrice) => switch (t.kind) {
+        TriggerKind.price => 'User $label trigger: price ${formatPrice(t.value)}',
+        TriggerKind.pct => 'User $label trigger: P&L ${t.describe()}',
+        TriggerKind.usd => 'User $label trigger: \$ ${valueText(t, formatPrice)}',
+      };
+
+  Widget _side(String label, UserTrigger? user, double? fallback, ColorScheme scheme, bool showLabel) {
     final userColor = Colors.blue.shade600;
     final (IconData icon, Color color, String text, String tip) = switch (user?.kind) {
       null => (Icons.show_chart, scheme.onSurfaceVariant, formatPrice(fallback), 'Default $label (pair price)'),
@@ -58,10 +79,11 @@ class TpSlReadout extends StatelessWidget {
       child: Text.rich(
         TextSpan(
           children: [
-            TextSpan(
-              text: '$label ',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: scheme.onSurfaceVariant),
-            ),
+            if (showLabel)
+              TextSpan(
+                text: '$label ',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: scheme.onSurfaceVariant),
+              ),
             WidgetSpan(alignment: PlaceholderAlignment.middle, child: Icon(icon, size: 13, color: color)),
             TextSpan(
               text: text,
