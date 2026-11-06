@@ -1980,6 +1980,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-06 (v1.6.69+117)** — **TP/SL icons on the card**. Per the user: "in the card
+  you need to mention which set is done for tp and sl ... chart icon for price, % icon
+  for percentage, $ icon for dollar ... at default setting use chart icon since default
+  is following the pair price", and "if default chart setting, use different chart icon
+  ... so user can notify this is done by user or default".
+  - The card's "SL / TP" cell now shows each side on one line with its own icon: grey
+    line chart = the trade's default level (follows price); blue candlestick = the
+    user's price trigger; blue % = P&L % trigger; blue $ = dollar trigger, each followed
+    by its value. A waiting pair with no order yet shows only the user's sides
+    ("Trigger" row). Tooltips say which one it is. The old text-only "Trigger" line on
+    running cards is gone (the cell shows it now).
+  - v1.6.68 verified live the same day: NEAR ticket 1665225950 - own SL 0.285 removed
+    at 17:14Z when the user's SL +$0.50 was set, closed at +$0.50 at 17:17Z.
 - **2026-11-06 (v1.6.68+116)** — **A user TP/SL replaces the trade's own TP/SL**. Per
   the user: "once user set tp/sl, then this should override tp/sl when it is set at the
   beginning of the trade", "once user deactive tp/sl, then the default tp/sl will take
