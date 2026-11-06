@@ -49,12 +49,11 @@ AutoTradeRow _waiting(String sym, AutoTradeStatus status, {String? reason, bool 
   volumeMax: 1000,
 );
 
-Widget _host(List<AutoTradeRow> rows, {bool hide = false}) => MaterialApp(
+Widget _host(List<AutoTradeRow> rows) => MaterialApp(
   home: Scaffold(
     body: SingleChildScrollView(
       child: AutoTradesCard(
         rows: rows,
-        hideUpdateCloseColumns: hide,
         onTogglePause: (_, _) {},
         onToggleLast: (_, _) {},
         onTerminate: (_) {},
@@ -109,12 +108,10 @@ void main() {
     expect(order, [...order]..sort());
   });
 
-  testWidgets('Supertrend technique hides Update/Close on running cards', (tester) async {
+  testWidgets('running cards always show Update/Close A (Hybrid only, 2026-11-07)', (tester) async {
     tester.view.physicalSize = const Size(1000, 3000);
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
-    await tester.pumpWidget(_host(rows, hide: true));
-    expect(find.text('Update '), findsNothing);
     await tester.pumpWidget(_host(rows));
     expect(find.text('Update '), findsWidgets);
   });

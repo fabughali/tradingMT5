@@ -185,14 +185,13 @@ the actual cross-machine source of truth — the backups folder is a local-only 
   from margin room above 150% shared by 30-day DOLLAR ranking (app reads MT5 history
   itself, hourly). Fixed = card volume as set, NO margin scaling (150% floor still
   applies). Floor may go to 200% later if watching shows too many 100-150% cases.
-- **Worm10 consolidation**: "Supertrend Plus" and "Signal Flip" decision techniques both
-  now read off the `worm_10_26` TradingView indicator (via `readWorm10Signals`), not
-  their own old indicators (`supertrend`, `worm_9_26`/zigzag). The old reader functions
-  (`readSupertrendSignals`, `readSwingOscillatorSignals`, `enforceSupertrendPlus`,
-  `enforceCustomScripts`) are deliberately left in place, unused, as a rollback path.
-  **The Hybrid Decision (Worm10) technique's own code must never be touched** by work
-  on the other two — it's the thing the other two were consolidated onto, not the other
-  way around.
+- **Hybrid Decision is the ONLY technique (v1.6.73, 2026-11-07, user's explicit request):**
+  Supertrend Plus and Signal Flip were removed completely (their check functions,
+  TradingView readers/enforcement, details pages, Dashboard column hiding). Rollback
+  only via git / backup `D:/tradingMT5/backups/app-v1.6.72+120-2026-11-07_01-27-04`.
+  **The Hybrid Decision (`_checkOneSymbolWorm10`, `worm10_decision.dart`) code itself
+  must never be touched** by such work - its own clears of the old
+  `PendingSignalStore`/`SupertrendPendingStore` are why those two stores still exist.
 - **Retroactive audit cache** (`_auditedTickets` in `engine_service.dart`): a ticket only
   gets the full forward-replay audit once per "occurrence." Four independent triggers
   clear the cache (GUI reopen, hourly pre-candle re-arm, internet-recovery, and a

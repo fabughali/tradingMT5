@@ -71,13 +71,9 @@ login 1013734072, `EquitiBrokerageSC-Live` — a **live, real-money account**.
 Every trading decision described in this document can place or close a real
 position.
 
-Two interchangeable **decision techniques** exist, selectable from the GUI
-without a restart:
-
-- **Signal Flip (HH/LL + BUY/SELL)** — reacts to a Pine Script called
-  `worm_9_26`'s own HH/LL/BUY/SELL tag plots.
-- **Supertrend Plus (Heikin Ashi)** — reacts to a separate Pine Script's
-  strictly-alternating Buy/Sell plots, on Heikin Ashi candles.
+One **decision technique** runs: **Hybrid Decision** (worm_10_26 + spy_9_26
+RSI zones, Heikin Ashi candles). Supertrend Plus and Signal Flip were removed
+completely on 2026-11-07 (v1.6.73), per the user.
 
 The app runs natively on Linux today and has a Windows port (built and
 packaged entirely through GitHub Actions CI) that compiles clean but has
@@ -367,16 +363,12 @@ logs/
   last-checked.json                — LastCheckedStore: when each running base
                                      was last genuinely re-evaluated (past
                                      cooldown, a real chart read attempted).
-  pending-signals.json             — PendingSignalStore: Signal Flip's own
-                                     "survive one extra candle" candidate per
-                                     category|tvSymbol — {tag, bar_time}.
-  supertrend-pending.json          — SupertrendPendingStore: Supertrend
-                                     Plus's own, SEPARATE survive-one-candle
-                                     candidate store. Never shared with
-                                     pending-signals.json; the Dashboard's
-                                     Close A/Update columns always read only
-                                     the Signal Flip file and stay blank for
-                                     Supertrend-driven pairs.
+  pending-signals.json             — PendingSignalStore, and
+  supertrend-pending.json          — SupertrendPendingStore: left over from
+                                     the removed Signal Flip / Supertrend
+                                     Plus techniques (2026-11-07). Nothing
+                                     writes them any more; Hybrid Decision
+                                     only clears them per pair.
   first-open.json                  — FirstOpenStore: category|tvSymbol keys
                                      that have EVER achieved a real first
                                      open. Permanent once set.
@@ -543,83 +535,38 @@ since none of these three hot-reload mid-session.
 
 ## 9. The trading techniques — full algorithmic specification
 
-### 9.1 Dual decision-technique architecture
+### 9.1 One decision technique: Hybrid Decision
 
-Two independent, interchangeable techniques exist, selectable from a picker
-on the Dashboard (`DecisionTechnique.all`), persisted to
-`logs/decision-technique.json` by the GUI, read fresh every engine cycle via
-`EngineService._activeTechnique()` (default: Signal Flip, if the file is
-missing/unreadable — the only technique that ever existed before this picker
-did). The two techniques are implemented as **deliberately separate** methods
-(`_checkOneSymbol` for Signal Flip, `_checkOneSymbolSupertrend` for
-Supertrend Plus) rather than threaded through one generic function with
-branches — kept apart on purpose for regression-safety, since Signal Flip's
-logic is hard-won, carefully-tuned, live-verified code that must never be put
-at risk by a change meant for the other technique. The two methods share only
-the two blocks that are byte-identical between them: `_readConfirmedRange`
-(the triple-read range confirmation) and `_reconcileStaleRestingOrderIfAny`
-(stale pending-order reconciliation for a not-yet-filled pair).
+Since 2026-11-07 (v1.6.73), per the user, **Hybrid Decision** is the only
+decision technique. Supertrend Plus and Signal Flip were removed completely
+from the code (their decision functions, their TradingView readers and
+indicator enforcement, their Technique-details pages and the Dashboard's
+Supertrend-only column hiding).
 
 ```
-DecisionTechnique.signalFlip:
-  id: 'signal_flip_hh_ll_buy_sell'
-  name: 'Signal Flip (HH/LL + BUY/SELL)'
-  "Reacts immediately to the newest HH/LL/BUY/SELL tag: opens, ignores,
-   or closes-and-reopens opposite."
-
-DecisionTechnique.supertrendPlus:
-  id: 'supertrend_plus_heikin_ashi'
-  name: 'Supertrend Plus (Heikin Ashi)'
-  "A Buy signal opens long and is the close for any running short; a Sell
-   signal does the reverse. No separate confirmation signal."
+DecisionTechnique.worm10:
+  id: 'worm10_spy9_heikin_ashi'
+  name: 'Hybrid Decision'
 ```
 
-### 9.2 Signal Flip — signal source
+`DecisionTechnique.all` holds only this one. `EngineService._activeTechnique()`
+still reads `logs/decision-technique.json` fresh every cycle and falls back
+to Hybrid Decision if the file is missing, unreadable or names a removed
+technique, so an old setting can never select deleted code. Every check
+(normal cycle, Power-on / technique-switch sweep, un-pause check) calls
+`EngineService._checkOneSymbolWorm10`. Its signal source is the user's
+`worm_10_26` script plus `spy_9_26`'s RSI zones on Heikin Ashi candles
+(`readWorm10Signals`, `enforceWorm10`); the full spec lives in
+`lib/data/engine/worm10_decision.dart`.
 
-A Pine Script the user maintains, saved under the short name `worm_9_26`
-(`scriptIdPart = USER;ac8febb9427a44578fd4052af6c17d65`), is the **sole**
-signal source. It plots four tags on a bar: `New Higher High` (HH),
-`New Lower Low` (LL), and its own dedicated `BUY`/`SELL` plotshape pair.
-`readSwingOscillatorSignals` (`lib/data/tradingview/signals_reader.dart`)
-reads all four, resolving each plot's column by its exact title (never by
-Pine's internal plot-numbering order, which doesn't match source order).
+Two small pending-signal stores from the removed techniques
+(`PendingSignalStore`, `SupertrendPendingStore`) are still created, because
+`_checkOneSymbolWorm10` itself clears them for each pair and the Hybrid
+Decision code is never edited by work on other techniques.
 
-A second script, `spy_9_26` (`scriptIdPart =
-USER;f40c0a529f954b648be8f2b530d43d3f`), must also be attached to the chart
-for the app to run at all (enforced the same way as worm_9_26 — see §14.3)
-but **its data is never read for signal purposes** — this is a deliberate,
-user-directed simplification: an earlier two-indicator HH/LL + RSI-zone
-confirmation model was fully replaced (not layered) on 2026-09-29.
+### 9.4 Range — the Daily zigzag
 
-A tag's own implied direction: **HH and SELL both mean short/sell; LL and
-BUY both mean long/buy.**
-
-### 9.3 Supertrend Plus — signal source
-
-A separate Pine Script saved as `Supertrend Plus`
-(`scriptIdPart = USER;de83e70197704202ae530fd979d38aae`) supplies this
-technique's own `Buy`/`Sell` plots (title-matched exactly, mixed case — never
-the all-caps `BUY`/`SELL` worm_9_26 uses, and never that same script's
-*other* `SuperTrend Buy`/`SuperTrend Sell` plots, which are continuous
-true-every-bar trend flags, not discrete entry signals). Confirmed live that
-these two plots fire as sparse, strictly alternating events — never two of
-the same side in a row — so there is no HH/LL trend-anchor concept and no
-cross-tag "Update" confirmation for this technique.
-
-`worm_9_26` is also kept attached under this technique — not for its
-HH/LL/BUY/SELL signals, but purely because its own zigzag/MSB-OB range data
-still drives the 60/40 TP/SL model ("keep using old method," per the user).
-`spy_9_26` is *not* required here; nothing in this technique reads it.
-
-The chart is forced onto **Heikin Ashi candles** (`ChartStyle.heikinAshi =
-8`, set directly via the chart's own property setter, not UI clicking) while
-this technique is active, and reverted to regular candles
-(`ChartStyle.candles = 1`) the moment the technique switches back to Signal
-Flip.
-
-### 9.4 Range — the Daily zigzag (both techniques)
-
-Both techniques derive their TP/SL price range from the same source: the
+The TP/SL price range comes from the
 Daily MSB/OB script's zigzag polyline (`dwg-lines`), via
 `detectZigzagRange` (`lib/data/technique/zigzag_range.dart`). The algorithm:
 collapse the raw line segments into distinct points, sort by x, reconstruct
@@ -649,13 +596,9 @@ ladder before anything is trusted enough to act on:
    point ("FLICKER") aborts the whole cycle with a warning log; the bar is
    never marked as seen, so a genuinely fresh signal gets a clean re-check
    next cycle rather than being treated as acted-on.
-3. **Survive one full extra candle** (Signal Flip always; Supertrend Plus
-   only for a pair with **no currently-running position** — see the
-   technique-specific carve-out below). A triple-confirmed signal is not
+3. **Survive one full extra candle.** A triple-confirmed signal is not
    acted on immediately — it's recorded as a *pending candidate*
-   (`PendingSignalStore`/`pending-signals.json` for Signal Flip,
-   `SupertrendPendingStore`/`supertrend-pending.json` for Supertrend Plus,
-   deliberately separate stores — see §6). The symbol is skipped entirely
+   (Hybrid Decision's own pending store, `Worm10PendingSignalStore`). The symbol is skipped entirely
    (no chart access at all) until wall-clock reaches the end of the candle
    immediately *after* the candidate's own bar. At that point, if the
    freshly re-read latest tag/bar still matches the pending candidate exactly
@@ -665,19 +608,6 @@ ladder before anything is trusted enough to act on:
    instead, the new tag/bar replaces the pending candidate and the wait
    restarts for it — recursively, so a signal only ever fires once it is the
    first one to survive a full candle completely unchallenged.
-
-   **Supertrend Plus carve-out (2026-10-08, per the user):** for a pair that
-   currently has a real running position, this step is skipped entirely —
-   once the opposite signal clears step 2's triple-read confirmation, the
-   engine closes and reopens immediately, with no extra-candle wait layered
-   on top. "For currently running trades, I don't want the app to wait for
-   Close A and Close B to confirm signal flipping — once the opposite signal
-   appears, the app needs to take the action." This applies only to
-   Supertrend Plus, and only to an already-open, running position — a
-   brand-new first-ever entry (no position, no resting order yet) and an
-   already-resting-but-not-yet-filled pending order both still go through
-   the full extra-candle wait exactly as before. Signal Flip is completely
-   unaffected by this carve-out. See §9.6a and §18 (invariant 8).
 
 The pending-candidate flag is **only cleared on a genuine success** (a real
 open, a real close+reopen, or a legitimate "ignore, already correct
@@ -691,80 +621,20 @@ instead of waiting out an entire fresh candle all over again.
 Once a signal is triple-confirmed and has survived the extra-candle wait (or
 `immediate` bypasses both gates — see §9.8):
 
-**Signal Flip** (`EngineService._checkOneSymbol`):
-- No position running → open in the tag's own direction.
-- Position running, tag agrees with its direction → ignore (but see §9.7 for
-  the "Update" cross-tag confirmation recorded in this branch).
-- Position running, tag disagrees → close AND immediately reopen in the
-  tag's (opposite) direction, regardless of which specific tag type fired.
-  Every tag type is treated identically once confirmed — an earlier
-  "HH/LL close-only, wait for a genuinely new tag" exception was deliberately
-  removed (2026-09-29): "signal appears > 1 million reading > action...no
-  waiting for new signal."
-
-**Supertrend Plus** (`EngineService._checkOneSymbolSupertrend`): identical
-agree/disagree shape, but since Buy/Sell strictly alternate there is no
-meaningful "Update" concept — the Dashboard's Update/Close A columns are
-*always* blank for a Supertrend-driven pair, by design (the method simply
-never writes them), not by suppression logic.
-
-Neither technique has a `DecisionTechnique`-level concept of "wait for
-cooldown after acting" — the triple-read-plus-survive-candle pipeline above
-**is** the only gate (modulo the running-trade carve-out below); once a
+**Hybrid Decision** (`EngineService._checkOneSymbolWorm10`): the pure
+decision table is `worm10DecisionFor` in `lib/data/engine/worm10_decision.dart`
+(open / ignore / update / recycle / flip per event kind). The
+triple-read-plus-survive-candle pipeline above is the only gate; once a
 signal clears it, the action is immediate.
 
-### 9.6a Supertrend Plus — immediate flip for a running trade (no extra-candle wait)
+### 9.7 Hybrid Decision's retroactive audit (full forward replay)
 
-(2026-10-08, per the user.) For Supertrend Plus **only**, and **only** when
-`_findAppPosition` finds a real, currently-open position for the pair
-(`existing != null` — i.e. a genuinely running trade, not a resting-but-
-unfilled pending order and not a brand-new never-opened pair), step 3 of
-§9.5's confirmation pipeline ("survive one full extra candle") is skipped
-entirely — `skipExtraCandleWait = existing != null` short-circuits both the
-early "still mid-wait, skip this cycle" gate and the later "newly confirmed,
-must defer" gate. Step 2 (the triple-read confirmation, 1,000,000 sure) is
-**never** skipped — only the additional candle-survival wait on top of it.
-The instant an opposite Buy/Sell tag triple-confirms, the running position
-closes and reopens in the new direction on that same cycle.
-
-A fresh first-ever entry (no position, no resting order) and an
-already-resting pending order that hasn't triggered yet both still go
-through the full, unmodified extra-candle wait — this carve-out is
-specifically about an already-open position reversing direction ("signal
-flipping"), per the user's own wording, not about how quickly a new entry
-is taken. Signal Flip's own survive-one-candle gate (`PendingSignalStore`)
-is completely unaffected — this change touches only
-`EngineService._checkOneSymbolSupertrend`'s own, separate
-`SupertrendPendingStore` gate.
-
-### 9.7 Signal Flip's retroactive audit (full forward replay)
-
-Because Signal Flip's running direction can, in principle, drift from what a
-full replay of the signal history since open would conclude (an HH/LL +
-BUY/SELL chain the Dashboard never automatically re-walks on its own), every
-currently-running Signal Flip ticket is periodically audited from its own
-recorded Start signal forward, walking every tag strictly after it in
-chronological order and applying the exact same agree-or-flip rule the
-real-time flow uses at each one — so a position that has flipped direction
-*twice* since opening correctly lands on the second flip, not the first. The
-audit's own verdict must itself survive one full extra candle (the same
-Close A/Close B rule) before being trusted. If the replay's final direction
-disagrees with the position's real running direction, the position is closed
-and immediately reopened in the replay's direction — re-confirmed against a
-fresh chart read first, in case the historical data has shifted.
-
-This audit runs once per ticket per gate-clearing event (`_auditedTickets`,
-in-memory only — no persistence needed, since losing it on a restart just
-means one extra re-audit, not a safety issue), re-armed on:
-- Every GUI reopen (stale→fresh heartbeat transition).
-- Once per UTC hour, 15 minutes before the next 1H candle closes (so the
-  audit — and any recycle it decides on — finishes well before the new
-  candle begins).
-
-Supertrend Plus has **no equivalent audit block** — every single cycle
-already re-reads the latest triple-confirmed Buy/Sell tag and compares it
-directly against the running direction, which already *is* the reverse
-check; there is nothing historical left to replay for this technique.
+Every running Hybrid Decision ticket is audited once per "occurrence" from
+the latest case-1 confluence event (BUY_OPEN1/SELL_OPEN1) forward, applying
+`worm10DecisionFor` at every later event, so several flips between checks
+still land on the right direction (`_auditedTickets`, re-armed on GUI
+reopen, hourly before the 1H candle closes, internet recovery and manual
+un-pause, through `_clearAuditCache` with its 2-minute debounce).
 
 ### 9.8 Reverse-check-on-technique-switch (and on every Power-on)
 
@@ -788,20 +658,6 @@ Each pair's check is passed `immediate: true`, which:
   silently demote that pair to the slow normal cadence (confirmed live: a
   pair that failed its first attempt in an earlier version of this sweep
   then sat un-retried until its next normal, much-later cycle).
-
-### 9.9 First-ever-entry gate (Signal Flip only)
-
-A pair that has never achieved a real open (`FirstOpenStore`) does not trust
-whatever direction happens to be showing the very first time it's checked —
-that signal could already be close to its own reversal. It instead waits for
-a genuinely *opposite*, triple-confirmed direction to appear
-(`NewPairWaitStore`) before its first-ever entry, going through the exact
-same confirmation machinery every other signal already passes. Once a pair
-has ever opened (even once), this gate is permanently skipped for all future
-cycles. Supertrend Plus deliberately has **no equivalent gate** — a
-brand-new pair under this technique takes whatever's currently confirmed
-immediately ("if the app has a waiting trade... if it is currently buy, then
-app needs to start buy").
 
 ### 9.10 Stop-loss / take-profit — the 60/40 range model
 
@@ -1092,7 +948,7 @@ symbol in that same cycle is a cooldown-gated no-op rather than a
 duplicate action) and again inside the loop for the same "don't wait out
 the whole sweep" responsiveness `_processAllPendingTerminateRequests`
 already has. This runs the pair through its own normal check method
-(`_checkOneSymbol`/`_checkOneSymbolSupertrend`) with `immediate: true` —
+(`_checkOneSymbolWorm10`) with `immediate: true` —
 the exact same bypass-the-extra-candle-wait machinery the technique-switch
 sweep already uses (§9.8), still fully triple-read confirmed. Per the
 user's own two-case spec, this single mechanism covers both without any
@@ -1255,24 +1111,19 @@ the code:
   restored after an outage falsely "pass" presence verification for 5+
   minutes.
 
-`enforceCustomScripts` (Signal Flip: worm_9_26 + spy_9_26) and
-`enforceSupertrendPlus` (Supertrend Plus + worm_9_26, parallel set, never
-merged with the first — same regression-safety reasoning as the two check
-methods in §9) both: close everything, re-add the required scripts via "My
-Scripts," wait for loading stubs to resolve (dismissing any promo/upgrade
-dialog that can interrupt mid-add), then clean up any leftover legend stub
-(free-account 2-indicator limit).
+`enforceWorm10` (worm_10_26 + spy_9_26): closes everything, re-adds the
+required scripts via "My Scripts," waits for loading stubs to resolve
+(dismissing any promo/upgrade dialog that can interrupt mid-add), then cleans
+up any leftover legend stub (free-account 2-indicator limit).
 
-`areIndicatorsPresent`/`isSupertrendPresent` are cheap read-only presence
-checks run every health-check cycle; the full close-and-re-add cycle only
-runs when something is actually missing.
+`isWorm10Present` is the cheap read-only presence check run every
+health-check cycle; the full close-and-re-add cycle only runs when something
+is actually missing.
 
 ### 14.4 Signal reading — see §9 for the algorithm
 
-`readSwingOscillatorSignals` (Signal Flip), `readSupertrendSignals`
-(Supertrend Plus), `readBuySellSignals` (an earlier, now-superseded variant
-still present but unused by the current decision flow), all in
-`lib/data/tradingview/signals_reader.dart` — every reader evaluates a JS
+`readWorm10Signals` (Hybrid Decision) in
+`lib/data/tradingview/signals_reader.dart` — the readers evaluate a JS
 expression that walks TradingView's internal chart model
 (`dataSources()` → `_graphics._primitivesCollection` for line/box/label/
 table readers; `_data._items` for plot-value readers) directly.
@@ -1314,7 +1165,7 @@ retry forever against the same frozen process.
 wrapping `_ensureCdpUp()` in the health check doesn't cancel the underlying
 future when it fires — Dart's `.timeout()` only abandons the *wait*. Without
 this guard, a slow-but-legitimately-still-working enforcement pass (e.g.
-Supertrend Plus needing to search/add two scripts from a cold chart) could
+searching/adding two scripts from a cold chart) could
 get raced by the very next health-check tick starting a second, fully
 independent `_ensureCdpUp()` call — both calling `removeAllSources` and
 re-adding scripts on the *same* chart, each wiping out the other's work
@@ -1404,9 +1255,8 @@ for each auto category (only `ONE_HOUR` exists), for each auto-managed,
 non-retired base: drain terminate requests again (so a request doesn't wait
 out the whole sweep), run the opportunistic mid-sweep health recheck, resolve
 the symbol's live `config.json` mapping fresh (catching an unmapped symbol
-as a per-symbol error rather than crashing the whole cycle), then dispatch
-to `_checkOneSymbolSupertrend` or `_checkOneSymbol` depending on the active
-technique.
+as a per-symbol error rather than crashing the whole cycle), then run
+`_checkOneSymbolWorm10` (Hybrid Decision, the only technique).
 
 ### 15.6 `_openPosition` — the actual order placement
 
@@ -1610,20 +1460,9 @@ currently locked, or `—` if the position hasn't crossed the first rung
 dialog spelling out the exact ladder table (§10.1) so what each rung
 actually means is never something to remember or guess at.
 
-**Update/Close A/Close B columns are hidden entirely while Supertrend Plus
-is the active technique** (`hideUpdateCloseColumns`, 2026-10-08, per the
-user: "hide close a, close b columns in the auto table once supertrend
-technique choosen" / "update column too not required ... once supertrend
-choosen"). `DashboardScreen` passes this straight from
-`decisionTechniqueProvider`; the widget itself has no technique awareness —
-all three columns are Signal Flip-only concepts (cross-tag "Update"
-confirmation, and the "survive one extra candle" Close A/B preview) that
-were already always blank for a Supertrend-driven row even before this flag
-existed (§9.3, §9.6), and are now doubly meaningless for a running
-Supertrend trade specifically since that wait no longer applies to one at
-all (§9.6a). Rather than show three columns that can never hold anything
-under this technique, they're omitted from both the header and every row
-together, keeping column count and cell order in exact lockstep.
+**Update/Close A/Close B always show** on running cards (the Supertrend
+Plus-only `hideUpdateCloseColumns` flag was removed with that technique,
+2026-11-07).
 
 ### 16.12 `WatchedSymbolsList` (`lib/widgets/watched_symbols_list.dart`)
 
@@ -1784,13 +1623,8 @@ terminate/volume/config methods it exposes.
    reads, 10 seconds apart, before being trusted** — "1,000,000 sure."
    Never act on a single read.
 8. **A triple-confirmed signal must additionally survive one full extra
-   candle unchanged before being acted on** (both techniques, separate
-   pending stores), with one narrow, explicit exception: Supertrend Plus
-   skips this extra-candle wait for a pair with a currently-running
-   position (§9.6a) — the triple-read confirmation itself is never
-   shortcut, only the additional wait on top of it, and only for that one
-   technique's running-trade flip. The `immediate` reverse-check sweep
-   (§9.8) is the only other place this wait is bypassed, also without ever
+   candle unchanged before being acted on.** The `immediate` reverse-check
+   sweep (§9.8) is the only place this wait is bypassed, without ever
    relaxing the triple-read requirement.
 9. **`STOP` file present → no new opens, under any technique, under any
    category, ever.**
@@ -1804,12 +1638,10 @@ terminate/volume/config methods it exposes.
     GUI's heartbeat is fresh.** No trading activity without the GUI open.
 13. **Power always starts OFF on every fresh GUI launch** — never silently
     resumes trading on reopen.
-14. **The two decision techniques' pending-signal stores
-    (`pending-signals.json` / `supertrend-pending.json`) are always kept
-    separate and always cleared of the OTHER technique's leftover entry**
-    whenever either method touches a pair, both reactively (within the
-    check methods) and proactively (the instant Auto is turned on for a
-    pair in `EngineControlRepository.setAutoManaged`).
+14. **Hybrid Decision clears the removed techniques' leftover pending
+    entries** (`pending-signals.json` / `supertrend-pending.json`) whenever
+    it checks a pair, and `EngineControlRepository.setAutoManaged` clears
+    them the instant Auto is turned on for a pair.
 15. **Linux and Windows app versions are always kept in sync** — every fix
     gets `pubspec.yaml`'s version bumped, committed, and pushed (triggering
     the Windows CI build) *before* being considered fully deployed; never
@@ -2148,6 +1980,29 @@ not a Windows limitation.
 - **2026-11-04 (v1.6.61+109)** — **Ignite acts on the current signal at once**.
   ETH was ignited at 18:09 local; its current signal was SELL_OPEN1 on the
   still-forming 18:00 candle, so the closed-candle rule deferred it and the
+- **2026-11-07 (v1.6.73+121)** — **Supertrend Plus and Signal Flip removed completely**.
+  Per the user: "create app backup and then ... remove/delete completely from the code
+  and from prd two things: 1. supertrend plus technique 2. signal flip technique
+  (without touching hybrid decision technique in any way)".
+  - Backup first: `D:\tradingMT5\backups\app-v1.6.72+120-2026-11-07_01-27-04` (587
+    files, bytes verified).
+  - Removed: `_checkOneSymbol` (Signal Flip) and `_checkOneSymbolSupertrend`; the
+    `signalFlip` / `supertrendPlus` `DecisionTechnique`s (`all` = Hybrid only, every
+    fallback = Hybrid); TradingView code only they used (`enforceCustomScripts`,
+    `enforceSupertrendPlus`, `areIndicatorsPresent`, `isSupertrendPresent`,
+    `readSwingOscillatorSignals`, `readSupertrendSignals`, `readBuySellSignals`,
+    `readCustomSignals`, `verifyCustomScripts`, `supertrendPlusScript` + private
+    helpers); their Technique-details pages; the Dashboard's Supertrend-only
+    `hideUpdateCloseColumns`. ~2,200 lines.
+  - All three check paths (normal cycle, Power-on/technique-switch sweep, un-pause)
+    now call `_checkOneSymbolWorm10` directly.
+  - Hybrid Decision untouched: `_checkOneSymbolWorm10` compared line by line with
+    v1.6.72 (747 lines, identical); `worm10_decision.dart`, `readWorm10Signals`,
+    `enforceWorm10` unchanged. Its own clears of `PendingSignalStore` /
+    `SupertrendPendingStore` stay, so those two small stores stay too.
+  - PRD §1, §6, §9 (rewritten for Hybrid only), §11, §14, §15, §16, §18 updated;
+    older changelog entries below are left as history. 210 tests pass; analyzer issues
+    26 (was 27, no new ones).
   normal pending wait would have held it until 20:00. The user: "ignite does
   not wait for signal ... ignite should work on current signal ... not
   according to future signal" and "first fix the code then deploy then let the

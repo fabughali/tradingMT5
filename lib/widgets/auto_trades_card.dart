@@ -38,27 +38,9 @@ class AutoTradesCard extends StatefulWidget {
     required this.pnlSinceTimestamp,
     required this.onResetPnlSince,
     required this.liveAccountPnl,
-    this.hideUpdateCloseColumns = false,
   });
 
   final List<AutoTradeRow> rows;
-
-  /// Hides the Update/Close A/Close B columns entirely (2026-10-08, per the
-  /// user: "hide close a, close b columns... once supertrend technique
-  /// choosen", then "and update too") when the active [DecisionTechnique] is
-  /// Supertrend Plus - all three columns are Signal Flip-only concepts
-  /// (cross-tag confirmation, and the "survive one extra candle" preview)
-  /// that were already always blank for a Supertrend-driven pair even
-  /// before this flag existed (see [AutoTradeRow.closeATag]'s own doc
-  /// comment: "they are always blank" by design, never written). Close A/B
-  /// are now doubly meaningless for a currently-running Supertrend trade
-  /// specifically, since that wait no longer applies to one at all (see
-  /// EngineService._checkOneSymbolSupertrend's own doc comment on
-  /// `skipExtraCandleWait`) - rather than show three columns that can never
-  /// hold anything for this technique, hide them outright. Caller passes
-  /// this based on [decisionTechniqueProvider]; this widget has no
-  /// technique awareness of its own.
-  final bool hideUpdateCloseColumns;
 
   /// tvSymbol, new paused state (2026-10-09, per the user — replaces the
   /// former Auto toggle's add/remove semantics with pause/resume; see
@@ -1027,12 +1009,10 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
             runSpacing: 4,
             children: [
               _sig('Open', row.startTag, _fmtTvTime(row.startAt), scheme),
-              if (!widget.hideUpdateCloseColumns) ...[
-                _sig('Update', row.updateTag, _fmtTvTime(row.updateAt), scheme),
-                _sig('Close A', row.closeATag, _fmtTvTime(row.closeAAt), scheme, color: Colors.orange),
-                if (row.closeBEta != null)
-                  Text('Close B watching · ${_fmtTvTimeExact(row.closeBEta!)}', style: small),
-              ],
+              _sig('Update', row.updateTag, _fmtTvTime(row.updateAt), scheme),
+              _sig('Close A', row.closeATag, _fmtTvTime(row.closeAAt), scheme, color: Colors.orange),
+              if (row.closeBEta != null)
+                Text('Close B watching · ${_fmtTvTimeExact(row.closeBEta!)}', style: small),
             ],
           ),
         ],

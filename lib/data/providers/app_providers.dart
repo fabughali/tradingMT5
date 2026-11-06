@@ -118,7 +118,7 @@ class DecisionTechniqueNotifier extends Notifier<DecisionTechnique> {
     final id = json?['id'] as String?;
     return DecisionTechnique.all.firstWhere(
       (t) => t.id == id,
-      orElse: () => DecisionTechnique.signalFlip,
+      orElse: () => DecisionTechnique.worm10,
     );
   }
 

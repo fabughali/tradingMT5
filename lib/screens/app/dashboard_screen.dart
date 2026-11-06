@@ -3,7 +3,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/models/account_snapshot.dart';
 import '../../data/models/app_config.dart';
-import '../../data/models/decision_technique.dart';
 import '../../data/models/power_health.dart';
 import '../../data/models/watched_symbol.dart';
 import '../../data/mt5/mt5_client.dart';
@@ -29,7 +28,6 @@ class DashboardScreen extends ConsumerWidget {
     final config = ref.watch(configProvider);
     final autoManagedBases = ref.watch(autoManagedTvBasesProvider).asData?.value ?? const <String>{};
     final historyPnlSince = ref.watch(historyPnlSinceProvider);
-    final decisionTechnique = ref.watch(decisionTechniqueProvider);
 
     // 2026-10-15 - the add-copy result SnackBar moved to [ReuseNavShell]
     // (the persistent, always-on-top shell Scaffold) - see its own doc
@@ -127,7 +125,6 @@ class DashboardScreen extends ConsumerWidget {
           autoTrades.when(
             data: (rows) => AutoTradesCard(
               rows: rows,
-              hideUpdateCloseColumns: decisionTechnique.id == DecisionTechnique.supertrendPlus.id,
               onTogglePause: (tvSymbol, paused) {
                 ref.read(controlRepositoryProvider).setPaused(tvSymbol, paused);
                 ref.invalidate(autoTradesProvider);

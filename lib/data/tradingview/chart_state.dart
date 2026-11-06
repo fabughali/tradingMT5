@@ -59,22 +59,6 @@ const customScripts = [
   ),
 ];
 
-/// The Supertrend Plus technique's entry/exit signal source (2026-10-06,
-/// second decision technique). Kept OUT of [customScripts] since that list's
-/// own doc comment says "the ONLY signal sources" for the original Signal
-/// Flip technique — this is a parallel, separate source for the other
-/// technique, not a third member of that set. Same scriptIdPart as
-/// enforce.dart's private `_supertrendScript` (verified live via CDP against
-/// the user's own "My Scripts" library, 2026-10-06) — that one drives the
-/// "search and attach" UI automation, this one drives signal reading, same
-/// parallel-lists pattern already used for worm_9_26/spy_9_26.
-const supertrendPlusScript = CustomScript(
-  key: 'SUPERTREND',
-  scriptIdPart: 'USER;de83e70197704202ae530fd979d38aae',
-  legendTitle: 'Supertrend Plus',
-  dataTitle: 'Supertrend Plus',
-);
-
 /// The third decision technique's own combined signal source (2026-10-14,
 /// per the user: a new script they built in TradingView, "worm_10_26",
 /// merging worm_9_26's own MSB/OB/HH/LL/BUY/SELL plots with Supertrend
@@ -132,95 +116,6 @@ const _chartStateExpr = '''(function() {
 Future<ChartState> getChartState(CdpClient cdp) async {
   final result = await cdp.evaluate(_chartStateExpr);
   return ChartState.fromJson(result as Map<String, dynamic>?);
-}
-
-class VerifyResult {
-  const VerifyResult({
-    required this.ok,
-    this.error,
-    this.msbPresent = false,
-    this.rsiPresent = false,
-    this.rawSources = const [],
-  });
-  final bool ok;
-  final String? error;
-  final bool msbPresent;
-  final bool rsiPresent;
-  // Temporary (2026-09-16, per the user - "instead of using combined
-  // indicator, i want you to use spy_9_26"): every loaded script's real
-  // scriptIdPart + name, so the caller can log it once to find spy_9_26's
-  // actual hash - same live-discovery step the worm_8_26 -> worm_9_26
-  // switch needed on 2026-09-13. Remove once that hash is confirmed and
-  // hardcoded into `customScripts` below.
-  final List<Map<String, dynamic>> rawSources;
-}
-
-const _verifyScriptsExpr = '''(function() {
-  var wv = window.TradingViewApi && window.TradingViewApi._activeChartWidgetWV;
-  if (!wv) return { error: 'TradingViewApi not found' };
-  var chart = wv.value();
-  if (!chart) return { error: 'chart widget not found' };
-  var legend = [];
-  var items = document.querySelectorAll('[data-qa-id=legend-source-item]');
-  for (var i = 0; i < items.length; i++) {
-    var el = items[i];
-    var t = el.querySelector('.title-quatTGAC');
-    legend.push({ entity: el.getAttribute('data-entity-id'), title: t ? t.textContent.trim() : '' });
-  }
-  var sources = [];
-  try {
-    var all = chart._chartWidget.model().model().dataSources();
-    for (var j = 0; j < all.length; j++) {
-      var s = all[j];
-      var part = '';
-      var name = '';
-      try { var m = s.metaInfo(); part = m ? (m.scriptIdPart || '') : ''; name = m ? (m.description || m.shortDescription || '') : ''; } catch (e) {}
-      sources.push({ scriptIdPart: part, name: name });
-    }
-  } catch (e) {}
-  return { legend: legend, sources: sources };
-})()''';
-
-/// Checks both custom scripts are present via legend + dataSources. MSB
-/// counts present only via its real loaded title/scriptIdPart, NEVER the
-/// stuck-stub title ("EMA & HLOTT & MSB/OB").
-Future<VerifyResult> verifyCustomScripts(CdpClient cdp) async {
-  final state = await cdp.evaluate(_verifyScriptsExpr) as Map<String, dynamic>?;
-  if (state?['error'] != null)
-    return VerifyResult(ok: false, error: state!['error'] as String);
-
-  final legend = ((state?['legend'] as List?) ?? const [])
-      .cast<Map<String, dynamic>>();
-  final sources = ((state?['sources'] as List?) ?? const [])
-      .cast<Map<String, dynamic>>();
-  final titles = legend.map((l) => (l['title'] ?? '').toString()).toList();
-  final sourceIds = sources
-      .map((s) => (s['scriptIdPart'] ?? '').toString())
-      .toList();
-  final sourceNames = sources.map((s) => (s['name'] ?? '').toString()).toList();
-
-  final msb =
-      sourceIds.contains(customScripts[0].scriptIdPart) ||
-      sourceNames.any((n) => n.contains('Footprint')) ||
-      titles.any((t) => t.contains('Footprint'));
-  // URGENT fix 2026-09-16 - see the doc comment on customScripts[1]:
-  // added 'spy_9_26' (the real, currently-in-use script) as a title
-  // fallback since the hardcoded scriptIdPart above still holds the OLD
-  // Combined_Indicators hash. 'Combined_Indicators' kept too, harmless -
-  // matches nothing now but costs nothing to leave.
-  final rsi =
-      sourceIds.contains(customScripts[1].scriptIdPart) ||
-      titles.any(
-        (t) => t.contains('Combined_Indicators') || t.contains('spy_9_26'),
-      ) ||
-      sourceNames.any((n) => n.contains('spy_9_26'));
-
-  return VerifyResult(
-    ok: msb && rsi,
-    msbPresent: msb,
-    rsiPresent: rsi,
-    rawSources: sources,
-  );
 }
 
 class SetChartViewResult {

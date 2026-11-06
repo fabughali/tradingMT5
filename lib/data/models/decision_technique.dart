@@ -1,9 +1,10 @@
 /// One selectable decision technique — the rules the engine uses to decide
 /// when to open, ignore, or close+reopen a position (2026-10-06, per the
 /// user: "create a knob in power toggle section where user can choose from
-/// a list one option of decision technique"). Only one exists today;
-/// [DecisionTechnique.all] is the single place a future technique gets
-/// added to the picker.
+/// a list one option of decision technique"). Since 2026-11-07, per the
+/// user, Hybrid Decision is the only one - Supertrend Plus and Signal Flip
+/// were removed completely. [DecisionTechnique.all] is the single place a
+/// future technique gets added to the picker.
 class DecisionTechnique {
   const DecisionTechnique({
     required this.id,
@@ -41,32 +42,7 @@ class DecisionTechnique {
   /// [CoreStorage.decisionTechniqueFile] fresh each cycle (same file this
   /// picker writes) to decide which one is active - see
   /// `EngineService._activeTechnique`.
-  static const all = [signalFlip, supertrendPlus, worm10];
-
-  static const signalFlip = DecisionTechnique(
-    id: 'signal_flip_hh_ll_buy_sell',
-    name: 'Signal Flip (HH/LL + BUY/SELL)',
-    shortDescription:
-        'Reacts immediately to the newest HH/LL/BUY/SELL tag: opens, ignores, '
-        'or closes-and-reopens opposite.',
-    colorValue: 0xFF2196F3, // Material Colors.blue
-  );
-
-  /// Added 2026-10-06, per the user: Supertrend Plus on Heikin Ashi candles
-  /// - a single Buy/Sell signal pair that alternates cleanly (a Buy is
-  /// always the close of the last Sell and vice versa), so there's no
-  /// separate "Update" (agreeing re-confirmation) concept at all, and the
-  /// Dashboard's live "Close A" preview never shows anything for these
-  /// pairs either - see [EngineService]'s own technique-specific pending
-  /// tracker for why.
-  static const supertrendPlus = DecisionTechnique(
-    id: 'supertrend_plus_heikin_ashi',
-    name: 'Supertrend Plus (Heikin Ashi)',
-    shortDescription:
-        'A Buy signal opens long and is the close for any running short; a '
-        'Sell signal does the reverse. No separate confirmation signal.',
-    colorValue: 0xFF673AB7, // Material Colors.deepPurple
-  );
+  static const all = [worm10];
 
   /// Added 2026-10-14, per the user: a third technique built around a
   /// custom script they wrote, "worm_10_26" (merging worm_9_26's own
