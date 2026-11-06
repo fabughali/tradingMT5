@@ -544,6 +544,15 @@ class EngineService {
   // a market close; reconciliation then records it as user_tp/user_sl.
   final Map<int, (String, String)> _userTriggerCloses = {};
   final Map<int, int> _userTriggerMisses = {};
+  // A closed ticket's triggers, kept for its History row when the trigger
+  // store was already cleared (reconcile can run ~20 min after the close).
+  final Map<int, UserTriggers> _closedTriggerStash = {};
+
+  UserTriggers _historyTriggers(int ticket) {
+    final live = userTriggers.get(ticketTriggerKey(ticket));
+    final stashed = _closedTriggerStash.remove(ticket);
+    return live.isEmpty ? (stashed ?? const UserTriggers()) : live;
+  }
   Timer? _userTriggerTimer;
   bool _userTriggerBusy = false;
   static const _userTriggerInterval = Duration(seconds: 5);
@@ -617,6 +626,7 @@ class EngineService {
         final misses = (_userTriggerMisses[ticket] ?? 0) + 1;
         _userTriggerMisses[ticket] = misses;
         if (misses >= 3) {
+          _closedTriggerStash[ticket] = entry.value;
           userTriggers.remove(entry.key);
           _userTriggerMisses.remove(ticket);
           logger.log('USER TRIGGER: ticket=$ticket is no longer open - its TP/SL cleared.');
@@ -2225,9 +2235,12 @@ class EngineService {
       // for the full reasoning.
       // No -$5/-$1 baseline since v1.6.38 - an unlocked trade had no SLL.
       final sllAtTermination = ratchetThreshold != null ? _sllLockText(ratchetThreshold) : 'none';
+      final historyTriggers = _historyTriggers(ticket);
       storage.appendJsonl(
         storage.botHistoryFile,
         BotHistoryEntry(
+          userTp: historyTriggers.tp,
+          userSl: historyTriggers.sl,
           id: '$ticket-${DateTime.now().microsecondsSinceEpoch}',
           ts: DateTime.now(),
           mt5Symbol: mt5Symbol,
@@ -6737,9 +6750,12 @@ class EngineService {
     // Same formula as the Dashboard's own live P&L% column (2026-10-14).
     final notional = (volume ?? 0) * contractSize * entryPrice;
     final realizedProfitPercent = (profit != null && notional != 0) ? profit / notional * 100 : null;
+    final historyTriggers = _historyTriggers(ticket);
     storage.appendJsonl(
       storage.botHistoryFile,
       BotHistoryEntry(
+        userTp: historyTriggers.tp,
+        userSl: historyTriggers.sl,
         id: '$ticket-${DateTime.now().microsecondsSinceEpoch}',
         ts: DateTime.now(),
         mt5Symbol: mt5Symbol,

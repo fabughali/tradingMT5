@@ -1,5 +1,6 @@
 import 'auto_category.dart';
 import 'trade_direction.dart';
+import '../identity/user_trigger_store.dart';
 
 /// One closed position's full record — ported from tradingPionex's own
 /// `BotHistoryEntry`/`bot-history.jsonl` (2026-09-27, per the user: "i want
@@ -48,6 +49,8 @@ class BotHistoryEntry {
     this.detail,
     this.realizedProfitPercent,
     this.sllAtTermination,
+    this.userTp,
+    this.userSl,
     this.investmentValue,
     this.extraMargin,
     this.liquidationPrice,
@@ -120,6 +123,11 @@ class BotHistoryEntry {
   /// written before this field existed.
   final String? sllAtTermination;
 
+  /// The user's own TP/SL triggers on this ticket at close (2026-11-06),
+  /// null when the trade's default level applied on that side.
+  final UserTrigger? userTp;
+  final UserTrigger? userSl;
+
   /// Notional value at open (2026-10-15, per the user: "all details
   /// required in history") - `volume * contractSize * entryPrice`, the
   /// SAME figure the Dashboard's own Investment column shows live, just
@@ -179,6 +187,8 @@ class BotHistoryEntry {
     if (detail != null) 'detail': detail,
     if (realizedProfitPercent != null) 'realized_profit_percent': realizedProfitPercent,
     if (sllAtTermination != null) 'sll_at_termination': sllAtTermination,
+    if (userTp != null) 'user_tp': userTp!.toJson(),
+    if (userSl != null) 'user_sl': userSl!.toJson(),
     if (investmentValue != null) 'investment_value': investmentValue,
     if (extraMargin != null) 'extra_margin': extraMargin,
     if (liquidationPrice != null) 'liquidation_price': liquidationPrice,
@@ -211,6 +221,8 @@ class BotHistoryEntry {
     detail: json['detail'] as String?,
     realizedProfitPercent: (json['realized_profit_percent'] as num?)?.toDouble(),
     sllAtTermination: json['sll_at_termination'] as String?,
+    userTp: UserTrigger.fromJson(json['user_tp']),
+    userSl: UserTrigger.fromJson(json['user_sl']),
     investmentValue: (json['investment_value'] as num?)?.toDouble(),
     extraMargin: (json['extra_margin'] as num?)?.toDouble(),
     liquidationPrice: (json['liquidation_price'] as num?)?.toDouble(),

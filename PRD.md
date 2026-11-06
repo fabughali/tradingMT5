@@ -1980,6 +1980,18 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-06 (v1.6.71+119)** — **TP/SL readout fixes on card and History**. Per the
+  user: "in card, tp/sl text should be wrapped", "in dollar, place icon dollar and then
+  number without text $", "start with tp then sl", "in history ... (your sl trigger) is
+  not accurate .. mention user sl trigger", and History's TP/SL section should show the
+  same default-vs-user icons as the card.
+  - New shared `TpSlReadout` widget (`lib/widgets/tp_sl_readout.dart`): "TP / SL", TP
+    first; wraps instead of cutting off; $ trigger = $ icon + number only.
+  - History rows now store the user's TP/SL at close (`user_tp` / `user_sl` in
+    `bot-history.jsonl`; a closed ticket's triggers are kept in memory until its row is
+    written) and show them with the same icons; older rows show the default levels.
+  - Labels: "User TP trigger (P&L %)", "User SL trigger ($)", "User TP trigger (price)",
+    ... (was "Your ..."). Tests: `test/tp_sl_readout_test.dart` (210 pass).
 - **2026-11-06 (v1.6.70+118)** — **User TP/SL closes in History right away, with who set
   it and which type**. Per the user: "why it is not there in history?" (NEAR, closed by
   its SL +$0.50 trigger at 17:17Z, still missing at 17:34Z) and "in history it should be

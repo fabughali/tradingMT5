@@ -9,6 +9,7 @@ import '../../data/models/bot_history_entry.dart';
 import '../../data/models/trade_direction.dart';
 import '../../data/providers/app_providers.dart';
 import '../../widgets/pnl_chart.dart';
+import '../../widgets/tp_sl_readout.dart';
 
 /// Every closed position's full record — id, direction, entry/exit price,
 /// P&L, open/close signal detail, and exactly how it ended (2026-09-27,
@@ -101,14 +102,14 @@ class HistoryScreen extends ConsumerWidget {
     'worm10_recycle' => 'Recycled (same signal)',
     // 2026-11-06, per the user: History says whether a TP/SL was the
     // trade's default or the user's own, and which type the user set.
-    'user_tp_pct' => 'Your TP (P&L %)',
-    'user_tp_usd' => 'Your TP (\$)',
-    'user_tp_price' => 'Your TP (price)',
-    'user_sl_pct' => 'Your SL (P&L %)',
-    'user_sl_usd' => 'Your SL (\$)',
-    'user_sl_price' => 'Your SL (price)',
-    'user_tp' => 'Your TP trigger',
-    'user_sl' => 'Your SL trigger',
+    'user_tp_pct' => 'User TP trigger (P&L %)',
+    'user_tp_usd' => 'User TP trigger (\$)',
+    'user_tp_price' => 'User TP trigger (price)',
+    'user_sl_pct' => 'User SL trigger (P&L %)',
+    'user_sl_usd' => 'User SL trigger (\$)',
+    'user_sl_price' => 'User SL trigger (price)',
+    'user_tp' => 'User TP trigger',
+    'user_sl' => 'User SL trigger',
     _ => 'Unknown',
   };
 
@@ -544,8 +545,8 @@ class _HistoryCard extends StatelessWidget {
     'closed_by_user' => 'Closed by you (Dashboard or MT5).',
     'closed_by_app' => 'Closed by the app.',
     'parent_closed' => 'Closed together with its parent trade.',
-    'user_tp' || 'user_tp_pct' || 'user_tp_usd' || 'user_tp_price' => 'Your take-profit trigger was reached.',
-    'user_sl' || 'user_sl_pct' || 'user_sl_usd' || 'user_sl_price' => 'Your stop-loss trigger was reached.',
+    'user_tp' || 'user_tp_pct' || 'user_tp_usd' || 'user_tp_price' => 'The user take-profit trigger was reached.',
+    'user_sl' || 'user_sl_pct' || 'user_sl_usd' || 'user_sl_price' => 'The user stop-loss trigger was reached.',
     'sll_ratchet' => 'SLL closed it after profit fell back to the locked level.',
     'sll_baseline' => 'Old -\$5 SLL baseline close (before v1.6.38).',
     _ => 'Close reason not recorded.',
@@ -778,9 +779,22 @@ class _HistoryCard extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       _cell('Volume', entry.volume?.toString() ?? '—'),
-                      _cell(
-                        'SL / TP',
-                        '${HistoryScreen._fmtPrice(entry.stopLoss)} / ${HistoryScreen._fmtPrice(entry.takeProfit)}',
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            _label('TP / SL'),
+                            const SizedBox(height: 1),
+                            TpSlReadout(
+                              tp: entry.userTp,
+                              sl: entry.userSl,
+                              defaultTp: entry.takeProfit,
+                              defaultSl: entry.stopLoss,
+                              formatPrice: HistoryScreen._fmtPrice,
+                            ),
+                          ],
+                        ),
                       ),
                       _cell('Max / min P&L', maxPnl == null ? '—' : '${_money(maxPnl)} / ${_money(minPnl)}'),
                     ],

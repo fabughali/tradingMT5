@@ -12,6 +12,7 @@ import '../data/engine/user_trigger_check.dart';
 import '../utilities/auto_cycle.dart';
 import 'live_pnl_dialog.dart';
 import 'pnl_chart.dart';
+import 'tp_sl_readout.dart';
 
 /// Dashboard card (2026-09-29, per the user: "a table .. a list of
 /// currenly running trades, filled trades, waiting trades", extended the
@@ -532,64 +533,16 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
     ),
   );
 
-  /// One TP or SL side with an icon for who set it (2026-11-06, per the
-  /// user): grey line chart = the trade's own default (follows the pair
-  /// price); blue candlestick = the user's price trigger; blue % = P&L %
-  /// trigger; blue $ = dollar trigger.
-  static Widget _sideReadout(String label, UserTrigger? user, double? fallback, ColorScheme scheme,
-      {bool showLabel = false}) {
-    final userColor = Colors.blue.shade600;
-    final (IconData icon, Color color, String text, String tip) = switch (user?.kind) {
-      null => (Icons.show_chart, scheme.onSurfaceVariant, _fmtPrice(fallback), 'Default $label (pair price)'),
-      TriggerKind.price => (Icons.candlestick_chart, userColor, _fmtPrice(user!.value), 'Your $label trigger - price'),
-      TriggerKind.pct => (Icons.percent, userColor, user!.describe(), 'Your $label trigger - P&L %'),
-      TriggerKind.usd => (Icons.attach_money, userColor, user!.describe(), 'Your $label trigger - P&L dollars'),
-    };
-    return Tooltip(
-      message: tip,
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (showLabel)
-            Text('$label ', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: scheme.onSurfaceVariant)),
-          Icon(icon, size: 13, color: color),
-          const SizedBox(width: 2),
-          Flexible(
-            child: Text(
-              text,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: user == null ? FontWeight.w400 : FontWeight.w600,
-                color: user == null ? null : userColor,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  /// TP then SL with who-set-it icons - see [TpSlReadout].
+  static Widget _slTpReadout(AutoTradeRow row, ColorScheme scheme, {bool defaults = true}) => TpSlReadout(
+        tp: row.userTriggers.tp,
+        sl: row.userTriggers.sl,
+        defaultTp: row.takeProfit,
+        defaultSl: row.stopLoss,
+        formatPrice: _fmtPrice,
+        showDefaults: defaults,
+      );
 
-  /// "SL / TP" on one line, each with its own icon (see [_sideReadout]). A
-  /// waiting pair with no order yet has no default level, so with
-  /// [defaults] false only the user's sides show, labelled.
-  static Widget _slTpReadout(AutoTradeRow row, ColorScheme scheme, {bool defaults = true}) {
-    final t = row.userTriggers;
-    final sides = [
-      if (defaults || t.sl != null) _sideReadout('SL', t.sl, row.stopLoss, scheme, showLabel: !defaults),
-      if (defaults || t.tp != null) _sideReadout('TP', t.tp, row.takeProfit, scheme, showLabel: !defaults),
-    ];
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        for (var i = 0; i < sides.length; i++) ...[
-          if (i > 0) Text(defaults ? ' / ' : '  ', style: const TextStyle(fontSize: 13)),
-          Flexible(child: sides[i]),
-        ],
-      ],
-    );
-  }
 
   /// TP/SL trigger dialog (v1.6.67, per the user): P&L %, dollars or price,
   /// for a running trade (its own ticket - a copy has its own) or a waiting
@@ -1021,7 +974,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _kv('SL / TP', _slTpReadout(row, scheme), scheme),
+                      _kv('TP / SL', _slTpReadout(row, scheme), scheme),
                       const SizedBox(height: 8),
                       _kt(
                         'Extra margin',
@@ -1365,7 +1318,7 @@ class _AutoTradesCardState extends State<AutoTradesCard> {
               ),
               Expanded(
                 child: resting
-                    ? _kv('SL / TP', _slTpReadout(row, scheme), scheme)
+                    ? _kv('TP / SL', _slTpReadout(row, scheme), scheme)
                     : _kt('Direction', side.isEmpty ? '—' : side, scheme),
               ),
             ],
