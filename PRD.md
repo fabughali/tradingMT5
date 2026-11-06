@@ -1812,6 +1812,29 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-07 (v1.6.73+121)** — **Supertrend Plus and Signal Flip removed completely**.
+  Per the user: "create app backup and then ... remove/delete completely from the code
+  and from prd two things: 1. supertrend plus technique 2. signal flip technique
+  (without touching hybrid decision technique in any way)".
+  - Backup first: `D:\tradingMT5\backups\app-v1.6.72+120-2026-11-07_01-27-04` (587
+    files, bytes verified).
+  - Removed: `_checkOneSymbol` (Signal Flip) and `_checkOneSymbolSupertrend`; the
+    `signalFlip` / `supertrendPlus` `DecisionTechnique`s (`all` = Hybrid only, every
+    fallback = Hybrid); TradingView code only they used (`enforceCustomScripts`,
+    `enforceSupertrendPlus`, `areIndicatorsPresent`, `isSupertrendPresent`,
+    `readSwingOscillatorSignals`, `readSupertrendSignals`, `readBuySellSignals`,
+    `readCustomSignals`, `verifyCustomScripts`, `supertrendPlusScript` + private
+    helpers); their Technique-details pages; the Dashboard's Supertrend-only
+    `hideUpdateCloseColumns`. ~2,200 lines.
+  - All three check paths (normal cycle, Power-on/technique-switch sweep, un-pause)
+    now call `_checkOneSymbolWorm10` directly.
+  - Hybrid Decision untouched: `_checkOneSymbolWorm10` compared line by line with
+    v1.6.72 (747 lines, identical); `worm10_decision.dart`, `readWorm10Signals`,
+    `enforceWorm10` unchanged. Its own clears of `PendingSignalStore` /
+    `SupertrendPendingStore` stay, so those two small stores stay too.
+  - PRD §1, §6, §9 (rewritten for Hybrid only), §11, §14, §15, §16, §18 updated;
+    older changelog entries below are left as history. 210 tests pass; analyzer issues
+    26 (was 27, no new ones).
 - **2026-11-06 (v1.6.72+120)** — **No duplicate TP/SL labels; user trigger in History
   remarks**. Per the user: "the title is tp/sl but why in text still you add tp and sl
   to text?" and "in card of history, if user set a trigger, then in section tp/sl should
@@ -1980,29 +2003,6 @@ not a Windows limitation.
 - **2026-11-04 (v1.6.61+109)** — **Ignite acts on the current signal at once**.
   ETH was ignited at 18:09 local; its current signal was SELL_OPEN1 on the
   still-forming 18:00 candle, so the closed-candle rule deferred it and the
-- **2026-11-07 (v1.6.73+121)** — **Supertrend Plus and Signal Flip removed completely**.
-  Per the user: "create app backup and then ... remove/delete completely from the code
-  and from prd two things: 1. supertrend plus technique 2. signal flip technique
-  (without touching hybrid decision technique in any way)".
-  - Backup first: `D:\tradingMT5\backups\app-v1.6.72+120-2026-11-07_01-27-04` (587
-    files, bytes verified).
-  - Removed: `_checkOneSymbol` (Signal Flip) and `_checkOneSymbolSupertrend`; the
-    `signalFlip` / `supertrendPlus` `DecisionTechnique`s (`all` = Hybrid only, every
-    fallback = Hybrid); TradingView code only they used (`enforceCustomScripts`,
-    `enforceSupertrendPlus`, `areIndicatorsPresent`, `isSupertrendPresent`,
-    `readSwingOscillatorSignals`, `readSupertrendSignals`, `readBuySellSignals`,
-    `readCustomSignals`, `verifyCustomScripts`, `supertrendPlusScript` + private
-    helpers); their Technique-details pages; the Dashboard's Supertrend-only
-    `hideUpdateCloseColumns`. ~2,200 lines.
-  - All three check paths (normal cycle, Power-on/technique-switch sweep, un-pause)
-    now call `_checkOneSymbolWorm10` directly.
-  - Hybrid Decision untouched: `_checkOneSymbolWorm10` compared line by line with
-    v1.6.72 (747 lines, identical); `worm10_decision.dart`, `readWorm10Signals`,
-    `enforceWorm10` unchanged. Its own clears of `PendingSignalStore` /
-    `SupertrendPendingStore` stay, so those two small stores stay too.
-  - PRD §1, §6, §9 (rewritten for Hybrid only), §11, §14, §15, §16, §18 updated;
-    older changelog entries below are left as history. 210 tests pass; analyzer issues
-    26 (was 27, no new ones).
   normal pending wait would have held it until 20:00. The user: "ignite does
   not wait for signal ... ignite should work on current signal ... not
   according to future signal" and "first fix the code then deploy then let the
