@@ -1812,6 +1812,23 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-08 (v1.6.75+123)** — **Restart TradingView when it refuses to open our tab**.
+  Per the user: "it is okay to restart trading view if it is not responding because if
+  you keep it open without restart, it would not solve the problem. so fix it and
+  install it".
+  - `cdp_client.dart` counts real tab-open attempts TradingView refused
+    (`chartTabOpenFailuresInARow`, reset when a tab is created). When our tab is
+    missing and that count reaches 2 (two refusals ~2 min apart), the engine logs
+    "TradingView refused to open our chart tab ... restarting it" and force-kills
+    TradingView through `_forceRelaunchTradingViewIfStuck` (own-tab reload rung skipped
+    - there is no own tab). The existing cap still applies: max 3 force-kills per 30
+    min, then automatic restarts pause. Closes TradingPionex's tab too - accepted by the
+    user.
+  - Every engine force-kill now resets the tab state (`resetChartTabStateAfterRestart`)
+    so a fresh TradingView with no tab lets this run open its one tab again.
+  - Before: the 2026-11-08 09:11Z -> 14:07Z outage (HTTP 500 "Could not create new
+    page") never restarted TradingView; with v1.6.74's retry alone it would have kept
+    retrying a TradingView that refuses every new page.
 - **2026-11-08 (v1.6.74+122)** — **A failed chart-tab open is retried (was: blocked for
   the whole run)**. Per the user: "check the log and find out why trading view is not
   ready... what is the bug?"

@@ -327,6 +327,21 @@ bool _openedChartTabThisProcess = false;
 DateTime? _lastChartTabOpenFailAt;
 const _chartTabRetryEvery = Duration(minutes: 2);
 
+/// Real tab-open attempts TradingView refused in a row (2026-11-08, per the
+/// user: "it is okay to restart trading view if it is not responding"). The
+/// engine restarts TradingView once this reaches 2; reset by a created tab
+/// or [resetChartTabStateAfterRestart].
+int chartTabOpenFailuresInARow = 0;
+
+/// Fresh start after the engine restarts TradingView: a new TradingView
+/// process may have no tab at all, so this run may open one tab again, at
+/// once.
+void resetChartTabStateAfterRestart() {
+  chartTabOpenFailuresInARow = 0;
+  _lastChartTabOpenFailAt = null;
+  _openedChartTabThisProcess = false;
+}
+
 const _chartReadyProbe = '''(function() {
   try {
     var wv = window.TradingViewApi && window.TradingViewApi._activeChartWidgetWV;
@@ -368,12 +383,14 @@ Future<Map<String, dynamic>?> _openOneChartTab(
     final body = await response.transform(utf8.decoder).join();
     if (response.statusCode != 200) {
       _lastChartTabOpenFailAt = DateTime.now();
+      chartTabOpenFailuresInARow++;
       log?.call('opening a chart tab failed: HTTP ${response.statusCode} $body - will retry in ${_chartTabRetryEvery.inMinutes} min');
       return null;
     }
     created = jsonDecode(body) as Map<String, dynamic>;
   } catch (e) {
     _lastChartTabOpenFailAt = DateTime.now();
+    chartTabOpenFailuresInARow++;
     log?.call('opening a chart tab failed: $e - will retry in ${_chartTabRetryEvery.inMinutes} min');
     return null;
   } finally {
@@ -383,6 +400,7 @@ Future<Map<String, dynamic>?> _openOneChartTab(
   // does not load, it stays open untagged and is claimed later).
   _openedChartTabThisProcess = true;
   _lastChartTabOpenFailAt = null;
+  chartTabOpenFailuresInARow = 0;
   log?.call('opened one chart tab ${created['id']} at $url - waiting for it to load');
   final deadline = DateTime.now().add(const Duration(seconds: 60));
   while (DateTime.now().isBefore(deadline)) {

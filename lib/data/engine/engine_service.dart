@@ -2682,6 +2682,9 @@ class EngineService {
       return;
     }
     _forceKillTimes.add(now);
+    // The restarted TradingView may come up with no tab: let this run open
+    // its one tab again (2026-11-08).
+    resetChartTabStateAfterRestart();
     logger.log(
       'TRADINGVIEW WATCHDOG: our chart tab is still stuck after reloading it '
       '($_forceRelaunchTradingViewThreshold more failures) - force-killing '
@@ -2903,11 +2906,27 @@ class EngineService {
     try {
       client = _cdp ?? await connectToChart(host, port, layoutId: config.cdp.layoutId, log: (m) => logger.log('TRADINGVIEW TAB: $m'));
     } on OwnChartTabMissingException catch (e) {
-      // Our tab isn't open: a setup problem, not a stuck TradingView. Never
-      // reload or restart for it (a restart would also take down
-      // TradingPionex's tab) and never use another tab.
+      // Our tab isn't open. Never use another app's tab.
       _cdp = null;
       logger.log('TRADINGVIEW: ${e.message}', level: 'ERROR');
+      // 2026-11-08, per the user: "it is okay to restart trading view if it
+      // is not responding because if you keep it open without restart, it
+      // would not solve the problem" (09:11-14:07Z it refused every new tab
+      // with HTTP 500 and nothing recovered). TradingView refused to open
+      // our tab twice in a row (~2 min apart) -> restart it, through the
+      // same capped force-kill as a stuck tab (max 3 per 30 min). There is
+      // no own tab to reload first, so that rung is skipped. Closes
+      // TradingPionex's tab too - accepted by the user.
+      if (chartTabOpenFailuresInARow >= 2) {
+        logger.log(
+          'TRADINGVIEW WATCHDOG: TradingView refused to open our chart tab '
+          '$chartTabOpenFailuresInARow times in a row - it is not responding, restarting it.',
+          level: 'CRITICAL',
+        );
+        _ownTabReloadTried = true;
+        _consecutiveStuckAttempts = _forceRelaunchTradingViewThreshold - 1;
+        await _forceRelaunchTradingViewIfStuck(home);
+      }
       rethrow;
     } catch (e) {
       // Found live 2026-10-07 ("trading view is loading forever"): a
