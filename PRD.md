@@ -1812,6 +1812,20 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-08 (v1.6.74+122)** — **A failed chart-tab open is retried (was: blocked for
+  the whole run)**. Per the user: "check the log and find out why trading view is not
+  ready... what is the bug?"
+  - Live, 2026-11-08: chart data stuck 3 times -> watchdog reloaded TradingMT5's chart
+    tab at 09:11:29Z; the CDP link died and the own tab was gone. The app tried to open
+    its one allowed tab: TradingView answered `HTTP 500 Could not create new page`.
+    `_openOneChartTab` had already set `_openedChartTabThisProcess = true` BEFORE the
+    request, so every later check logged "already opened one chart tab this run - not
+    opening another" - no TradingView reads for ~5 h (09:11:51Z -> 14:07:08Z, health
+    `tradingViewProblem`), until a new untagged tab appeared at 14:06:02Z and was
+    claimed.
+  - Fix (`cdp_client.dart`): the flag is set only once TradingView really created the
+    tab; a failed open is retried at most every 2 minutes. Still at most one created
+    tab per run and never more than 2 chart tabs; Pionex's tab is never touched.
 - **2026-11-07 (v1.6.73+121)** — **Supertrend Plus and Signal Flip removed completely**.
   Per the user: "create app backup and then ... remove/delete completely from the code
   and from prd two things: 1. supertrend plus technique 2. signal flip technique

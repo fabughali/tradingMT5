@@ -318,8 +318,14 @@ Future<dynamic> _evaluateOnTarget(Map<String, dynamic> target, String expression
   }
 }
 
-/// Set once this engine process has opened its one allowed chart tab.
+/// Set once this engine process has really opened its one allowed chart
+/// tab (TradingView created it). A FAILED attempt does not count (2026-11-08,
+/// found live: one HTTP 500 "Could not create new page" at 09:11Z set this
+/// for good and left the app with no tab for 5 hours) - it is retried, at
+/// most once every [_chartTabRetryEvery].
 bool _openedChartTabThisProcess = false;
+DateTime? _lastChartTabOpenFailAt;
+const _chartTabRetryEvery = Duration(minutes: 2);
 
 const _chartReadyProbe = '''(function() {
   try {
@@ -346,7 +352,11 @@ Future<Map<String, dynamic>?> _openOneChartTab(
     log?.call('no layout ID configured (config.json cdp.layout_id) - not opening a tab');
     return null;
   }
-  _openedChartTabThisProcess = true;
+  final lastFail = _lastChartTabOpenFailAt;
+  if (lastFail != null && DateTime.now().difference(lastFail) < _chartTabRetryEvery) {
+    log?.call('opening a chart tab failed ${DateTime.now().difference(lastFail).inSeconds}s ago - retrying after ${_chartTabRetryEvery.inMinutes} min');
+    return null;
+  }
   final url = 'https://www.tradingview.com/chart/$layoutId/';
   final http = HttpClient();
   Map<String, dynamic> created;
@@ -357,16 +367,22 @@ Future<Map<String, dynamic>?> _openOneChartTab(
     final response = await request.close().timeout(CoreConstants.cdpJsonListTimeout);
     final body = await response.transform(utf8.decoder).join();
     if (response.statusCode != 200) {
-      log?.call('opening a chart tab failed: HTTP ${response.statusCode} $body');
+      _lastChartTabOpenFailAt = DateTime.now();
+      log?.call('opening a chart tab failed: HTTP ${response.statusCode} $body - will retry in ${_chartTabRetryEvery.inMinutes} min');
       return null;
     }
     created = jsonDecode(body) as Map<String, dynamic>;
   } catch (e) {
-    log?.call('opening a chart tab failed: $e');
+    _lastChartTabOpenFailAt = DateTime.now();
+    log?.call('opening a chart tab failed: $e - will retry in ${_chartTabRetryEvery.inMinutes} min');
     return null;
   } finally {
     http.close(force: true);
   }
+  // TradingView really created it: this run never opens another (if it
+  // does not load, it stays open untagged and is claimed later).
+  _openedChartTabThisProcess = true;
+  _lastChartTabOpenFailAt = null;
   log?.call('opened one chart tab ${created['id']} at $url - waiting for it to load');
   final deadline = DateTime.now().add(const Duration(seconds: 60));
   while (DateTime.now().isBefore(deadline)) {
