@@ -1812,6 +1812,16 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-11 (v1.6.76+124)** — **Waiting orders stop being re-placed on tiny SL drift**.
+  Per the user: "fix it and install it", after ALGO's buy-stop was cancelled and
+  re-placed at 11:58, 12:09 and 12:21Z, each time logged as "has gone stale".
+  - Cause: `restingOrderNeedsReplace` measured an SL/TP move against the level
+    itself (1%). ALGO's widened SL sits far below price (0.0153 at price 0.0922), so a
+    0.0002 wiggle from the live entry price was 1.3% of the SL.
+  - Fix: it now takes `referencePrice` (the entry price, `target.entry`) and measures
+    the move against that - ALGO's wiggle is 0.2%, so the order stays. A direction
+    change, or SL/TP moving more than 1% of the price, still re-places it. New test in
+    `test/resting_order_check_test.dart` (211 pass).
 - **2026-11-08 (v1.6.75+123)** — **Restart TradingView when it refuses to open our tab**.
   Per the user: "it is okay to restart trading view if it is not responding because if
   you keep it open without restart, it would not solve the problem. so fix it and

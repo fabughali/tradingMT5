@@ -3991,6 +3991,7 @@ class EngineService {
           targetSl: target.sl,
           restingTp: restingTp,
           targetTp: target.tp,
+          referencePrice: target.entry,
         );
     if (!changed) {
       logger.log(

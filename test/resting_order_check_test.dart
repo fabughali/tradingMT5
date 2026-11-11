@@ -40,4 +40,19 @@ void main() {
     expect(check(sl: null), isTrue);
     expect(check(sl: 0), isTrue);
   });
+
+  test('2026-11-11 ALGO: a far-away SL wiggle is measured against the price, not the SL', () {
+    bool algo(double targetSl, double targetTp) => restingOrderNeedsReplace(
+          restingDirection: TradeDirection.long,
+          newDirection: TradeDirection.long,
+          restingSl: 0.0153,
+          targetSl: targetSl,
+          restingTp: 0.1435,
+          targetTp: targetTp,
+          referencePrice: 0.0922,
+        );
+    expect(algo(0.0155, 0.1435), isFalse); // 0.2% of price - keep the order
+    expect(algo(0.0153, 0.1600), isTrue); // range moved ~18% of price - replace
+    expect(algo(0.0200, 0.1435), isTrue); // SL moved ~5% of price - replace
+  });
 }
