@@ -110,6 +110,11 @@ a raw `taskkill`, so the `PAUSE` intent is recorded too.
   granted. Window title is `trading_mt5`. View-only unless the user asks for clicks —
   the Dashboard has live Power/Auto/trade controls.
 - The GUI's own Logs tab shows the same `engine.log`.
+- **Never relaunch the GUI from a Claude shell** (Bash/PowerShell tool, incl. `& "...trading_mt5.exe"`):
+  it becomes part of Claude Desktop's process tree, and on 2026-11-09 20:39Z a Claude
+  Desktop self-update killed that tree - GUI + live engine down ~37 h. After an install,
+  start it detached via `explorer.exe "$env:LOCALAPPDATAProgramsTradingMT5	rading_mt5.exe"`
+  or ask the user to start it from the Start Menu.
 
 **Dev toolchain on this machine (installed 2026-10-20, winget defaults unless noted)**
 - Git 2.55 (`C:\Program Files\Git`), GitHub CLI 2.102 (needs `gh auth login` by the
