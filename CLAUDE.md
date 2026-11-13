@@ -224,6 +224,10 @@ Git (GitHub) is the cross-machine source of truth.
   chart tabs exist, and only restarts TradingView (which closes Pionex's tab too)
   after an own-tab reload failed.
   Never kill TradingView by name (`ownTradingViewPidsToKill`, v1.6.60).
+  From v1.6.78 the two apps also coordinate through `%USERPROFILE%\.tvsync\` (heartbeats,
+  a 2-min `tv.lock` before restarting TradingView / reloading our tab / opening a tab, and
+  `restart_tradingview` requests from TradingPionex) - PRD §14.8, `tv_sync.dart`. Keep
+  the protocol identical to TradingPionex's side; change both apps together.
 - Version: repo `1.6.60+108` (2026-11-01). Releases since 1.6.25 are summarised in PRD
   §20 (closed-candle rule, ignite, Market Watch auto-add, dollar SLL, spread guard,
   recycle pre-check, pending-cancel <200%, SLL profit-only, no spread limit, resting-order volume sync, chart DATA check before any read). Windows install status: check

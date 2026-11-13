@@ -324,6 +324,12 @@ Future<dynamic> _evaluateOnTarget(Map<String, dynamic> target, String expression
 /// for good and left the app with no tab for 5 hours) - it is retried, at
 /// most once every [_chartTabRetryEvery].
 bool _openedChartTabThisProcess = false;
+
+/// Shared-TradingView lock hooks (tvsync, 2026-11-13), set by the engine:
+/// [openTabGate] must return true before a tab is opened (false = TradingPionex
+/// holds the lock - skip now, retry later); [openTabDone] runs after.
+bool Function(String action)? openTabGate;
+void Function()? openTabDone;
 DateTime? _lastChartTabOpenFailAt;
 const _chartTabRetryEvery = Duration(minutes: 2);
 
@@ -372,6 +378,23 @@ Future<Map<String, dynamic>?> _openOneChartTab(
     log?.call('opening a chart tab failed ${DateTime.now().difference(lastFail).inSeconds}s ago - retrying after ${_chartTabRetryEvery.inMinutes} min');
     return null;
   }
+  if (openTabGate != null && !openTabGate!('open_tab')) {
+    log?.call('TradingPionex holds the TradingView lock - not opening a tab now, retrying later');
+    return null;
+  }
+  try {
+    return await _openOneChartTabLocked(host, port, layoutId, log);
+  } finally {
+    openTabDone?.call();
+  }
+}
+
+Future<Map<String, dynamic>?> _openOneChartTabLocked(
+  String host,
+  int port,
+  String layoutId,
+  void Function(String message)? log,
+) async {
   final url = 'https://www.tradingview.com/chart/$layoutId/';
   final http = HttpClient();
   Map<String, dynamic> created;

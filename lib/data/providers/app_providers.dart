@@ -22,6 +22,7 @@ import '../models/watched_symbol.dart';
 import '../mt5/mt5_client.dart';
 import '../engine/volume_step.dart';
 import '../identity/user_trigger_store.dart';
+import '../tvsync/tv_sync.dart';
 
 final storageProvider = Provider<CoreStorage>((ref) => CoreStorage.instance);
 
@@ -176,6 +177,25 @@ final engineStatusProvider = StreamProvider.autoDispose<EngineStatus>((
   while (true) {
     yield await repo.status();
     await Future<void>.delayed(repo.statusPollInterval);
+  }
+});
+
+/// TradingPionex's state + the shared TradingView lock, read from
+/// %USERPROFILE%\.tvsync\ every 5s for the Engine card (2026-11-13).
+final tvSyncPeerProvider = StreamProvider.autoDispose<({TvHeartbeat? peer, bool online, TvLock? lock, int nowMs})>((
+  ref,
+) async* {
+  final sync = TvSync();
+  while (true) {
+    final now = sync.nowMs();
+    final lock = sync.readLock();
+    yield (
+      peer: sync.readHeartbeat(tvSyncPeer),
+      online: sync.peerOnline(),
+      lock: lock != null && !lock.expired(now) ? lock : null,
+      nowMs: now,
+    );
+    await Future<void>.delayed(const Duration(seconds: 5));
   }
 });
 

@@ -95,6 +95,8 @@ class DashboardScreen extends ConsumerWidget {
                               : 'RAM',
                         ),
                         const SizedBox(height: 8),
+                        const _TvSyncLine(),
+                        const SizedBox(height: 8),
                         Text('Last cycle: ${UtilDate.relative(s.lastCycleAt)}'),
                         if (s.message != null) ...[
                           const SizedBox(height: 8),
@@ -416,6 +418,32 @@ class _AccountStatsColumn extends StatelessWidget {
           '${pnl >= 0 ? '+' : ''}${pnl.toStringAsFixed(2)} ${account.currency}'.trim(),
           valueColor: pnlColor,
         ),
+      ],
+    );
+  }
+}
+
+/// TradingPionex (shared TradingView) status + who holds the TradingView
+/// lock (2026-11-13, per the user).
+class _TvSyncLine extends ConsumerWidget {
+  const _TvSyncLine();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final v = ref.watch(tvSyncPeerProvider).asData?.value;
+    if (v == null) return const SizedBox.shrink();
+    final peer = v.peer;
+    final state = !v.online
+        ? 'offline'
+        : 'online, Power ${peer!.power ? 'on' : 'off'}, tab ${peer.tab}';
+    final lock = v.lock == null ? 'free' : '${v.lock!.app} (${v.lock!.action})';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ReuseStatusLight(on: v.online, label: 'TradingPionex: $state'),
+        const SizedBox(height: 4),
+        Text('TradingView lock: $lock', style: const TextStyle(fontSize: 12)),
       ],
     );
   }

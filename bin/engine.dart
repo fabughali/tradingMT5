@@ -84,6 +84,8 @@ Future<void> _runEngine() async {
     stopping = true;
     logger.log('$signal received — shutting down.');
     engine.stop();
+    // TradingView sync: one last heartbeat with power:false (2026-11-13).
+    engine.tvSyncStopped();
     // 2026-10-18, per the user, after a real incident: Power toggled off
     // but the Dashboard's Engine/MT5/TradingView lights stayed green.
     // Root cause (two-layered, this is the second layer - see

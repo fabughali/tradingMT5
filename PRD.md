@@ -1157,6 +1157,36 @@ re-adding scripts on the *same* chart, each wiping out the other's work
 closing it then load worm/spy"). Every caller now awaits the same in-flight
 future instead of starting an overlapping one.
 
+### 14.8 TradingView sync with TradingPionex (v1.6.78, 2026-11-13)
+
+Both apps share one TradingView Desktop (port 9222). They coordinate through
+plain files in `%USERPROFILE%\.tvsync\` (`lib/data/tvsync/tv_sync.dart`). Every
+file is written to a temp file first, then renamed into place. All times are
+epoch ms. App names: `tradingmt5` (this app), `tradingpionex`.
+
+- **Heartbeat** - every 5s while the engine runs, `tradingmt5.heartbeat.json` =
+  `{"app","pid","version","at","power","tab","busy","tvHealthy"}`. `tab` is
+  `claimed` / `missing` / `unknown`; `busy` = reading our chart right now (a
+  per-pair check is running); `tvHealthy` = engine health Ready. On engine stop
+  it is written once more with `power:false`. `tradingpionex.heartbeat.json`
+  older than 20s = TradingPionex offline. The Dashboard Engine card shows
+  TradingPionex online/offline, its Power and tab, and the lock holder.
+- **Lock** - `tv.lock` = `{"app","action","at","expiresAt"}`, expiring 2 min after
+  it was taken. Created exclusively; only an expired lock or our own may be
+  replaced; deleted when done. Taken before `restart_tradingview` (the capped
+  force-kill), `reload_own_tab` (the chart-data watchdog reload and the stuck-tab
+  ladder's own-tab reload) and `open_tab` (`_openOneChartTab`). If TradingPionex
+  holds it, the action is skipped now and retried later; a lock file that
+  exists but can't be read yet counts as held.
+- **Requests** - `requests\<epochms>_<from>_<type>.json` =
+  `{"id","from","to","type","reason","at"}`. On each 5s tick the engine reads
+  the requests addressed to `tradingmt5` and deletes each once handled.
+  `restart_tradingview` (TradingPionex never restarts TradingView itself): when
+  we are not reading our chart, take the lock (`restart_tradingview`), restart
+  TradingView the usual way (`_restartTradingView`, same 3-per-30-min cap), and
+  release the lock once our tab is back (claimed + health Ready). Unknown types
+  are logged and removed. Every request and what was done is logged (`TVSYNC:`).
+
 ## 15. Engine runtime behavior (`bin/engine.dart` / `engine_service.dart`)
 
 ### 15.1 Process lifecycle
@@ -1797,6 +1827,22 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-13 (v1.6.78+126)** — **TradingView sync with TradingPionex**. Per the user
+  (spec relayed from TradingPionex, which builds the same tool on its side): "Build
+  TradingView sync with TradingPionex. Both apps share one TradingView Desktop. Use the
+  shared folder %USERPROFILE%\.tvsync\ ...". Protocol in §14.8.
+  - New `lib/data/tvsync/tv_sync.dart` (heartbeat, exclusive 2-min lock, requests;
+    atomic temp-then-rename writes; epoch-ms times; injectable clock/folder).
+  - Engine: 5s heartbeat (+ `power:false` on stop); the lock gates
+    `restart_tradingview` (`_restartTradingView`, split out of the stuck-tab ladder,
+    same cap), `reload_own_tab` (chart-data watchdog reload, own-tab reload) and
+    `open_tab` (`openTabGate`/`openTabDone` in `cdp_client.dart`); TradingPionex's
+    `restart_tradingview` requests are handled when not reading the chart, lock released
+    once our tab is back. Busy = a per-pair check is running (call sites wrapped;
+    `_checkOneSymbolWorm10` itself untouched). Everything logged as `TVSYNC: ...`.
+  - Dashboard Engine card: TradingPionex online/offline, Power, tab, and the lock holder.
+  - Tests: `test/tv_sync_test.dart` (heartbeat staleness, lock exclusive/expiry/own
+    replace, requests only-addressee/handled-once/file name). 219 pass.
 - **2026-11-13 (v1.6.77+125)** — **Windows only (all Linux code removed) + starts with
   Windows and powers on by itself**. Per the user: "i dont use this app anymore in linux
   so there is no point to keep the code having linux... remove any linux code. i am only

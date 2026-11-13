@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:path/path.dart' as p;
+
 import '../../core/core_storage.dart';
 import '../../utilities/auto_cycle.dart';
 import '../identity/auto_managed_store.dart';
@@ -57,6 +59,7 @@ import '../risk/risk_gate.dart';
 import '../technique/liquidation.dart';
 import '../technique/zigzag_range.dart';
 import '../tradingview/cdp_client.dart';
+import '../tvsync/tv_sync.dart';
 import '../tradingview/chart_state.dart';
 import '../tradingview/enforce.dart';
 import '../tradingview/launch.dart';
@@ -1650,6 +1653,7 @@ class EngineService {
     _startedAt; // force initialization now, not lazily on first read
     logger.log('Engine starting.');
     _startUserTriggerTimer();
+    _startTvSyncTimer();
     // One-time v1.6.29 cleanup of stale imported volume step-downs - see
     // [TradeVolumeStore.clearAllAttempts]. A marker file makes sure it runs
     // exactly once per data directory, never on later restarts.
@@ -2537,7 +2541,7 @@ class EngineService {
           );
           // Hybrid Decision is the only technique (2026-11-07, per the user:
           // Supertrend Plus and Signal Flip removed completely).
-          await _checkOneSymbolWorm10(category, mapping);
+          await _readingChart(() => _checkOneSymbolWorm10(category, mapping));
         } catch (e, st) {
           logger.log(
             'Cycle error for $tvSymbol ($category): $e\n$st',
@@ -2601,11 +2605,18 @@ class EngineService {
       'Reloading the chart page; no signal is read until the data checks out.',
       level: 'CRITICAL',
     );
+    if (!_tvLockTake(lockReloadOwnTab)) {
+      // Retry on the very next data failure.
+      _consecutiveChartDataFailures = _chartDataReloadThreshold - 1;
+      return;
+    }
     try {
       await cdp.send('Page.reload', const {'ignoreCache': false});
       await Future<void>.delayed(const Duration(seconds: 20));
     } catch (e) {
       logger.log('TRADINGVIEW WATCHDOG: chart page reload failed: $e', level: 'ERROR');
+    } finally {
+      tvSync.release();
     }
   }
 
@@ -2632,6 +2643,7 @@ class EngineService {
 
   /// Reloads TradingMT5's own chart tab only - never any other tab.
   Future<void> _reloadOwnChartTab() async {
+    if (!_tvLockTake(lockReloadOwnTab)) return;
     CdpClient? client;
     try {
       client = await connectToChart(
@@ -2646,6 +2658,7 @@ class EngineService {
       logger.log('TRADINGVIEW WATCHDOG: own-tab reload failed: $e', level: 'ERROR');
     } finally {
       client?.close();
+      tvSync.release();
     }
   }
 
@@ -2667,6 +2680,19 @@ class EngineService {
       return;
     }
     _ownTabReloadTried = false;
+    await _restartTradingView(
+      home,
+      'our chart tab is still stuck after reloading it '
+      '($_forceRelaunchTradingViewThreshold more failures)',
+    );
+  }
+
+  /// Force-kills TradingView so the next connect attempt starts it fresh -
+  /// capped ([_maxForceKillsPerWindow]) and, since 2026-11-13, only with the
+  /// shared TradingView lock (tvsync, action restart_tradingview). The lock
+  /// is released once our tab is back ([_tvSyncTick]). False when nothing
+  /// was killed (cap reached, or TradingPionex holds the lock).
+  Future<bool> _restartTradingView(String home, String why) async {
     final now = DateTime.now();
     _forceKillTimes.removeWhere((t) => now.difference(t) > _forceKillWindow);
     if (_forceKillTimes.length >= _maxForceKillsPerWindow) {
@@ -2679,17 +2705,17 @@ class EngineService {
         'restart the PC if it stays stuck.',
         level: 'CRITICAL',
       );
-      return;
+      return false;
     }
+    if (!_tvLockTake(lockRestartTradingView)) return false;
+    _tvSyncReleaseWhenTabBack = true;
     _forceKillTimes.add(now);
     // The restarted TradingView may come up with no tab: let this run open
     // its one tab again (2026-11-08).
     resetChartTabStateAfterRestart();
     logger.log(
-      'TRADINGVIEW WATCHDOG: our chart tab is still stuck after reloading it '
-      '($_forceRelaunchTradingViewThreshold more failures) - force-killing '
-      'TradingView now so the next connect attempt starts it fresh. This also '
-      'closes TradingPionex\'s tab.',
+      'TRADINGVIEW WATCHDOG: $why - force-killing TradingView now so the next '
+      'connect attempt starts it fresh. This also closes TradingPionex\'s tab.',
       level: 'CRITICAL',
     );
     try {
@@ -2722,6 +2748,7 @@ class EngineService {
     } catch (e) {
       logger.log('TRADINGVIEW WATCHDOG: force-kill failed: $e');
     }
+    return true;
   }
 
   /// MT5 launch config (Windows only, 2026-11-13).
@@ -2894,6 +2921,7 @@ class EngineService {
     } on OwnChartTabMissingException catch (e) {
       // Our tab isn't open. Never use another app's tab.
       _cdp = null;
+      _tvTab = 'missing';
       logger.log('TRADINGVIEW: ${e.message}', level: 'ERROR');
       // 2026-11-08, per the user: "it is okay to restart trading view if it
       // is not responding because if you keep it open without restart, it
@@ -3050,7 +3078,7 @@ class EngineService {
           );
           // Hybrid Decision is the only technique (2026-11-07, per the user:
           // Supertrend Plus and Signal Flip removed completely).
-          await _checkOneSymbolWorm10(category, mapping, immediate: true);
+          await _readingChart(() => _checkOneSymbolWorm10(category, mapping, immediate: true));
         } catch (e, st) {
           logger.log(
             'Technique-switch reverse check failed for $tvSymbol ($category): $e\n$st',
@@ -5698,7 +5726,7 @@ class EngineService {
       try {
         // Hybrid Decision is the only technique (2026-11-07, per the user:
         // Supertrend Plus and Signal Flip removed completely).
-        await _checkOneSymbolWorm10(AutoCategory.oneHour, mapping, immediate: true);
+        await _readingChart(() => _checkOneSymbolWorm10(AutoCategory.oneHour, mapping, immediate: true));
       } catch (e, st) {
         logger.log('Unpause checkup error for $base: $e\n$st', level: 'ERROR');
       }
@@ -6413,6 +6441,135 @@ class EngineService {
       firstEntryPrice: firstEntryPrice,
       lastClosePrice: lastClosePrice,
     );
+  }
+
+  // --- TradingView sync with TradingPionex (2026-11-13, per the user) -----
+  // Shared folder %USERPROFILE%\.tvsync\ - see lib/data/tvsync/tv_sync.dart
+  // and PRD "TradingView sync". Heartbeat every 5s, the shared lock before
+  // restarting TradingView / reloading our tab / opening a tab, and requests
+  // from TradingPionex (which never restarts TradingView itself).
+  final TvSync tvSync = TvSync();
+  Timer? _tvSyncTimer;
+  bool _tvSyncBusy = false;
+  int _chartReadDepth = 0;
+  String _tvTab = 'unknown';
+  bool _tvSyncReleaseWhenTabBack = false;
+  final Set<String> _tvSyncWaitLogged = {};
+  String? _appVersionCache;
+
+  /// Runs [read] with the heartbeat saying "busy" (reading our chart).
+  Future<T> _readingChart<T>(Future<T> Function() read) async {
+    _chartReadDepth++;
+    try {
+      return await read();
+    } finally {
+      _chartReadDepth--;
+    }
+  }
+
+  /// Takes the shared TradingView lock for [action]; false (and logged) when
+  /// TradingPionex holds it - the caller skips the action and retries later.
+  bool _tvLockTake(String action) {
+    try {
+      if (tvSync.tryAcquire(action)) return true;
+      final lock = tvSync.readLock();
+      logger.log(
+        'TVSYNC: $action skipped - TradingPionex holds the TradingView lock '
+        '(${lock?.action ?? '?'}); will retry later.',
+        level: 'WARNING',
+      );
+      return false;
+    } catch (e) {
+      logger.log('TVSYNC: lock for $action failed ($e) - doing it without the lock.', level: 'WARNING');
+      return true;
+    }
+  }
+
+  String _appVersion() {
+    if (_appVersionCache != null) return _appVersionCache!;
+    try {
+      final pubspec = File(p.join(p.dirname(Platform.resolvedExecutable), 'data', 'flutter_assets', 'pubspec.yaml'));
+      final m = RegExp(r'^version:\s*(\S+)', multiLine: true).firstMatch(pubspec.readAsStringSync());
+      _appVersionCache = m?.group(1) ?? 'unknown';
+    } catch (_) {
+      _appVersionCache = 'unknown';
+    }
+    return _appVersionCache!;
+  }
+
+  void _writeTvSyncHeartbeat({required bool power}) {
+    tvSync.writeHeartbeat(
+      version: _appVersion(),
+      power: power,
+      tab: _tvTab,
+      busy: _chartReadDepth > 0,
+      tvHealthy: _lastHealth == PowerHealthState.ready,
+    );
+  }
+
+  void _startTvSyncTimer() {
+    openTabGate = (action) => _tvLockTake(action);
+    openTabDone = () => tvSync.release();
+    _tvSyncTimer ??= Timer.periodic(const Duration(seconds: 5), (_) async {
+      if (_tvSyncBusy || _stopRequested) return;
+      _tvSyncBusy = true;
+      try {
+        await _tvSyncTick();
+      } catch (e) {
+        logger.log('TVSYNC: tick failed ($e) - retrying in 5s', level: 'WARNING');
+      } finally {
+        _tvSyncBusy = false;
+      }
+    });
+  }
+
+  Future<void> _tvSyncTick() async {
+    if (_cdp != null && !_cdp!.dead) _tvTab = 'claimed';
+    _writeTvSyncHeartbeat(power: true);
+
+    // A restart we did holds the lock until our tab is back.
+    if (_tvSyncReleaseWhenTabBack && _tvTab == 'claimed' && _lastHealth == PowerHealthState.ready) {
+      _tvSyncReleaseWhenTabBack = false;
+      tvSync.release();
+      logger.log('TVSYNC: our TradingView tab is back after the restart - lock released.');
+    }
+
+    for (final r in tvSync.pendingRequests()) {
+      if (!_tvSyncWaitLogged.contains(r.id)) {
+        logger.log('TVSYNC: request ${r.id} from ${r.from}: ${r.type} (${r.reason}).');
+      }
+      if (r.type != lockRestartTradingView) {
+        logger.log('TVSYNC: request ${r.id}: unknown type "${r.type}" - ignored and removed.', level: 'WARNING');
+        tvSync.done(r);
+        _tvSyncWaitLogged.remove(r.id);
+        continue;
+      }
+      if (_chartReadDepth > 0 || _stopRequested) {
+        if (_tvSyncWaitLogged.add(r.id)) {
+          logger.log('TVSYNC: request ${r.id}: busy reading our chart - will restart TradingView once free.');
+        }
+        continue;
+      }
+      final home = Platform.environment['USERPROFILE'] ?? '.';
+      final restarted = await _restartTradingView(home, 'TradingPionex asked (${r.reason})');
+      tvSync.done(r);
+      _tvSyncWaitLogged.remove(r.id);
+      logger.log(
+        restarted
+            ? 'TVSYNC: request ${r.id}: TradingView restarted; the lock is released once our tab is back.'
+            : 'TVSYNC: request ${r.id}: TradingView NOT restarted (restart cap reached or TradingPionex holds the lock).',
+        level: restarted ? 'INFO' : 'WARNING',
+      );
+    }
+  }
+
+  /// Last heartbeat on the way out: Power false (bin/engine.dart, on stop).
+  void tvSyncStopped() {
+    try {
+      _tvSyncTimer?.cancel();
+      _writeTvSyncHeartbeat(power: false);
+      if (_tvSyncReleaseWhenTabBack) tvSync.release();
+    } catch (_) {}
   }
 
   void stop() => _stopRequested = true;
