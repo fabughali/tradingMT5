@@ -1827,6 +1827,23 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-14 (v1.6.80+128)** — **Status icon next to the clock; no indicator reload on a
+  hidden tab**. Per the user: "the icon is not placed at clock in bottom right in windows"
+  / "add".
+  - Tray icon (`lib/core/tray_icon.dart`): `Shell_NotifyIconW` called directly via
+    `dart:ffi` (no tray plugin, no new native build step). Green = Power on and Ready,
+    amber = on but checking or a problem, red = Power off; hover shows the status text.
+    Refreshed every 5s, only redrawn on change, re-added if Explorer restarts, removed
+    on exit. Status only (no menu/click). Icons: `assets/tray/tray_{green,amber,red}.ico`
+    (16 + 32 px). Struct size (976) and add/modify/delete verified live on this PC
+    before shipping.
+  - Hidden-tab guard: found live 2026-11-13 17:57-18:03Z, right after v1.6.79 - with
+    our tab behind TradingPionex's in the same window, the close-all-then-load-two
+    procedure could not open TradingView's Indicators dialog; the typed script name went
+    into the symbol search (chart became MEXC:SUSDT 1W) and the chart was left with no
+    indicators, in a loop. Now the procedure refuses to run while
+    `document.visibilityState` is hidden (nothing is closed or added; health shows the
+    reason) - the user moved our tab to its own window.
 - **2026-11-13 (v1.6.79+127)** — **A newly loaded chart page always gets a clean
   indicator setup**. Per the user: "app struggling for loading indicators. Once new layout
   loaded first thing is to close any indicators and then load the two indicators" and

@@ -2998,6 +2998,20 @@ class EngineService {
       logger.log('TRADINGVIEW: new chart page loaded - closing all indicators, then loading the two.');
     }
     if (freshChartPage || !await _indicatorsReadyFor(technique, client)) {
+      // 2026-11-14: never on a hidden tab. Found live 2026-11-13 17:57-18:03Z:
+      // with our tab behind TradingPionex's in the same window, TradingView's
+      // Indicators dialog never opened, the typed script name went into the
+      // symbol search instead (chart became MEXC:SUSDT 1W) and the chart was
+      // left with no indicators, in a loop. The user moves the tab to its own
+      // window; until then nothing is closed or added.
+      if (await client.evaluate('document.visibilityState') == 'hidden') {
+        client.close();
+        _cdp = null;
+        throw StateError(
+          'our TradingView tab is hidden behind another tab - indicators NOT reloaded; '
+          'move our tab to its own TradingView window',
+        );
+      }
       _writeStatus(
         health: PowerHealthState.checking,
         message: 'Loading indicators',

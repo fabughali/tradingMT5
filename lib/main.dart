@@ -9,6 +9,7 @@ import 'core/core_router.dart';
 import 'core/core_storage.dart';
 import 'core/core_theme.dart';
 import 'core/gui_instance_lock.dart';
+import 'core/tray_icon.dart';
 import 'data/config/config_loader.dart';
 import 'data/control/engine_control_repository.dart';
 import 'data/logging/app_logger.dart';
@@ -123,6 +124,19 @@ Future<void> main() async {
   // engine is still stopped first; Auto keeps its saved state.
   unawaited(_autoPowerOnAtLaunch());
 
+  // Status icon next to the clock (2026-11-14, per the user): green = Ready,
+  // amber = on but checking / a problem, red = Power off. Refreshed every 5s.
+  var trayBusy = false;
+  Timer.periodic(const Duration(seconds: 5), (_) async {
+    if (trayBusy) return;
+    trayBusy = true;
+    try {
+      await _updateTrayIcon();
+    } finally {
+      trayBusy = false;
+    }
+  });
+
   // Closing the GUI should always take the engine down with it, under any
   // scenario (2026-10-05, per the user) - this is the fast, graceful path
   // for the common case (window-close button, or a signal sent to this
@@ -133,6 +147,7 @@ Future<void> main() async {
     onExitRequested: () async {
       if (!await _confirmCloseWhilePowerOn()) return AppExitResponse.cancel;
       await _controlRepo.pause();
+      TrayIcon.remove();
       GuiInstanceLock.release();
       return AppExitResponse.exit;
     },
@@ -142,9 +157,24 @@ Future<void> main() async {
   for (final signal in [ProcessSignal.sigint]) {
     signal.watch().listen((_) async {
       await _controlRepo.pause();
+      TrayIcon.remove();
       GuiInstanceLock.release();
       exit(0);
     });
+  }
+}
+
+/// Green = Power on and Ready, amber = on but not Ready, red = Power off.
+Future<void> _updateTrayIcon() async {
+  if (!_controlRepo.isPowerOn) {
+    TrayIcon.show('red', 'TradingMT5 - Power off');
+    return;
+  }
+  final status = await _controlRepo.status();
+  if (status.health == PowerHealthState.ready) {
+    TrayIcon.show('green', 'TradingMT5 - Power on, Ready');
+  } else {
+    TrayIcon.show('amber', 'TradingMT5 - Power on, ${status.message ?? status.health.name}');
   }
 }
 
