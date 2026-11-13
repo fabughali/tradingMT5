@@ -2804,6 +2804,23 @@ class EngineService {
   /// note that used to live here about Signal Flip needing regular
   /// candles - that was true back when it read a genuinely different
   /// script).
+  /// True when our chart page was (re)loaded since the app last set its
+  /// indicators: the in-page marker lives in `window`, so any page load (new
+  /// tab, reload, TradingView restart) clears it, a reconnect does not.
+  Future<bool> _isFreshChartPage(CdpClient client) async {
+    try {
+      return await client.evaluate('window.__tradingMt5IndicatorsSet !== true') == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Future<void> _markChartPageSet(CdpClient client) async {
+    try {
+      await client.evaluate('window.__tradingMt5IndicatorsSet = true');
+    } catch (_) {}
+  }
+
   Future<bool> _indicatorsReadyFor(DecisionTechnique technique, CdpClient client) async {
     final styleOk = await ensureChartStyle(client, ChartStyle.heikinAshi);
     return styleOk && await isWorm10Present(client);
@@ -2874,8 +2891,11 @@ class EngineService {
       }
     }
     if (_cdp != null && !_cdp!.dead) {
-      if (await _indicatorsReadyFor(technique, _cdp!)) return;
-      logger.log('Indicators missing on an already-open chart — re-enforcing.');
+      final freshPage = await _isFreshChartPage(_cdp!);
+      if (!freshPage && await _indicatorsReadyFor(technique, _cdp!)) return;
+      logger.log(freshPage
+          ? 'TRADINGVIEW: our chart page was (re)loaded - closing all indicators, then loading the two.'
+          : 'Indicators missing on an already-open chart — re-enforcing.');
     } else if (_cdp != null) {
       logger.log('CDP client was dead — reconnecting fresh.');
       _cdp = null;
@@ -2967,7 +2987,17 @@ class EngineService {
       throw StateError('Chart API did not become ready in time');
     }
 
-    if (!await _indicatorsReadyFor(technique, client)) {
+    // 2026-11-13, per the user: "Once new layout loaded first thing is to
+    // close any indicators and then load the two indicators" - a freshly
+    // loaded chart page (new tab, reload, TradingView restart) is ALWAYS
+    // cleaned and reloaded by [enforceWorm10] (close all, add worm_10_26 +
+    // spy_9_26), even when the two already look present. Fresh = our page
+    // marker ([_markChartPageSet]) is gone, which only a page load clears.
+    final freshChartPage = await _isFreshChartPage(client);
+    if (freshChartPage) {
+      logger.log('TRADINGVIEW: new chart page loaded - closing all indicators, then loading the two.');
+    }
+    if (freshChartPage || !await _indicatorsReadyFor(technique, client)) {
       _writeStatus(
         health: PowerHealthState.checking,
         message: 'Loading indicators',
@@ -2990,6 +3020,7 @@ class EngineService {
       }
       await ensureChartStyle(client, ChartStyle.heikinAshi);
     }
+    await _markChartPageSet(client);
     _consecutiveStuckAttempts = 0;
     _ownTabReloadTried = false;
     _tvBackoffUntil = null;

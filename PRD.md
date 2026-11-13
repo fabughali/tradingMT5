@@ -1827,6 +1827,19 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-13 (v1.6.79+127)** — **A newly loaded chart page always gets a clean
+  indicator setup**. Per the user: "app struggling for loading indicators. Once new layout
+  loaded first thing is to close any indicators and then load the two indicators" and
+  "make the app follow the procedure I told you".
+  - Before: on connect the app only ran `enforceWorm10` (close all, add worm_10_26 +
+    spy_9_26) when the two looked missing; a freshly loaded page that still showed them
+    (or showed them half-loaded) was used as-is.
+  - Now: the engine marks our page (`window.__tradingMt5IndicatorsSet`) after setting
+    its indicators. Any page load (new tab, reload, TradingView restart) clears that
+    marker, so the next check sees a fresh page and runs the full procedure first -
+    close every indicator, then load the two - logged "new chart page loaded - closing
+    all indicators, then loading the two." A plain reconnect keeps the marker and does
+    not reload. Only our own tab is touched.
 - **2026-11-13 (v1.6.78+126)** — **TradingView sync with TradingPionex**. Per the user
   (spec relayed from TradingPionex, which builds the same tool on its side): "Build
   TradingView sync with TradingPionex. Both apps share one TradingView Desktop. Use the
