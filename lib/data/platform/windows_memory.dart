@@ -1,5 +1,4 @@
 import 'dart:ffi' as ffi;
-import 'dart:io';
 
 import 'package:ffi/ffi.dart' as pkg_ffi;
 
@@ -43,12 +42,9 @@ typedef _GlobalMemoryStatusExDart = int Function(ffi.Pointer<_MemoryStatusEx>);
 
 _GlobalMemoryStatusExDart? _globalMemoryStatusEx;
 
-/// System-wide total/available RAM in MB, or null off-Windows or if the
-/// call fails for any reason (mirrors the Linux read's own null-on-
-/// failure contract - never treated as "low" when null, see
-/// [EngineStatus.ramOk]).
+/// System-wide total/available RAM in MB, or null if the call fails for
+/// any reason (never treated as "low" when null, see [EngineStatus.ramOk]).
 ({int totalMb, int availMb})? readWindowsMemoryMb() {
-  if (!Platform.isWindows) return null;
   try {
     _globalMemoryStatusEx ??= ffi.DynamicLibrary.open('kernel32.dll')
         .lookupFunction<_GlobalMemoryStatusExNative, _GlobalMemoryStatusExDart>('GlobalMemoryStatusEx');

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/models/power_health.dart';
+import '../data/control/engine_control_repository.dart';
 import '../data/providers/app_providers.dart';
 import 'power_off_confirm.dart';
 
@@ -138,6 +139,7 @@ class _PowerToggleState extends ConsumerState<PowerToggle>
                   trackOutlineColor: WidgetStateProperty.all(shown),
                   onChanged: (on) async {
                     if (!on && !await confirmPowerOff(context, closingApp: false)) return;
+                    EngineControlRepository.userSwitchedPower = true;
                     on ? repo.resume() : repo.pause();
                     ref.invalidate(controlToggleStateProvider);
                     ref.invalidate(engineStatusProvider);

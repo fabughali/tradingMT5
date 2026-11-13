@@ -1,6 +1,5 @@
 {
   "poll_interval_sec": 5,
-  "remote_session": true,
   "mt5": { "mcp_host": "127.0.0.1", "mcp_port": 22346 },
   "cdp": { "host": "127.0.0.1", "port": 9222 },
   "technique": { "range_swing_count": 20 },

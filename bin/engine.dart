@@ -116,11 +116,7 @@ Future<void> _runEngine() async {
   }
 
   ProcessSignal.sigint.watch().listen((_) => onStopSignal('SIGINT'));
-  // sigterm isn't supported on Windows (2026-10-07, Windows port) - watching
-  // it there throws.
-  if (!Platform.isWindows) {
-    ProcessSignal.sigterm.watch().listen((_) => onStopSignal('SIGTERM'));
-  }
+  // No SIGTERM on Windows (watching it throws) - see SHUTDOWN_REQUEST below.
   // Windows graceful stop (2026-10-20, per the user, after confirming live
   // that `taskkill` - the old Windows stop path - runs NO handlers at all:
   // 51 Power-offs, zero "shutting down" lines, pid/heartbeat files left
@@ -129,7 +125,6 @@ Future<void> _runEngine() async {
   // after ~10s. Polled on a timer rather than at the top of [EngineService.run]'s
   // loop, since one full sweep iteration can run 10+ minutes; timers fire
   // between the engine's awaits, so this lands within about a second.
-  // Harmless on Linux (nothing writes the file there).
   Timer.periodic(const Duration(seconds: 1), (_) {
     if (storage.fileExists(storage.shutdownRequestFile)) {
       onStopSignal('SHUTDOWN_REQUEST');

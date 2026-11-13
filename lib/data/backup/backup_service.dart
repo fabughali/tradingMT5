@@ -91,7 +91,7 @@ class BackupService {
   /// Strips `mt5`/`cdp` (host/port for both - the only "ports"/connection
   /// settings this app has) out of config.json before it goes into the
   /// archive, keeping everything else (symbols, risk, technique,
-  /// poll_interval_sec, remote_session, heartbeat) - those are genuine user
+  /// poll_interval_sec, heartbeat) - those are genuine user
   /// data worth carrying to a new machine, unlike a host/port pair that's
   /// only ever meaningful on the machine that set it up.
   List<int> _sanitizeConfigForExport(List<int> rawBytes) {

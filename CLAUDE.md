@@ -17,27 +17,19 @@ every change here can place real trades with real money. Verify, don't assume.
 - PRD / full feature + decision history: [PRD.md](PRD.md) — read this too, it has the
   dated changelog of every release and the reasoning behind it.
 
-## Platforms — Linux and Windows, never both live at once
+## Platform — Windows only (since v1.6.77, 2026-11-13)
 
-The user runs this on both a Linux machine and a Windows machine, same MT5 account
-(1013734072). **Only one of them may ever be the live, trading instance at a time.**
-Two engines racing against the same account is a real-money risk (duplicate orders,
-conflicting risk-gate decisions) — never start the engine on one platform without first
-confirming it's stopped on the other.
+The user no longer runs this app on Linux ("i dont use this app anymore in linux ...
+remove any linux code"). All Linux code paths (systemd Power control, Wine/Xvfb/X11
+launchers, `/proc` reads, zenity dialogs, the `linux/` Flutter runner, the
+`remote_session` setting) were removed in v1.6.77. Do not add Linux branches back.
+The old Linux box (`hypernode`) must never run the engine against account 1013734072
+again - two engines on one account is a real-money risk.
 
-- Linux: engine runs as a systemd user service (`tradingmt5-engine.service`), GUI bundle
-  at `/home/fabughali/.local/share/tradingmt5/bundle/`. Standard checks:
-  `systemctl --user status tradingmt5-engine.service`, engine log at
-  `/home/fabughali/.local/share/tradingmt5/engine.log`.
-- Windows: see "Windows machine — operations" below (verified live 2026-10-20).
-- Linux reachability from Windows: SSH to `hypernode` (Tailscale `100.80.150.53`) is
-  **refused on port 22** as of 2026-10-20 — a Windows session can NOT check the Linux
-  engine itself. Ask the user to run `systemctl --user is-active tradingmt5-engine.service`
-  there and report back before starting the engine on Windows.
 - Windows build: GitHub Actions CI already builds and releases
   `TradingMT5-Setup-X.Y.Z.exe` / `TradingMT5-Windows-X.Y.Z.zip` automatically on every
   push to `main` — confirm the Actions run went green and the GitHub release has both
-  assets before considering a Windows release "shipped."
+  assets before considering a release "shipped."
 
 ## Windows machine — operations (verified live 2026-10-20, host `hypervortex`)
 
@@ -62,9 +54,14 @@ not assumed. Re-verify if the code in those files changes.
 
 **How the engine starts/stops — there is NO service, scheduled task, Run key or
 Startup-folder entry** (all checked). The GUI owns the engine process entirely:
-- Launch the GUI (Start Menu "TradingMT5"). Every GUI launch forces Power **OFF**
-  (`main.dart`, `unawaited(_controlRepo.pause())`), so opening the GUI never starts
-  trading by itself.
+- **Starts with Windows and powers on by itself (v1.6.77, 2026-11-13, user's request,
+  relayed from TradingPionex):** the installer puts a shortcut in the user Startup folder;
+  every GUI launch first stops any leftover engine, then turns Power ON automatically
+  (`_autoPowerOnAtLaunch` in `main.dart`, logged `AUTO POWER: ...`), re-checking every
+  30s until the engine is Ready (message on the first failed check only). It stops for
+  good once the user flips Power themselves. Auto keeps its saved state. Every GUI
+  launch is therefore a trading event (Power-on reverse-check sweep). Reason: this
+  engine starts the shared TradingView (port 9222) that TradingPionex waits for.
 - Power ON (Dashboard toggle) → deletes `~\.tradingmt5\PAUSE` and spawns
   `tradingmt5_engine.exe` **detached**, as a child of `trading_mt5.exe`. The engine then
   launches `terminal64.exe` and TradingView itself (their parent PID is the engine's).
@@ -123,8 +120,7 @@ a raw `taskkill`, so the `PAUSE` intent is recorded too.
   `%USERPROFILE%\develop\flutter` (3.47.7 / Dart 3.13.5), `bin` added to user PATH.
   `flutter doctor`: Windows toolchain OK. `flutter test` → 47/47 pass.
 - Newer Flutter here rewrites `pubspec.lock` and `analysis_options.yaml` on `pub get` —
-  `git restore` them unless the change is intentional, so Linux and Windows don't
-  fight over the lockfile.
+  `git restore` them unless the change is intentional.
 - `claude` isn't on PATH; the Claude Desktop-bundled CLI is at
   `%APPDATA%\Claude\claude-code\<version>\<hash>\claude.exe`.
 - New shells started before an install don't see the new PATH; refresh with
@@ -133,12 +129,9 @@ a raw `taskkill`, so the `PAUSE` intent is recorded too.
 ## Release discipline (non-negotiable, learned the hard way)
 
 1. Bump the version in `pubspec.yaml` **before** building — never build then bump.
-   Verify the built bundle actually has the intended version
-   (`grep "^version:" build/linux/x64/release/bundle/data/flutter_assets/pubspec.yaml`
-   or the Windows equivalent) before deploying.
-2. Deploy, verify the running binary matches (md5sum against the fresh build), leave the
-   engine's on/off state exactly as the user had it before (never force-start or
-   force-stop as a side effect of deploying).
+2. Install the CI `TradingMT5-Setup-X.Y.Z.exe` silently with Power off
+   (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS`), verify
+   `FileVersion` and the installed exes' sha256 against the release zip.
 3. Commit with `Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>`, push to
    `origin main`.
 4. Wait for Windows CI to go green (`gh run list` / `gh run view`), confirm the release
@@ -150,13 +143,10 @@ a raw `taskkill`, so the `PAUSE` intent is recorded too.
 
 ## Backup discipline
 
-Single backup location only: `/media/fabughali/PARTITION11/tradingMT5/backups/` on the
-Linux machine. After every release: wipe it and re-populate via
-`git archive HEAD | tar -x -C <dest>` into a fresh `app-v<version>-<timestamp>` folder
-with a `.backup-info.txt` (commit hash, version, timestamp). Do not let backups
-accumulate in multiple places — this was explicitly cleaned up once already (7 stale
-snapshots + scattered exports deleted) and should stay that way. Git itself (GitHub) is
-the actual cross-machine source of truth — the backups folder is a local-only extra.
+On request only: a FULL copy of `D:\tradingMT5\app` (robocopy /E) into
+`D:\tradingMT5\backups\app-v<version>-<yyyy-MM-dd_HH-mm-ss>` with a `.backup-info.txt`
+(commit, version, timestamp); verify file count/bytes. Never delete old backups there.
+Git (GitHub) is the cross-machine source of truth.
 
 ## Key architecture decisions already made (do not re-litigate without reason)
 
@@ -213,7 +203,7 @@ the actual cross-machine source of truth — the backups folder is a local-only 
   checking (md5sum the binary, grep the version, confirm the CI run, re-read the file).
   "I think it should work" is not an acceptable standard here.
 - Every fix ships as a proper versioned release — not left as an uncommitted local
-  change. Both Linux local deploy AND Windows CI build, every time.
+  change. Windows CI build + install, every time.
 - Get explicit confirmation before destructive actions (deleting backups, force-pushing,
   etc.) — but routine commits/pushes/deploys following the pattern above don't need
   re-confirmation each time once the pattern is established.
@@ -237,8 +227,8 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 - Version: repo `1.6.60+108` (2026-11-01). Releases since 1.6.25 are summarised in PRD
   §20 (closed-candle rule, ignite, Market Watch auto-add, dollar SLL, spread guard,
   recycle pre-check, pending-cancel <200%, SLL profit-only, no spread limit, resting-order volume sync, chart DATA check before any read). Windows install status: check
-  `VersionInfo.FileVersion` (never assume). Linux not redeployed from Windows (no SSH) —
-  still 1.6.23 there; update it before ever running it.
+  `VersionInfo.FileVersion` (never assume). The old Linux install (1.6.23) is retired and
+  must never run again.
 - Windows 2026-10-27: engine hot-swapped to v1.6.53 at ~16:0xZ (ran 16:19-16:21Z),
   then a FULL silent install of `TradingMT5-Setup-1.6.53+101.exe` at ~16:25Z with
   Power off (`/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS`, exit 0):
@@ -253,8 +243,7 @@ the actual cross-machine source of truth — the backups folder is a local-only 
 - Windows PC is on Insider/preview build 26300 - Windows Update auto-rebooted it
   2026-10-29 04:39 local (engine off ~20h), and it hard-froze 2026-10-29 ~22:00Z
   while a stuck TradingView was being force-killed (see PRD v1.6.56).
-- Linux engine: currently **stopped** (`inactive (dead)`) — Windows is the live
-  instance as of now (MT5 balance ≈ 34.76 on 1013734072 there).
+- Windows is the only live instance (Linux retired 2026-11-13).
 - Unit tests: `test/sl_ratchet_ladder_test.dart`, `zigzag_range_test.dart`,
   `worm10_decision_test.dart`, `risk_gate_static_test.dart`, `volume_step_test.dart`,
   `windows_engine_stop_test.dart`, plus `widget_test.dart` — 59/59 green (2026-10-20,

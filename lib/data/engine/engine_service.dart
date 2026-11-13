@@ -1841,7 +1841,7 @@ class EngineService {
       if (!await isMt5Installed(mt5LaunchConfig)) {
         logger.log(
           'Power check: MetaTrader 5 is not installed at '
-          '${mt5LaunchConfig.terminalPath}${Platform.isWindows ? '' : ' (or Wine itself is missing)'}.',
+          '${mt5LaunchConfig.terminalPath}.',
           level: 'ERROR',
         );
         _writeStatus(
@@ -2571,7 +2571,7 @@ class EngineService {
   /// same frozen process — nothing ever tried the one thing that actually
   /// fixes a stuck desktop app: killing and relaunching it. Once
   /// [_consecutiveStuckAttempts] reaches this many, force-kills TradingView
-  /// (`pkill -9`, the same mechanism [launchTradingView] itself already
+  /// (`taskkillOwnTradingView`, the same mechanism [launchTradingView] itself
   /// uses to clear a stale instance) so the next call's "not running"
   /// branch launches it fresh — a clean relaunch clears ANY stuck UI state
   /// (dialogs included), not just the one failure mode that happened to be
@@ -2694,57 +2694,44 @@ class EngineService {
     );
     try {
       final binaryPath = (await _tradingViewLaunchConfig(home)).binaryPath;
-      if (Platform.isWindows) {
-        // Verified + retried, not a single unchecked Process.run (2026-10-16,
-        // per the user, after a real ~10-hour Windows stall: confirmed live
-        // this exact watchdog kill's result was never checked at all - if
-        // `taskkill` silently failed (e.g. "Access is denied" against a
-        // Store/MSIX-packaged TradingView), the counter above still reset to
-        // 0 and this whole mechanism would just quietly repeat the identical
-        // failed kill every 3 attempts forever, with nothing ever surfacing
-        // that the "fix" was never actually taking effect. See
-        // [taskkillOwnTradingView]'s own doc comment.
-        await taskkillOwnTradingView(binaryPath, config.cdp.port, onLog: logger.log);
-        // The name-based kill can miss the process that actually holds the
-        // port (see [taskkillTradingViewByPort]) - if CDP still answers,
-        // kill whatever TradingView process owns it, by PID.
-        final port = config.cdp.port;
-        if (await isCdpUp(config.cdp.host, port)) {
-          await taskkillTradingViewByPort(port, onLog: logger.log);
-          await Future<void>.delayed(const Duration(seconds: 3));
-        }
-        if (await isCdpUp(config.cdp.host, port)) {
-          logger.log(
-            'TRADINGVIEW WATCHDOG: could not actually kill TradingView - port '
-            '$port still answers. It will keep failing until it\'s closed manually.',
-            level: 'CRITICAL',
-          );
-        }
-      } else {
-        await Process.run('pkill', ['-9', '-f', binaryPath]);
+      // Verified + retried, not a single unchecked Process.run (2026-10-16,
+      // per the user, after a real ~10-hour Windows stall: confirmed live
+      // this exact watchdog kill's result was never checked at all - if
+      // `taskkill` silently failed (e.g. "Access is denied" against a
+      // Store/MSIX-packaged TradingView), the counter above still reset to
+      // 0 and this whole mechanism would just quietly repeat the identical
+      // failed kill every 3 attempts forever, with nothing ever surfacing
+      // that the "fix" was never actually taking effect. See
+      // [taskkillOwnTradingView]'s own doc comment.
+      await taskkillOwnTradingView(binaryPath, config.cdp.port, onLog: logger.log);
+      // The name-based kill can miss the process that actually holds the
+      // port (see [taskkillTradingViewByPort]) - if CDP still answers,
+      // kill whatever TradingView process owns it, by PID.
+      final port = config.cdp.port;
+      if (await isCdpUp(config.cdp.host, port)) {
+        await taskkillTradingViewByPort(port, onLog: logger.log);
+        await Future<void>.delayed(const Duration(seconds: 3));
+      }
+      if (await isCdpUp(config.cdp.host, port)) {
+        logger.log(
+          'TRADINGVIEW WATCHDOG: could not actually kill TradingView - port '
+          '$port still answers. It will keep failing until it\'s closed manually.',
+          level: 'CRITICAL',
+        );
       }
     } catch (e) {
       logger.log('TRADINGVIEW WATCHDOG: force-kill failed: $e');
     }
   }
 
-  /// Platform-appropriate MT5 launch config - Windows (UNTESTED against a
-  /// real Windows machine) needs no home/display/Wine plumbing at all; see
-  /// [Mt5LaunchConfig.defaultForWindows]'s own doc comment.
-  Mt5LaunchConfig _mt5LaunchConfig() {
-    if (Platform.isWindows) return Mt5LaunchConfig.defaultForWindows();
-    final home = Platform.environment['HOME'] ?? Platform.environment['USERPROFILE'] ?? '.';
-    return Mt5LaunchConfig.defaultForHome(home);
-  }
+  /// MT5 launch config (Windows only, 2026-11-13).
+  Mt5LaunchConfig _mt5LaunchConfig() => Mt5LaunchConfig.defaultForWindows();
 
   /// Platform-appropriate TradingView launch config - see
   /// [LaunchConfig.defaultForWindows]'s own doc comment (confirmed live
   /// 2026-10-11 - async now, since resolving a Microsoft Store install
   /// means shelling out to `Get-AppxPackage`).
-  Future<LaunchConfig> _tradingViewLaunchConfig(String home) async {
-    if (Platform.isWindows) return LaunchConfig.defaultForWindows();
-    return LaunchConfig.defaultForHome(home);
-  }
+  Future<LaunchConfig> _tradingViewLaunchConfig(String home) => LaunchConfig.defaultForWindows();
 
   /// Ensures TradingView is up, the chart API is ready, and both required
   /// indicators are attached — called every cycle now (from
@@ -2894,7 +2881,6 @@ class EngineService {
         host,
         port,
         tvLaunchConfig,
-        remoteSession: config.remoteSession,
         onLog: logger.log,
       );
       if (!launched) {
@@ -5954,38 +5940,11 @@ class EngineService {
   /// mid-sweep and crashed while the system was down to ~955MB free with
   /// heavy swap use - a Dashboard light for this is the whole point, so
   /// the NEXT time this happens the user sees it immediately instead of
-  /// having to diagnose it after the fact). Reads `/proc/meminfo`'s
-  /// `MemAvailable` - the kernel's own "truly usable, including
-  /// reclaimable cache" figure, the same number `free -h`'s own
-  /// "available" column reports. Linux-only; null (never treated as
-  /// "low") anywhere else or if the read fails for any reason.
-  ///
-  /// 2026-10-18, per the user: "check why ram is not showing same thing
-  /// in exe as linex in engine card" - this was never a different NUMBER
-  /// on Windows, it was no number at all: `/proc/meminfo` doesn't exist
-  /// there, so the read always threw and both values stayed silently
-  /// null. [readWindowsMemoryMb] is the real Windows counterpart (a
-  /// direct `GlobalMemoryStatusEx` syscall, not a `wmic`/PowerShell
-  /// subprocess - see its own doc comment for why that matters at this
-  /// call frequency); on any other platform both stay null, same as
-  /// today.
-  int? _readMeminfoValueMb(String key) {
-    try {
-      final content = File('/proc/meminfo').readAsStringSync();
-      for (final line in content.split('\n')) {
-        if (line.startsWith(key)) {
-          final match = RegExp(r'(\d+)').firstMatch(line);
-          if (match != null) return int.parse(match.group(1)!) ~/ 1024;
-        }
-      }
-    } catch (_) {
-      // Not on Linux, or /proc unavailable - stays null.
-    }
-    return null;
-  }
-
-  int? _readAvailableRamMb() => Platform.isWindows ? readWindowsMemoryMb()?.availMb : _readMeminfoValueMb('MemAvailable:');
-  int? _readTotalRamMb() => Platform.isWindows ? readWindowsMemoryMb()?.totalMb : _readMeminfoValueMb('MemTotal:');
+  /// having to diagnose it after the fact). Windows only (2026-11-13): read
+  /// via [readWindowsMemoryMb] (a direct `GlobalMemoryStatusEx` call); null
+  /// (never treated as "low") if the read fails.
+  int? _readAvailableRamMb() => readWindowsMemoryMb()?.availMb;
+  int? _readTotalRamMb() => readWindowsMemoryMb()?.totalMb;
 
   void _writeStatus({
     bool connected = false,

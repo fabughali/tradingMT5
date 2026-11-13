@@ -529,17 +529,11 @@ class EngineControlRepository {
     return isEngineProcessAlive(pid);
   }
 
-  /// The systemd --user unit the engine process runs as — see
-  /// ~/.config/systemd/user/tradingmt5-engine.service. Not auto-started on
-  /// login any more (2026-10-05): it only ever starts via [resume] below.
-  static const _engineServiceName = 'tradingmt5-engine.service';
-
   /// Power — now the engine PROCESS's own on/off switch (2026-10-05, per
   /// the user: "make app closing engine instantly once power toggle off...
   /// once user toggle power on, app will launch the engine and then all
-  /// cycle started"). Off asks systemd to stop the service (SIGTERM, with
-  /// its own short force-exit watchdog in bin/engine.dart as a backstop);
-  /// on asks it to start a fresh process, which immediately runs the full
+  /// cycle started"). Off asks the engine to shut down (SHUTDOWN_REQUEST,
+  /// force-killed after 10s); on starts a fresh engine process, which immediately runs the full
   /// internet -> MT5 -> TradingView -> indicators sequence from scratch
   /// (see [EngineService.run] - there's no more internal PAUSE-file gate
   /// for it to sit behind). [isPowerOn] stays a plain, instant file read
@@ -548,44 +542,33 @@ class EngineControlRepository {
   /// status poll reflect whether that intent has actually landed yet.
   bool get isPowerOn => !_storage.fileExists(_storage.pauseFile);
 
-  Future<void> pause() async {
+  /// [auto] = the app did it at launch (2026-11-13), logged as AUTO POWER
+  /// instead of a [USER] click.
+  Future<void> pause({String? auto}) async {
     _storage.touchFile(_storage.pauseFile);
-    _logUserAction('Power turned OFF (Dashboard) — stopping the engine.');
+    auto == null
+        ? _logUserAction('Power turned OFF (Dashboard) — stopping the engine.')
+        : _logger.log('AUTO POWER: Power OFF ($auto) — stopping any running engine.');
     await _setEngineServiceActive(false);
   }
 
-  Future<void> resume() async {
+  Future<void> resume({String? auto}) async {
     _storage.deleteFileIfExists(_storage.pauseFile);
-    _logUserAction('Power turned ON (Dashboard) — starting the engine.');
+    auto == null
+        ? _logUserAction('Power turned ON (Dashboard) — starting the engine.')
+        : _logger.log('AUTO POWER: Power ON ($auto) — starting the engine.');
     await _setEngineServiceActive(true);
   }
 
-  Future<void> _setEngineServiceActive(bool active) async {
-    if (Platform.isWindows) {
-      return active ? _startEngineWindows() : _stopEngineWindows();
-    }
-    final action = active ? 'start' : 'stop';
-    try {
-      final result = await Process.run('systemctl', [
-        '--user',
-        action,
-        _engineServiceName,
-      ]);
-      if (result.exitCode != 0) {
-        _logger.log(
-          'systemctl --user $action $_engineServiceName exited '
-          '${result.exitCode}: ${result.stderr}',
-          level: 'ERROR',
-        );
-      }
-    } catch (e) {
-      _logger.log('Failed to $action the engine service: $e', level: 'ERROR');
-    }
-  }
+  /// Set the moment the user flips the Power switch themselves (2026-11-13):
+  /// the automatic Power ON at launch then stops retrying for good.
+  static bool userSwitchedPower = false;
 
-  /// Windows has no systemd (2026-10-07, Windows port, UNTESTED against a
-  /// real Windows machine) - there's no service to ask to start/stop, so
-  /// Power directly spawns/kills the engine PROCESS itself instead. The
+  /// Windows only (2026-11-13): Power spawns/stops the engine process itself.
+  Future<void> _setEngineServiceActive(bool active) =>
+      active ? _startEngineWindows() : _stopEngineWindows();
+
+  /// Power directly spawns/kills the engine PROCESS itself. The
   /// engine exe is expected to sit right next to the GUI's own exe (the
   /// installer/CI build ships both in the same folder) - [_enginePath]
   /// resolves that relative to [Platform.resolvedExecutable] rather than

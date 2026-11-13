@@ -91,6 +91,9 @@ Source: "vc_redist.x64.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+; Starts with Windows (2026-11-13, per the user): the app powers on by itself at
+; launch, and its engine starts TradingView (port 9222) that TradingPionex uses.
+Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 
 [Run]
 ; Silently installs the VC++ runtime BEFORE the app ever tries to launch -

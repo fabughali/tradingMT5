@@ -12,6 +12,7 @@ import 'core/gui_instance_lock.dart';
 import 'data/config/config_loader.dart';
 import 'data/control/engine_control_repository.dart';
 import 'data/logging/app_logger.dart';
+import 'data/models/power_health.dart';
 import 'data/mt5/mt5_launcher.dart';
 import 'data/providers/app_providers.dart';
 import 'l10n/app_localizations.dart';
@@ -115,16 +116,12 @@ Future<void> main() async {
     }
   });
 
-  // 2026-10-05, per the user: "once user launched the gui after restart,
-  // power toggle should be off" - Power no longer persists as "on" across
-  // a GUI relaunch (superseding the OLDER 2026-09-27 decision to let it
-  // persist, which was about routine same-session redeploys fighting the
-  // user, a different scenario). Fire-and-forget is fine: [pause]'s PAUSE-
-  // file write happens synchronously before its first `await`, so the
-  // toggle's very first read already sees "off" - only the actual
-  // `systemctl stop` (defensive, in case something left the engine running
-  // from before this GUI launch) finishes slightly later.
-  unawaited(_controlRepo.pause());
+  // 2026-11-13, per the user (relayed from TradingPionex): "make tradingMT5
+  // start with Windows and power on by itself" - after a Windows restart this
+  // app's engine is what starts TradingView (port 9222) for both apps.
+  // Supersedes the 2026-10-05 "Power always starts OFF" rule. Any leftover
+  // engine is still stopped first; Auto keeps its saved state.
+  unawaited(_autoPowerOnAtLaunch());
 
   // Closing the GUI should always take the engine down with it, under any
   // scenario (2026-10-05, per the user) - this is the fast, graceful path
@@ -140,18 +137,58 @@ Future<void> main() async {
       return AppExitResponse.exit;
     },
   );
-  // sigterm isn't supported on Windows (2026-10-07, Windows port) - only
-  // sigint (Ctrl+C/Ctrl+Break) is; watching it there throws.
-  final signals = Platform.isWindows
-      ? [ProcessSignal.sigint]
-      : [ProcessSignal.sigint, ProcessSignal.sigterm];
-  for (final signal in signals) {
+  // Windows only: sigterm isn't supported there (watching it throws);
+  // sigint (Ctrl+C/Ctrl+Break) is.
+  for (final signal in [ProcessSignal.sigint]) {
     signal.watch().listen((_) async {
       await _controlRepo.pause();
       GuiInstanceLock.release();
       exit(0);
     });
   }
+}
+
+/// Automatic Power ON at every launch (2026-11-13, per the user): stop any
+/// leftover engine first, then the normal Power ON, re-checked every 30s
+/// until the engine reports Ready. A message shows only on the first failed
+/// check; later ones are only logged. Stops for good the moment the user
+/// flips Power themselves ([EngineControlRepository.userSwitchedPower]).
+Future<void> _autoPowerOnAtLaunch() async {
+  final logger = AppLogger(CoreStorage.instance);
+  await _controlRepo.pause(auto: 'launch - stopping any leftover engine first');
+  if (EngineControlRepository.userSwitchedPower) return;
+  final startedAt = DateTime.now();
+  await _controlRepo.resume(auto: 'automatic at launch');
+  var failures = 0;
+  Timer.periodic(const Duration(seconds: 30), (timer) async {
+    if (EngineControlRepository.userSwitchedPower) {
+      timer.cancel();
+      logger.log('AUTO POWER: the user switched Power - automatic Power ON stops.');
+      return;
+    }
+    final status = await _controlRepo.status();
+    final fresh = status.lastCycleAt != null && status.lastCycleAt!.isAfter(startedAt);
+    if (_controlRepo.isPowerOn && status.health == PowerHealthState.ready && fresh) {
+      timer.cancel();
+      logger.log('AUTO POWER: checks passed - engine Ready.');
+      return;
+    }
+    failures++;
+    final why = 'health ${status.health.name}${status.message == null ? '' : ' (${status.message})'}';
+    logger.log('AUTO POWER: not Ready yet ($why) - retrying in 30s (check $failures).', level: 'WARNING');
+    if (failures == 1) {
+      final context = CoreRouter.router.routerDelegate.navigatorKey.currentContext;
+      if (context != null && context.mounted) {
+        ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+          SnackBar(content: Text('Automatic Power ON: not ready yet ($why) - retrying every 30 s.')),
+        );
+      }
+    }
+    if (!_controlRepo.isPowerOn || !await _controlRepo.isEngineRunning()) {
+      if (EngineControlRepository.userSwitchedPower) return;
+      await _controlRepo.resume(auto: 'automatic retry');
+    }
+  });
 }
 
 /// The prompt showing now, so a second close click waits on it instead of
@@ -192,23 +229,7 @@ Future<void> _ensureMt5OnStartup() async {
   if (!_controlRepo.isPowerOn) return;
   final storage = CoreStorage.instance;
   final config = loadOrInitConfig(storage);
-  if (Platform.isWindows) {
-    await ensureMt5Running(config.mt5.mcpHost, config.mt5.mcpPort, Mt5LaunchConfig.defaultForWindows());
-    return;
-  }
-  final home = Platform.environment['HOME'] ?? '';
-  final defaults = Mt5LaunchConfig.defaultForHome(home);
-  await ensureMt5Running(
-    config.mt5.mcpHost,
-    config.mt5.mcpPort,
-    Mt5LaunchConfig(
-      winePrefix: defaults.winePrefix,
-      terminalPath: defaults.terminalPath,
-      desktopFile: defaults.desktopFile,
-      display: Platform.environment['DISPLAY'],
-      xauthority: Platform.environment['XAUTHORITY'],
-    ),
-  );
+  await ensureMt5Running(config.mt5.mcpHost, config.mt5.mcpPort, Mt5LaunchConfig.defaultForWindows());
 }
 
 class TradingMt5App extends ConsumerWidget {

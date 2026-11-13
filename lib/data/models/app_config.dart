@@ -149,7 +149,6 @@ class SymbolMapping {
 class AppConfig {
   const AppConfig({
     this.pollIntervalSec = 5,
-    this.remoteSession = true,
     required this.mt5,
     required this.cdp,
     this.technique = const TechniqueConfig(),
@@ -160,11 +159,6 @@ class AppConfig {
 
   final int pollIntervalSec;
 
-  /// Same reasoning as tradingPionex's identical field: keeps TradingView on
-  /// the isolated, invisible display by default (the safe default) rather
-  /// than guessing from session info — flip to false in Settings only when
-  /// you know you're on a normal, non-remote desktop session.
-  final bool remoteSession;
   final Mt5Config mt5;
   final CdpConfig cdp;
   final TechniqueConfig technique;
@@ -174,7 +168,6 @@ class AppConfig {
 
   factory AppConfig.fromJson(Map<String, dynamic> json) => AppConfig(
     pollIntervalSec: (json['poll_interval_sec'] as num?)?.toInt() ?? 5,
-    remoteSession: json['remote_session'] as bool? ?? true,
     mt5: Mt5Config.fromJson(json['mt5'] as Map<String, dynamic>?),
     cdp: CdpConfig.fromJson(json['cdp'] as Map<String, dynamic>?),
     technique: TechniqueConfig.fromJson(
@@ -190,7 +183,6 @@ class AppConfig {
 
   Map<String, dynamic> toJson() => {
     'poll_interval_sec': pollIntervalSec,
-    'remote_session': remoteSession,
     'mt5': mt5.toJson(),
     'cdp': cdp.toJson(),
     'technique': technique.toJson(),

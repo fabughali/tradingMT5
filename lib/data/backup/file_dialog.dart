@@ -15,95 +15,22 @@ import 'dart:io';
 /// — a tool the OS already has, not a compiled-in plugin — needs no plugin
 /// registration and no symlink at all, so it sidesteps that constraint
 /// entirely rather than working around it.
+/// Windows only (2026-11-13): PowerShell's built-in `System.Windows.Forms`
+/// dialogs - ships with every Windows version, no separate install.
 ///
-/// - Linux: `zenity` (a standard GTK dialog utility, present on this
-///   machine and any typical GNOME/GTK desktop).
-/// - Windows: PowerShell's built-in `System.Windows.Forms` dialogs — ships
-///   with every Windows version this app targets, no separate install.
-///
-/// Both return null if the user cancels, OR if the underlying tool isn't
+/// Returns null if the user cancels, OR if the underlying tool isn't
 /// available/fails for any reason — the caller (BackupRestoreCard) treats
 /// null as "nothing changed," always falling back to whatever path is
-/// already typed into the text field, so a machine without zenity/
+/// already typed into the text field, so a machine without
 /// PowerShell still has a fully working (if less convenient) manual path.
 Future<String?> pickSaveLocation({
   required String suggestedName,
   required String suggestedDir,
-}) {
-  if (Platform.isWindows) {
-    return _powershellDialog(save: true, suggestedName: suggestedName, suggestedDir: suggestedDir);
-  }
-  return _zenityDialog(save: true, suggestedName: suggestedName, suggestedDir: suggestedDir);
-}
+}) =>
+    _powershellDialog(save: true, suggestedName: suggestedName, suggestedDir: suggestedDir);
 
-Future<String?> pickOpenFile({required String suggestedDir}) {
-  if (Platform.isWindows) {
-    return _powershellDialog(save: false, suggestedName: '', suggestedDir: suggestedDir);
-  }
-  return _zenityDialog(save: false, suggestedName: '', suggestedDir: suggestedDir);
-}
-
-Future<String?> _zenityDialog({
-  required bool save,
-  required String suggestedName,
-  required String suggestedDir,
-}) async {
-  final dir = suggestedDir.endsWith('/') ? suggestedDir : '$suggestedDir/';
-  final suggestedPath = '$dir$suggestedName';
-  // zenity/GTK's `--filename` only pre-fills the "Name:" field when that
-  // exact path already EXISTS on disk - a long-standing GTK file-chooser
-  // limitation (`gtk_file_chooser_set_filename` requires existence;
-  // suggesting a NEW, not-yet-created name needs the separate
-  // `set_current_name` API, which zenity's CLI flag doesn't expose at
-  // all) - confirmed live 2026-10-15, per the user: "once user click on
-  // icon folder for export and navigate, the name is blank" - the folder
-  // opened correctly, only the suggested name was missing, since every
-  // suggested export name is for a file that has never existed yet.
-  // Touching an empty placeholder at that exact path first makes zenity
-  // treat it as existing and pre-fill the name as expected; it's deleted
-  // again right after (whether confirmed or cancelled) - the real export
-  // write happens later, independently, via [BackupService.exportTo].
-  var createdPlaceholder = false;
-  if (save && suggestedName.isNotEmpty) {
-    final placeholder = File(suggestedPath);
-    if (!await placeholder.exists()) {
-      try {
-        await placeholder.create(recursive: true);
-        createdPlaceholder = true;
-      } catch (_) {
-        // Best-effort only - the dialog still works, just without the
-        // pre-filled name, exactly like before this fix.
-      }
-    }
-  }
-  final args = [
-    '--file-selection',
-    if (save) '--save',
-    '--filename=$suggestedPath',
-    '--file-filter=TradingMT5 Backup (*.tmt5) | *.tmt5',
-    '--file-filter=All files | *',
-  ];
-  try {
-    final result = await Process.run('zenity', args);
-    // zenity exits 1 on Cancel - not an error, just "nothing picked".
-    if (result.exitCode != 0) return null;
-    final path = (result.stdout as String).trim();
-    return path.isEmpty ? null : path;
-  } catch (_) {
-    return null; // zenity not installed - caller falls back to manual entry.
-  } finally {
-    if (createdPlaceholder) {
-      try {
-        final placeholder = File(suggestedPath);
-        // Only remove it if still empty/untouched - never delete real
-        // content zenity or anything else may have written to that path.
-        if (await placeholder.exists() && await placeholder.length() == 0) {
-          await placeholder.delete();
-        }
-      } catch (_) {}
-    }
-  }
-}
+Future<String?> pickOpenFile({required String suggestedDir}) =>
+    _powershellDialog(save: false, suggestedName: '', suggestedDir: suggestedDir);
 
 /// Single-quoted PowerShell string literal - doubling an embedded `'` is
 /// PowerShell's own escaping rule for that quoting style. Defensive only:

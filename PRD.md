@@ -75,9 +75,9 @@ One **decision technique** runs: **Hybrid Decision** (worm_10_26 + spy_9_26
 RSI zones, Heikin Ashi candles). Supertrend Plus and Signal Flip were removed
 completely on 2026-11-07 (v1.6.73), per the user.
 
-The app runs natively on Linux today and has a Windows port (built and
-packaged entirely through GitHub Actions CI) that compiles clean but has
-never been exercised against a real Windows machine.
+The app runs on **Windows only** (since v1.6.77, 2026-11-13 - the user no longer
+uses Linux and all Linux code was removed). Releases are built and packaged by
+GitHub Actions CI. It starts with Windows and powers on by itself (§4.2).
 
 ## 2. Origin and relationship to tradingPionex
 
@@ -176,20 +176,25 @@ lives.
 Power is now the engine **process's own** on/off switch, not an internal
 pause flag an always-running process polls:
 
-- Power ON (`EngineControlRepository.resume`) → `systemctl --user start
-  tradingmt5-engine.service` on Linux, or a direct `Process.start` of
-  `tradingmt5_engine.exe` on Windows. The engine process runs the full
+- Power ON (`EngineControlRepository.resume`) → a direct `Process.start` of
+  `tradingmt5_engine.exe`. The engine process runs the full
   internet → MT5 → TradingView → indicators sequence from scratch on its
   very first loop iteration.
-- Power OFF (`EngineControlRepository.pause`) → `systemctl --user stop` (a
-  SIGTERM) on Linux, or `taskkill`/graceful-fallback on Windows. The engine's
+- Power OFF (`EngineControlRepository.pause`) → `SHUTDOWN_REQUEST` file, then
+  `taskkill` after 10s if the engine is still alive. The engine's
   own 10-second force-exit watchdog (`bin/engine.dart`) guarantees the
   process is gone within that window regardless of what it was mid-doing.
 - Closing the GUI window, or the GUI crashing/losing its process, also stops
   the engine (see §4.3).
-- Power always starts OFF on every fresh GUI launch (`main.dart`'s startup
-  hook unconditionally calls `_controlRepo.pause()`) — the app never silently
-  resumes trading just because the GUI was reopened.
+- **Automatic Power ON at launch (v1.6.77, 2026-11-13, per the user):** the
+  installer adds a Startup-folder shortcut, and every GUI launch first stops
+  any leftover engine (`pause`), then turns Power ON (`_autoPowerOnAtLaunch`,
+  logged `AUTO POWER: ...`), re-checking every 30s until the engine reports
+  Ready. A message shows on the first failed check only. It stops for good the
+  moment the user flips Power themselves. Auto keeps its saved state. Why:
+  after a Windows restart this engine is what starts the shared TradingView
+  (port 9222) that TradingPionex waits for. Supersedes "Power always starts
+  OFF" (2026-10-05).
 
 ### 4.3 GUI-heartbeat gate (2026-10-05)
 
@@ -247,11 +252,7 @@ falsely believe an engine was already running).
   supporting packages. No `package_info_plus` (see §19's FAT32 note) — the
   app's own version string is read from `pubspec.yaml`, bundled as a plain
   Flutter asset, at runtime instead.
-- **Wine** (Linux only) hosts the MT5 terminal; **Xvfb** (Linux only, remote
-  sessions only) isolates TradingView Desktop on a private, invisible X
-  display.
-- **systemd --user** (Linux) manages the engine process's lifecycle; Windows
-  has no equivalent and uses direct process spawn/kill instead (§19).
+- The engine process is spawned/stopped directly by the GUI (no service).
 - **GitHub Actions** (`windows-latest` runner) builds and publishes
   versioned Windows releases on every push to `main`.
 
@@ -412,7 +413,6 @@ logs/
 ```json
 {
   "poll_interval_sec": 5,
-  "remote_session": true,
   "mt5": { "mcp_host": "127.0.0.1", "mcp_port": 22346 },
   "cdp": { "host": "127.0.0.1", "port": 9222 },
   "technique": { "range_swing_count": 20 },
@@ -431,10 +431,6 @@ logs/
 ```
 
 - `poll_interval_sec` — delay between main-loop iterations (default 5s).
-- `remote_session` — whether TradingView launches isolated on a private,
-  invisible Xvfb display (`true`, the safe default for a remote-desktop
-  session) or visibly on the real display (`false`, for a genuinely local
-  session). Linux only; meaningless on Windows (§19).
 - `mt5.mcp_host`/`mcp_port` — MT5's native MCP server address. **No
   fallback/default values** (removed 2026-10-07, per the user, since this
   repo is public — every user has their own setup) — missing fields throw a
@@ -1130,22 +1126,10 @@ table readers; `_data._items` for plot-value readers) directly.
 
 ### 14.5 Launch (`lib/data/tradingview/launch.dart`)
 
-`virtualDisplay = ':77'` — TradingView Desktop always launches on this
-private, isolated Xvfb display on Linux when `remote_session: true`, never
-the real session's display. Confirmed live 2026-09-03: opening TradingView
-on the same display serving a remote-desktop session crashed Mutter/GNOME
-Shell with SIGSEGV within seconds, 6/6 times, tearing down the **entire**
-remote session (RDP, every open app). The engine only ever talks to
-TradingView via the CDP port (`127.0.0.1:9222`), so nothing about
-automation depends on which display it actually renders to.
-
-`launchTradingView` kills any stale instance first (`pkill -9 -f
-<binaryPath>`), launches with `--remote-debugging-port=<port>
---ozone-platform=x11 [--disable-gpu if isolated]`, and polls until the CDP
-port responds. `isTradingViewInstalled` is checked **before** any launch
-attempt (2026-10-07) — a missing install fails fast with a clear
-`PowerHealthState.tradingViewNotInstalled` message instead of a confusing
-process-spawn error or an endless retry loop.
+TradingView Desktop (the Microsoft Store build, found via `Get-AppxPackage`)
+is launched with `--remote-debugging-port`; only this app's own TradingView
+processes are ever killed (`ownTradingViewPidsToKill`, `taskkillOwnTradingView`).
+The Linux Xvfb isolation path was removed in v1.6.77.
 
 ### 14.6 Self-healing watchdog
 
@@ -1184,7 +1168,7 @@ holds that PID, but that `/proc/<pid>/cmdline` — or, on Windows,
 the OS recycling a stale PID number to an unrelated process has, confirmed
 live, otherwise produced a permanent false-positive "already running"
 refusal after an unclean shutdown), writes its own PID, registers
-SIGINT (and SIGTERM, Linux only — unsupported on Windows) handlers that call
+SIGINT handlers (plus the `SHUTDOWN_REQUEST` file poll) that call
 `engine.stop()` and arm a 10-second force-exit watchdog as a guaranteed
 shutdown ceiling, then awaits `engine.run()`.
 
@@ -1208,8 +1192,7 @@ meaningfully work:
    (any one succeeding counts; never a single point of failure).
 2. **MT5** — check the MCP port; if down, check `isMt5Installed` first
    (fails fast with `mt5NotInstalled` if not, rather than attempting a
-   doomed launch); otherwise auto-launch under Wine (Linux) or natively
-   (Windows) and poll until the port responds; then run the full `connect()`
+   doomed launch); otherwise auto-launch the terminal and poll until the port responds; then run the full `connect()`
    session handshake.
 3. **TradingView + indicators** — `_ensureCdpUp()`, wrapped in a hard 30-
    second outer deadline (`_tradingViewCheckDeadline`) as a guaranteed
@@ -1359,8 +1342,8 @@ A plain single-column stack of four cards (`lib/widgets/settings_cards.dart`):
   need to choose the path (navigate) before file is created") — both start
   empty and their action button stays disabled until a path exists, via
   either typing one or the native "Browse" dialog next to each field
-  (`lib/data/backup/file_dialog.dart` — `zenity` on Linux, PowerShell's
-  `System.Windows.Forms` dialogs on Windows; deliberately not a Flutter
+  (`lib/data/backup/file_dialog.dart` — PowerShell's
+  `System.Windows.Forms` dialogs; deliberately not a Flutter
   file-picker plugin, which would hit the same FAT32-symlink wall as
   `package_info_plus`, §19.5). **No credentials, API keys, or connection
   settings are ever included in a backup** (2026-10-10, per the user:
@@ -1630,24 +1613,26 @@ terminate/volume/config methods it exposes.
    category, ever.**
 10. **Never call `s.destroy()` on a TradingView study dataSource** — it
     corrupts `metaInfo` until a full TradingView restart.
-11. **TradingView is always isolated on its own private Xvfb display on a
-    remote/Linux session** (`remote_session: true` default) — never the
-    real session's display, which has confirmed-live crashed the entire
-    remote desktop session, not just the app.
+11. **Never kill TradingView by name** — only this app's own TradingView
+    processes (`ownTradingViewPidsToKill`); TradingPionex shares it.
 12. **The engine process only exists, and only does real work, while the
     GUI's heartbeat is fresh.** No trading activity without the GUI open.
-13. **Power always starts OFF on every fresh GUI launch** — never silently
-    resumes trading on reopen.
+13. **Every GUI launch stops any leftover engine, then powers on by itself**
+    (v1.6.77) - a launch is a trading event; the user switching Power ends
+    the automatic retries.
 14. **Hybrid Decision clears the removed techniques' leftover pending
     entries** (`pending-signals.json` / `supertrend-pending.json`) whenever
     it checks a pair, and `EngineControlRepository.setAutoManaged` clears
     them the instant Auto is turned on for a pair.
-15. **Linux and Windows app versions are always kept in sync** — every fix
-    gets `pubspec.yaml`'s version bumped, committed, and pushed (triggering
-    the Windows CI build) *before* being considered fully deployed; never
-    deploy to Linux alone and call a fix finished.
+15. **Every fix ships as a versioned Windows release** — `pubspec.yaml`'s
+    version bumped, committed, pushed (triggering the Windows CI build) and
+    installed before being considered done.
 
 ## 19. Windows support
+
+> **Windows only since v1.6.77 (2026-11-13).** The Linux paths this section
+> compares against were removed from the code; the Linux notes below are kept
+> only as history of how the port was done.
 
 Added 2026-10-07. The app ran only on Linux until this date; the Windows
 port is built and packaged **entirely through GitHub Actions CI**
@@ -1812,6 +1797,29 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-13 (v1.6.77+125)** — **Windows only (all Linux code removed) + starts with
+  Windows and powers on by itself**. Per the user: "i dont use this app anymore in linux
+  so there is no point to keep the code having linux... remove any linux code. i am only
+  now using app on windows", and (relayed from TradingPionex) "Make tradingMT5 start with
+  Windows and power on by itself ... after a Windows restart, tradingMT5's engine is what
+  starts TradingView with --remote-debugging-port=9222, and TradingPionex (which never
+  starts TradingView) waits for it".
+  - Full backup first: `D:\tradingMT5\backups\app-v1.6.76+124-2026-11-13_19-42-42` (695
+    files, bytes verified).
+  - Removed: the `linux/` Flutter runner; systemd Power control
+    (`engine_control_repository.dart`); the Wine/.desktop MT5 launcher
+    (`mt5_launcher.dart`); the Xvfb/X11/.desktop TradingView launcher and its `pkill`
+    paths (`launch.dart`); the `remote_session` setting; `/proc` RAM and engine-PID
+    reads; zenity dialogs; SIGTERM handling. Every remaining path is the Windows one
+    that was already running live.
+  - Installer: Startup-folder shortcut (`{userstartup}`).
+  - Launch: stop any leftover engine, then Power ON automatically
+    (`_autoPowerOnAtLaunch`, logged `AUTO POWER: ...`), re-checked every 30s until the
+    engine is Ready with a fresh cycle; message on the first failed check only; stops
+    for good once the user flips Power (`EngineControlRepository.userSwitchedPower`).
+    Auto keeps its saved state; Power off / close unchanged (confirm). Supersedes
+    "Power always starts OFF" (2026-10-05).
+  - 211 tests pass; analyzer 26 notes (unchanged, no errors/warnings).
 - **2026-11-11 (v1.6.76+124)** — **Waiting orders stop being re-placed on tiny SL drift**.
   Per the user: "fix it and install it", after ALGO's buy-stop was cancelled and
   re-placed at 11:58, 12:09 and 12:21Z, each time logged as "has gone stale".
