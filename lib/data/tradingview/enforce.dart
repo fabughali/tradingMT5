@@ -319,16 +319,6 @@ Future<List<RemovedSourceResult>> removeAllSources(CdpClient cdp) async {
   return removed;
 }
 
-Future<void> _closeAllDialogs(CdpClient cdp) async {
-  await cdp.evaluate('''(function() {
-    var btns = document.querySelectorAll('[role=dialog] button');
-    for (var i = 0; i < btns.length; i++) {
-      if (btns[i].offsetParent !== null && (btns[i].getAttribute('data-qa-id') === 'close' || (btns[i].textContent||'').indexOf('Close') !== -1)) btns[i].click();
-    }
-  })()''');
-  await Future<void>.delayed(const Duration(seconds: 1));
-}
-
 class DismissTarget {
   const DismissTarget({required this.via, required this.x, required this.y});
   final String via;
@@ -438,115 +428,6 @@ Future<DismissResult> dismissUpgradeDialog(CdpClient cdp) async {
   return const DismissResult(closed: false, via: 'gave up after 3 attempts');
 }
 
-Future<bool> _waitForRow(CdpClient cdp, String needle) async {
-  for (var i = 0; i < 10; i++) {
-    await Future<void>.delayed(const Duration(seconds: 2));
-    final expr =
-        '''(function() {
-      var needle = ${jsonEncode(needle)};
-      var all = document.querySelectorAll('.contentWrapper-uumrt5rh *');
-      for (var j = 0; j < all.length; j++) {
-        var el = all[j];
-        if (el.children.length > 0 || el.offsetParent === null) continue;
-        var t = (el.textContent || '').trim();
-        if (t.indexOf(needle) !== -1) return true;
-      }
-      return false;
-    })()''';
-    final found = await cdp.evaluate(expr) as bool? ?? false;
-    if (found) return true;
-  }
-  return false;
-}
-
-/// Real dispatched mouse click on the first element matching [selector] -
-/// gets its bounding-rect center via JS, then clicks through CDP's
-/// `Input.dispatchMouseEvent` (see [_dispatchMouseClick]). Returns false if
-/// nothing matched. Added 2026-09-29, per the user ("learn from
-/// tradingpionex... make a self healing for this problem"): confirmed live
-/// that TradingView's `button[data-name=open-indicators-dialog]` (and, by
-/// the same logic, its sidebar tab and search-result rows) silently stopped
-/// responding to a synthetic `el.click()` call entirely - it never opened
-/// the dialog, no error, no exception, just nothing happening - while an
-/// identical REAL dispatched mouse event on the exact same element worked
-/// immediately. This had every symptom of a stuck/broken TradingView (the
-/// watchdog above fired three times force-relaunching it, with the SAME
-/// failure recurring on every fresh launch) when the actual cause was this
-/// one automation primitive no longer working against TradingView's current
-/// build - not TradingView being stuck at all.
-Future<bool> _realClick(CdpClient cdp, String selector) async {
-  final rect = await cdp.evaluate('''(function() {
-    var el = document.querySelector(${jsonEncode(selector)});
-    if (!el) return null;
-    var r = el.getBoundingClientRect();
-    return JSON.stringify({x: r.x + r.width / 2, y: r.y + r.height / 2});
-  })()''');
-  if (rect == null) return false;
-  final point = jsonDecode(rect as String) as Map<String, dynamic>;
-  final x = (point['x'] as num).toDouble();
-  final y = (point['y'] as num).toDouble();
-  await _dispatchMouseMove(cdp, x, y);
-  await Future<void>.delayed(const Duration(milliseconds: 150));
-  await _dispatchMouseClick(cdp, x, y);
-  return true;
-}
-
-Future<bool> _addOneViaMyScripts(CdpClient cdp, EnforceScript script) async {
-  await _closeAllDialogs(cdp);
-  await dismissUpgradeDialog(cdp);
-
-  await Future<void>.delayed(const Duration(seconds: 3));
-  final openedDialog = await _realClick(cdp, 'button[data-name=open-indicators-dialog]');
-  if (!openedDialog) return false;
-  await Future<void>.delayed(const Duration(seconds: 3));
-
-  await _realClick(cdp, '[data-qa-id="indicator-sidebar-item-my-scripts"]');
-  await Future<void>.delayed(const Duration(milliseconds: 1500));
-
-  final rowFound = await _waitForRow(cdp, script.searchTitle);
-  if (!rowFound) {
-    await _closeAllDialogs(cdp);
-    return false;
-  }
-
-  // The matching row's own clickable ancestor isn't a fixed selector (its
-  // class names are TradingView's own hashed/obfuscated build output), so
-  // find it by text content in JS and report its rect back, then click for
-  // real from here rather than clicking it inside the JS itself.
-  final rowRect = await cdp.evaluate('''(function() {
-    var needle = ${jsonEncode(script.searchTitle)};
-    var all = document.querySelectorAll('.contentWrapper-uumrt5rh *');
-    for (var j = 0; j < all.length; j++) {
-      var el = all[j];
-      if (el.children.length > 0 || el.offsetParent === null) continue;
-      var t = (el.textContent || '').trim();
-      if (t.indexOf(needle) !== -1) {
-        var rowEl = el.closest('[role=button], [class*=item], .main-cDWXFIqV, [class*=main-]') || el.parentElement;
-        if (rowEl) {
-          var r = rowEl.getBoundingClientRect();
-          return JSON.stringify({x: r.x + r.width / 2, y: r.y + r.height / 2});
-        }
-      }
-    }
-    return null;
-  })()''');
-  var clicked = false;
-  if (rowRect != null) {
-    final point = jsonDecode(rowRect as String) as Map<String, dynamic>;
-    final x = (point['x'] as num).toDouble();
-    final y = (point['y'] as num).toDouble();
-    await _dispatchMouseMove(cdp, x, y);
-    await Future<void>.delayed(const Duration(milliseconds: 150));
-    await _dispatchMouseClick(cdp, x, y);
-    clicked = true;
-  }
-  await Future<void>.delayed(const Duration(milliseconds: 1500));
-
-  await _closeAllDialogs(cdp);
-  await Future<void>.delayed(const Duration(seconds: 2));
-  return clicked;
-}
-
 class EnforceResult {
   const EnforceResult({
     required this.status,
@@ -612,8 +493,6 @@ const _worm10RsiScript = EnforceScript(
   scriptIdPart: 'USER;f40c0a529f954b648be8f2b530d43d3f',
 );
 
-const _worm10Scripts = [_worm10Script, _worm10RsiScript];
-
 class _Worm10BothOpen {
   const _Worm10BothOpen(this.worm10, this.rsi);
   final bool worm10;
@@ -639,9 +518,28 @@ Future<bool> isWorm10Present(CdpClient cdp) async {
   return check.worm10 && check.rsi;
 }
 
-/// Same end-to-end shape as [enforceSupertrendPlus] but for the
-/// worm_10_26 + spy_9_26 combo.
-Future<EnforceResult> enforceWorm10(String host, int port, {required String layoutId}) async {
+/// Puts exactly worm_10_26 + spy_9_26 on our chart through TradingView's own
+/// chart API (2026-11-14, per the user: "do the same method" as
+/// TradingPionex, live-tested there v1.0.47-v1.0.55). No Indicators dialog,
+/// no legend buttons, no clicks - those are not drawn on a background tab,
+/// and on 2026-11-13 17:57Z the dialog route typed the script name into the
+/// symbol search of our hidden tab. Never brings the tab to the front.
+///
+/// [cleanFirst] (a freshly loaded page, per the user: "once new layout
+/// loaded first thing is to close any indicators and then load the two"):
+/// `removeAllStudies()` first, then add both. Otherwise only repairs: when
+/// one is missing, remove every other study (`getAllStudies` +
+/// `removeEntity`), and if the legend still shows anything else (a saved
+/// layout's leftovers `getAllStudies` doesn't list) remove everything; then
+/// add only what is missing with `insertStudy` (30 s timeout each), and
+/// re-check up to 20 times, 3 s apart. Presence is matched exactly (script
+/// id, or the exact script name) - see [_worm10BothOpen].
+Future<EnforceResult> enforceWorm10(
+  String host,
+  int port, {
+  required String layoutId,
+  bool cleanFirst = false,
+}) async {
   final cdp = await connectToChart(host, port, layoutId: layoutId);
   try {
     final apiReady = await waitForChartApiReady(cdp);
@@ -652,77 +550,69 @@ Future<EnforceResult> enforceWorm10(String host, int port, {required String layo
       );
     }
 
-    await _closeAllDialogs(cdp);
-    await dismissUpgradeDialog(cdp);
-    final removed = await removeAllSources(cdp);
-    await Future<void>.delayed(const Duration(seconds: 2));
-
-    final afterRemoval = await _getEnforceState(cdp);
-    if (afterRemoval.legendTitles.isNotEmpty) {
-      return EnforceResult(status: 'blocked', removed: removed);
+    var have = _worm10BothOpen(await _getEnforceState(cdp));
+    if (cleanFirst) {
+      await cdp.evaluate('window.TradingViewApi.activeChart().removeAllStudies()');
+      await Future<void>.delayed(const Duration(seconds: 2));
+      have = _worm10BothOpen(await _getEnforceState(cdp));
+    } else if (!(have.worm10 && have.rsi)) {
+      await cdp.evaluate(_removeOtherStudiesExpr);
+      await Future<void>.delayed(const Duration(seconds: 1));
+      final after = await _getEnforceState(cdp);
+      final leftovers = after.legendTitles.where((t) => !_isOurLegendTitle(t)).toList();
+      if (leftovers.isNotEmpty) {
+        await cdp.evaluate('window.TradingViewApi.activeChart().removeAllStudies()');
+        await Future<void>.delayed(const Duration(seconds: 2));
+      }
+      have = _worm10BothOpen(await _getEnforceState(cdp));
     }
 
     final addedOk = <String, bool>{};
-    for (final script in _worm10Scripts) {
-      addedOk[script.key] = await _addOneViaMyScripts(cdp, script);
-    }
+    if (!have.worm10) addedOk[_worm10Script.key] = await _insertStudy(cdp, _worm10Script.scriptIdPart);
+    if (!have.rsi) addedOk[_worm10RsiScript.key] = await _insertStudy(cdp, _worm10RsiScript.scriptIdPart);
 
-    var check = const _Worm10BothOpen(false, false);
-    for (var i = 0; i < 20; i++) {
+    var check = have;
+    for (var i = 0; i < 20 && !(check.worm10 && check.rsi); i++) {
       await Future<void>.delayed(const Duration(seconds: 3));
-      await dismissUpgradeDialog(cdp);
       check = _worm10BothOpen(await _getEnforceState(cdp));
-      if (check.worm10 && check.rsi) break;
     }
-
-    // Cleanup: remove any leftover legend stub that isn't one of the two
-    // required scripts (same free-account-limit reasoning as
-    // enforceCustomScripts).
-    await cdp.evaluate('''(function() {
-      var wv = window.TradingViewApi._activeChartWidgetWV;
-      var widget = wv.value();
-      var appModel = widget._chartWidget.model().model();
-      var keptParts = [${jsonEncode(_worm10Script.scriptIdPart)}, ${jsonEncode(_worm10RsiScript.scriptIdPart)}];
-      var scriptTitles = ['worm_10_26', 'spy_9_26', 'Footprint/VFAS/EMA/HLOTT/MSB/OB/AlphaTrend/ZigZag++/SuperTrend', 'RSI & Vol & Stochastic RSI & VAPI'];
-      var items = document.querySelectorAll('[data-qa-id=legend-source-item]');
-      var legend = [];
-      for (var j = 0; j < items.length; j++) {
-        var el = items[j];
-        var t = el.querySelector('.title-quatTGAC');
-        legend.push({ entity: el.getAttribute('data-entity-id'), title: t ? t.textContent.trim() : '' });
-      }
-      var sources = appModel.dataSources();
-      var byEntity = {};
-      for (var i = 0; i < sources.length; i++) {
-        var s = sources[i];
-        var part = '';
-        var eid = null;
-        try { var m = s.metaInfo(); part = m ? (m.scriptIdPart || '') : ''; } catch(e) {}
-        try { eid = s.entityId ? s.entityId() : null; } catch(e) {}
-        if (eid) byEntity[eid] = part;
-      }
-      for (var k = 0; k < legend.length; k++) {
-        var item = legend[k];
-        var part = byEntity[item.entity] || '';
-        var titleIsScript = scriptTitles.some(function (st) { return item.title.indexOf(st) !== -1; });
-        if (keptParts.indexOf(part) !== -1 || titleIsScript) continue;
-        try { widget.removeEntity(item.entity); } catch(e) {}
-      }
-    })()''');
-
-    final finalCheck = _worm10BothOpen(await _getEnforceState(cdp));
     return EnforceResult(
-      status: addedOk.values.every((v) => v) ? 'ok' : 'partial',
-      removed: removed,
+      status: check.worm10 && check.rsi ? 'ok' : 'partial',
       addedOk: addedOk,
-      // Reusing EnforceResult.finalMsb/finalRsi to mean "worm_10_26 is
-      // open" / "spy_9_26 is open" - same reasoning as
-      // [enforceSupertrendPlus]'s own result.
-      finalMsb: finalCheck.worm10,
-      finalRsi: finalCheck.rsi,
+      // finalMsb/finalRsi mean "worm_10_26 is on" / "spy_9_26 is on".
+      finalMsb: check.worm10,
+      finalRsi: check.rsi,
     );
   } finally {
     cdp.close();
+  }
+}
+
+bool _isOurLegendTitle(String title) => _ourStudyNames.any(title.contains);
+
+const _ourStudyNames = [
+  'worm_10_26',
+  'spy_9_26',
+  'Footprint/VFAS/EMA/HLOTT/MSB/OB/AlphaTrend/ZigZag++/SuperTrend',
+  'RSI & Vol & Stochastic RSI & VAPI',
+];
+
+final _removeOtherStudiesExpr = '''(function(){var ac=window.TradingViewApi.activeChart();var n=0;
+var keep=${jsonEncode(_ourStudyNames)};
+ac.getAllStudies().forEach(function(s){var ok=keep.some(function(k){return String(s.name).indexOf(k)!==-1;});
+if(!ok){try{ac.removeEntity(s.id);n++;}catch(e){}}});return n;})()''';
+
+/// Adds one Pine script by id through TradingView's study service - works on
+/// a hidden tab. True when TradingView returned the new study's id.
+Future<bool> _insertStudy(CdpClient cdp, String pineId) async {
+  try {
+    final id = await cdp.evaluate('''(async function(){var svc=window.TradingViewApi._studyMarket._insertStudyService;
+var mi=await Promise.race([svc.insertStudy({descriptor:{type:"pine",pineId:${jsonEncode(pineId)},pineVersion:"last"},insertionInfo:{}}),
+new Promise(function(r){setTimeout(function(){r(null);},30000);})]);
+return mi?String(mi.id||''):'';})()''');
+    return id is String && id.isNotEmpty;
+  } catch (_) {
+    return false;
   }
 }
 

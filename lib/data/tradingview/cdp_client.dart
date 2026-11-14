@@ -168,11 +168,21 @@ Future<List<Map<String, dynamic>>> _fetchJsonList(String host, int port) async {
       throw CdpException('CDP /json/list returned HTTP ${response.statusCode}');
     }
     final body = await response.transform(utf8.decoder).join();
+    _tvAnsweringSince ??= DateTime.now();
     return (jsonDecode(body) as List).cast<Map<String, dynamic>>();
+  } catch (_) {
+    _tvAnsweringSince = null;
+    rethrow;
   } finally {
     client.close(force: true);
   }
 }
+
+/// Since when TradingView has answered `/json/list` without a break this
+/// engine run (2026-11-14): after a restart it restores its tabs slowly, so
+/// a tab is opened only once it has answered for [_tvSettleBeforeOpen].
+DateTime? _tvAnsweringSince;
+const _tvSettleBeforeOpen = Duration(seconds: 90);
 
 CdpTarget _toTarget(Map<String, dynamic> t) => CdpTarget(
   type: t['type'] as String,
@@ -285,9 +295,14 @@ Future<Map<String, dynamic>?> selectOwnChartTab({
     log?.call('no "$owner" chart tab and none free to claim');
     return null;
   }
-  if (chartTabs.length >= maxChartTabs) {
+  // Every TradingView page counts, tabs still loading included (2026-11-14,
+  // TradingPionex's rule) - not only finished chart tabs.
+  final tvPages = targets
+      .where((t) => t['type'] == 'page' && (t['url'] ?? '').toString().contains('tradingview.com'))
+      .length;
+  if (tvPages >= maxChartTabs) {
     log?.call(
-      'no "$owner" chart tab, none free to claim, and ${chartTabs.length} chart tabs are '
+      'no "$owner" chart tab, none free to claim, and $tvPages TradingView tabs are '
       'already open - not opening another (the free plan allows $maxChartTabs)',
     );
     return null;
@@ -357,8 +372,9 @@ const _chartReadyProbe = '''(function() {
 })()''';
 
 /// The ONLY place this app opens anything in TradingView: one new tab on
-/// the saved "Unnamed" layout, at most once per engine process, then waits
-/// up to 60s for its chart to load. Never closes a tab.
+/// the saved "Unnamed" layout, at most once per engine process (a failed
+/// attempt is retried after 2 min), only after TradingView has answered for
+/// 90 s, and only with the shared lock (open_tab). Never closes a tab.
 Future<Map<String, dynamic>?> _openOneChartTab(
   String host,
   int port,
@@ -371,6 +387,11 @@ Future<Map<String, dynamic>?> _openOneChartTab(
   }
   if (layoutId.isEmpty) {
     log?.call('no layout ID configured (config.json cdp.layout_id) - not opening a tab');
+    return null;
+  }
+  final answering = _tvAnsweringSince;
+  if (answering == null || DateTime.now().difference(answering) < _tvSettleBeforeOpen) {
+    log?.call('TradingView answering for under ${_tvSettleBeforeOpen.inSeconds}s - letting it restore its tabs before opening one');
     return null;
   }
   final lastFail = _lastChartTabOpenFailAt;
@@ -395,45 +416,116 @@ Future<Map<String, dynamic>?> _openOneChartTabLocked(
   String layoutId,
   void Function(String message)? log,
 ) async {
-  final url = 'https://www.tradingview.com/chart/$layoutId/';
-  final http = HttpClient();
-  Map<String, dynamic> created;
-  try {
-    final request = await http
-        .openUrl('PUT', Uri.parse('http://$host:$port/json/new?$url'))
-        .timeout(CoreConstants.cdpJsonListTimeout);
-    final response = await request.close().timeout(CoreConstants.cdpJsonListTimeout);
-    final body = await response.transform(utf8.decoder).join();
-    if (response.statusCode != 200) {
-      _lastChartTabOpenFailAt = DateTime.now();
-      chartTabOpenFailuresInARow++;
-      log?.call('opening a chart tab failed: HTTP ${response.statusCode} $body - will retry in ${_chartTabRetryEvery.inMinutes} min');
-      return null;
-    }
-    created = jsonDecode(body) as Map<String, dynamic>;
-  } catch (e) {
+  // 2026-11-14, per the user ("do the same method" as TradingPionex):
+  // `PUT /json/new` always answers HTTP 500 "Could not create new page" in
+  // TradingView Desktop and a scripted element.click() is ignored, so the
+  // tab is opened like a user would: a real click on the window's "New tab"
+  // button, then on the "Unnamed" layout on the start page. No tab is ever
+  // closed, navigated or brought to the front.
+  Map<String, dynamic>? fail(String why) {
     _lastChartTabOpenFailAt = DateTime.now();
     chartTabOpenFailuresInARow++;
-    log?.call('opening a chart tab failed: $e - will retry in ${_chartTabRetryEvery.inMinutes} min');
+    log?.call('TV TAB: opening a chart tab failed: $why - will retry in ${_chartTabRetryEvery.inMinutes} min');
     return null;
+  }
+
+  try {
+    final before = await _fetchJsonList(host, port);
+    final beforeIds = {for (final t in before) t['id']};
+    final frames = before
+        .where((t) => t['type'] == 'page' && (t['url'] ?? '').toString().contains('/app/window/index.html'))
+        .toList();
+    var clicked = false;
+    for (final frame in frames) {
+      final point = await _evaluateOnTarget(frame, _newTabButtonExpr);
+      if (point is! String) continue;
+      await _realClickOn(frame, point);
+      clicked = true;
+      log?.call('TV TAB: clicked "New tab" in the TradingView window');
+      break;
+    }
+    if (!clicked) return fail('no single "New tab" button found in a TradingView window');
+
+    Map<String, dynamic>? startPage;
+    for (var i = 0; i < 15 && startPage == null; i++) {
+      await Future<void>.delayed(const Duration(seconds: 1));
+      final now = await _fetchJsonList(host, port);
+      startPage = now
+          .where((t) => t['type'] == 'page' && (t['url'] ?? '').toString().contains('/app/new-tab/index.html'))
+          .firstOrNull;
+    }
+    if (startPage == null) return fail('the new-tab start page did not appear within 15s');
+
+    String? unnamed;
+    for (var i = 0; i < 10 && unnamed == null; i++) {
+      final point = await _evaluateOnTarget(startPage, _unnamedLayoutExpr);
+      if (point is String) {
+        unnamed = point;
+      } else {
+        await Future<void>.delayed(const Duration(seconds: 1));
+      }
+    }
+    if (unnamed == null) return fail('no single "Unnamed" layout on the start page');
+    await _realClickOn(startPage, unnamed);
+    log?.call('TV TAB: clicked the "Unnamed" layout');
+
+    final deadline = DateTime.now().add(const Duration(seconds: 60));
+    while (DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      final now = await _fetchJsonList(host, port);
+      for (final t in now) {
+        if (beforeIds.contains(t['id']) || t['type'] != 'page') continue;
+        if (!isOwnChartUrl((t['url'] ?? '').toString(), layoutId)) continue;
+        try {
+          if (await _evaluateOnTarget(t, _chartReadyProbe) == true) {
+            // TradingView really created it: this run never opens another.
+            _openedChartTabThisProcess = true;
+            _lastChartTabOpenFailAt = null;
+            chartTabOpenFailuresInARow = 0;
+            log?.call('TV TAB: opened chart tab ${t['id']} and its chart is ready');
+            return t;
+          }
+        } catch (_) {}
+      }
+    }
+    // A tab may exist but still be loading: it is claimed later, untagged.
+    _openedChartTabThisProcess = true;
+    log?.call('TV TAB: the new chart tab was not ready within 60s - not using it now');
+    return null;
+  } catch (e) {
+    return fail('$e');
+  }
+}
+
+const _newTabButtonExpr = '''(function(){var b=[...document.querySelectorAll('button')].filter(function(x){
+return (x.getAttribute('aria-label')||x.getAttribute('title')||x.textContent||'').trim()==='New tab';});
+if(b.length!==1)return null;var r=b[0].getBoundingClientRect();
+return JSON.stringify({x:r.left+r.width/2,y:r.top+r.height/2});})()''';
+
+const _unnamedLayoutExpr = '''(function(){var n="Unnamed";var hits=[];document.querySelectorAll('*').forEach(function(el){
+if(el.children.length===0&&(el.textContent||'').trim()===n){var r=el.getBoundingClientRect();
+if(r.width>0&&r.height>0)hits.push({x:r.left+r.width/2,y:r.top+r.height/2});}});
+return hits.length===1?JSON.stringify(hits[0]):null;})()''';
+
+/// A real mouse click (move, press, release) at [pointJson] {x,y} on [target].
+Future<void> _realClickOn(Map<String, dynamic> target, String pointJson) async {
+  final p = jsonDecode(pointJson) as Map<String, dynamic>;
+  final x = (p['x'] as num).toDouble();
+  final y = (p['y'] as num).toDouble();
+  final socket = await WebSocket.connect(target['webSocketDebuggerUrl'] as String)
+      .timeout(CoreConstants.cdpRequestTimeout);
+  final client = CdpClient(socket);
+  try {
+    await client.send('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': x, 'y': y, 'button': 'none'});
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    await client.send('Input.dispatchMouseEvent',
+        {'type': 'mousePressed', 'x': x, 'y': y, 'button': 'left', 'clickCount': 1});
+    await Future<void>.delayed(const Duration(milliseconds: 60));
+    await client.send('Input.dispatchMouseEvent',
+        {'type': 'mouseReleased', 'x': x, 'y': y, 'button': 'left', 'clickCount': 1});
   } finally {
-    http.close(force: true);
+    client.close();
   }
-  // TradingView really created it: this run never opens another (if it
-  // does not load, it stays open untagged and is claimed later).
-  _openedChartTabThisProcess = true;
-  _lastChartTabOpenFailAt = null;
-  chartTabOpenFailuresInARow = 0;
-  log?.call('opened one chart tab ${created['id']} at $url - waiting for it to load');
-  final deadline = DateTime.now().add(const Duration(seconds: 60));
-  while (DateTime.now().isBefore(deadline)) {
-    try {
-      if (await _evaluateOnTarget(created, _chartReadyProbe) == true) return created;
-    } catch (_) {}
-    await Future<void>.delayed(const Duration(seconds: 2));
-  }
-  log?.call('the chart tab this app opened (${created['id']}) did not load within 60s - not using it');
-  return null;
 }
 
 /// Fetches `/json/list` and returns TradingMT5's own chart tab per

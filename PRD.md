@@ -1827,6 +1827,28 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-14 (v1.6.81+129)** — **TradingView handled the TradingPionex way: chart API for
+  indicators, real clicks to open our tab, works on a hidden tab**. Per the user, with
+  TradingPionex's live-tested write-up (v1.0.47-v1.0.55): "this is how tradingpionex is
+  making with trading view. do the same method please."
+  - Indicators (`enforceWorm10`): chart API only - `removeAllStudies()` on a fresh page,
+    otherwise remove every study but ours (`getAllStudies`/`removeEntity`, then
+    `removeAllStudies` if the legend still shows leftovers), add only what is missing
+    with `_insertStudyService.insertStudy({type:"pine", pineId, pineVersion:"last"})`
+    (30s timeout), re-check 20x3s. The Indicators-dialog/My Scripts click route and its
+    helpers are removed. Works on a background tab, so v1.6.80's hidden-tab refusal is
+    removed; the tab is never brought to the front.
+  - Opening our tab (`_openOneChartTabLocked`): `PUT /json/new` always fails in
+    TradingView Desktop (HTTP 500), so now a real click on the window frame's single
+    "New tab" button, then on the single "Unnamed" layout on the start page, then wait
+    up to 60s for the new chart tab to be ready. Only when TradingView has answered
+    `/json/list` for 90s this run, fewer than 2 pages contain `tradingview.com` (tabs still
+    loading count), with the `open_tab` lock, once per run, failures retried after 2
+    min. Logged `TV TAB: ...`.
+  - Live read-only check before shipping: `insertStudy`, `removeAllStudies`,
+    `getAllStudies`, `removeEntity` exist on our tab; exactly one "New tab" button in the
+    window frame. At that moment our tab was hidden with no indicators (v1.6.80 refused
+    to touch it) - the case this release fixes.
 - **2026-11-14 (v1.6.80+128)** — **Status icon next to the clock; no indicator reload on a
   hidden tab**. Per the user: "the icon is not placed at clock in bottom right in windows"
   / "add".

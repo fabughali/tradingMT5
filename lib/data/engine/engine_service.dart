@@ -2998,20 +2998,6 @@ class EngineService {
       logger.log('TRADINGVIEW: new chart page loaded - closing all indicators, then loading the two.');
     }
     if (freshChartPage || !await _indicatorsReadyFor(technique, client)) {
-      // 2026-11-14: never on a hidden tab. Found live 2026-11-13 17:57-18:03Z:
-      // with our tab behind TradingPionex's in the same window, TradingView's
-      // Indicators dialog never opened, the typed script name went into the
-      // symbol search instead (chart became MEXC:SUSDT 1W) and the chart was
-      // left with no indicators, in a loop. The user moves the tab to its own
-      // window; until then nothing is closed or added.
-      if (await client.evaluate('document.visibilityState') == 'hidden') {
-        client.close();
-        _cdp = null;
-        throw StateError(
-          'our TradingView tab is hidden behind another tab - indicators NOT reloaded; '
-          'move our tab to its own TradingView window',
-        );
-      }
       _writeStatus(
         health: PowerHealthState.checking,
         message: 'Loading indicators',
@@ -3020,7 +3006,14 @@ class EngineService {
       // 2026-10-18, per the user: all three techniques now read the same
       // worm_10_26 + spy_9_26 pair (see [_indicatorsReadyFor]'s own doc
       // comment) - one shared enforcement function for all of them.
-      final enforceResult = await enforceWorm10(host, port, layoutId: config.cdp.layoutId);
+      // Chart API only (v1.6.81) - works on a hidden tab, never brings it
+      // to the front. A fresh page is cleaned first (removeAllStudies).
+      final enforceResult = await enforceWorm10(
+        host,
+        port,
+        layoutId: config.cdp.layoutId,
+        cleanFirst: freshChartPage,
+      );
       final ok = enforceResult.finalMsb && enforceResult.finalRsi;
       if (!ok) {
         client.close();
