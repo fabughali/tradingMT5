@@ -1827,6 +1827,21 @@ not a Windows limitation.
 
 ## 20. Development history and changelog
 
+- **2026-11-15 (v1.6.82+130)** — **Stuck chart feed: every failed chart load counts, then
+  reload our tab, then restart TradingView**. Per the user, relaying a bug TradingPionex
+  found the same day (its own tab's feed stuck ~8 h: `mainSeries().isLoading()` true,
+  `symbolInfo()` null, last bar 8 h old; every symbol switch failed, but each successful
+  connect reset its watchdog so the own-tab reload never ran).
+  - Checked here first: our counter (`_consecutiveChartDataFailures`, v1.6.41) was
+    already global across pairs and reset only by a good chart load, never by a connect;
+    our tab was healthy (XLMUSDT, loading false, last bar 50 min old on 1H).
+  - Gaps fixed in `_noteChartView`: (1) ANY failed `setChartView` now counts, including a
+    symbol switch that times out (before: only "data not loaded"); (2) before reloading,
+    re-check that the connected tab's `tvTabOwner` is `tradingmt5`; (3) after
+    `Page.reload`, wait for the chart API instead of a fixed 20s; (4) if 2 own-tab reloads
+    in a row bring no good load back, restart TradingView (`_restartTradingView`, capped,
+    `restart_tradingview` lock) instead of reloading forever. Still only our tab, with
+    the `reload_own_tab` lock (skip and retry on the next failure if TradingPionex holds it).
 - **2026-11-14 (v1.6.81+129)** — **TradingView handled the TradingPionex way: chart API for
   indicators, real clicks to open our tab, works on a hidden tab**. Per the user, with
   TradingPionex's live-tested write-up (v1.0.47-v1.0.55): "this is how tradingpionex is

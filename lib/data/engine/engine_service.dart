@@ -2591,28 +2591,68 @@ class EngineService {
   int _consecutiveChartDataFailures = 0;
   static const int _chartDataReloadThreshold = 3;
 
+  /// Own-tab reloads done since the last good chart load (2026-11-15).
+  int _reloadsWithoutGoodLoad = 0;
+  static const int _reloadsBeforeRestart = 2;
+
+  /// Every chart load counts (2026-11-15, per the user, relaying the bug
+  /// TradingPionex found: its feed sat stuck for about 8 h - series loading,
+  /// symbol info null, last bar 8 h old). ANY failed load or symbol switch
+  /// (still loading, symbol missing or wrong, bars not matching the
+  /// resolution, the switch timing out) adds 1, across all pairs; only a
+  /// good chart load resets it - a successful connect never does. At 3 in a
+  /// row: re-check the tab is ours, take the reload_own_tab lock, reload our
+  /// tab only, wait for the chart API, release. If [_reloadsBeforeRestart]
+  /// reloads in a row bring no good load back, restart TradingView (capped,
+  /// with the restart_tradingview lock).
   Future<void> _noteChartView(SetChartViewResult result, CdpClient cdp) async {
-    if (!result.dataNotLoaded) {
-      if (result.ok) _consecutiveChartDataFailures = 0;
+    if (result.ok) {
+      _consecutiveChartDataFailures = 0;
+      _reloadsWithoutGoodLoad = 0;
       return;
     }
     _consecutiveChartDataFailures++;
     if (_consecutiveChartDataFailures < _chartDataReloadThreshold) return;
     _consecutiveChartDataFailures = 0;
+    if (_reloadsWithoutGoodLoad >= _reloadsBeforeRestart) {
+      _reloadsWithoutGoodLoad = 0;
+      await _restartTradingView(
+        Platform.environment['USERPROFILE'] ?? '.',
+        'our chart still fails to load after $_reloadsBeforeRestart own-tab reloads (${result.error})',
+      );
+      return;
+    }
     logger.log(
-      'TRADINGVIEW WATCHDOG: chart data failed to load $_chartDataReloadThreshold '
-      'times in a row (${result.error}) - the feed is stuck on old data. '
-      'Reloading the chart page; no signal is read until the data checks out.',
+      'TRADINGVIEW WATCHDOG: chart failed to load $_chartDataReloadThreshold '
+      'times in a row (${result.error}) - the feed is stuck. '
+      'Reloading our own tab; no signal is read until the data checks out.',
       level: 'CRITICAL',
     );
+    try {
+      if (await cdp.evaluate(readTabOwnerScript) != mt5TabOwner) {
+        logger.log('TRADINGVIEW WATCHDOG: the connected tab is not tagged as ours - not reloading it.',
+            level: 'WARNING');
+        return;
+      }
+    } catch (e) {
+      logger.log('TRADINGVIEW WATCHDOG: could not read the tab owner ($e) - not reloading.', level: 'WARNING');
+      return;
+    }
     if (!_tvLockTake(lockReloadOwnTab)) {
-      // Retry on the very next data failure.
+      // Retry on the very next failed load.
       _consecutiveChartDataFailures = _chartDataReloadThreshold - 1;
       return;
     }
     try {
+      _reloadsWithoutGoodLoad++;
       await cdp.send('Page.reload', const {'ignoreCache': false});
-      await Future<void>.delayed(const Duration(seconds: 20));
+      final ready = await waitForChartApiReady(cdp);
+      logger.log(
+        ready
+            ? 'TRADINGVIEW WATCHDOG: own tab reloaded, chart API ready (reload $_reloadsWithoutGoodLoad without a good load).'
+            : 'TRADINGVIEW WATCHDOG: own tab reloaded but the chart API did not become ready.',
+        level: ready ? 'INFO' : 'WARNING',
+      );
     } catch (e) {
       logger.log('TRADINGVIEW WATCHDOG: chart page reload failed: $e', level: 'ERROR');
     } finally {
